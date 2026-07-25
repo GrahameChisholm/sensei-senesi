@@ -1,0 +1,42 @@
+# Secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+uv.lock.bak
+
+# Data — never commit snapshots, the SQLite store, or prediction logs
+data_store/*
+!data_store/.gitkeep
+logs/predictions/*
+!logs/predictions/.gitkeep
+*.parquet
+*.sqlite
+*.sqlite3
+*.db
+
+# Notebooks — exploration only, keep checkpoints out
+notebooks/.ipynb_checkpoints/
+.ipynb_checkpoints/
+
+# Web (Phase 5)
+web/node_modules/
+web/dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
