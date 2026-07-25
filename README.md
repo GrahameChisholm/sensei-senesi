@@ -8,9 +8,12 @@ and definitions of done — it is the reference spec for this repo.
 
 ## Status
 
-Phase 0 (project setup) and Phase 1 (data foundation — FPL/Understat clients, ID crosswalk,
-point-in-time snapshots, storage schema, validation) are complete. Phase 2 (the prediction
-engine) is next.
+Phase 0 (project setup), Phase 1 (data foundation — FPL/Understat clients, ID crosswalk,
+point-in-time snapshots, storage schema, validation), and Phase 2 (the prediction engine —
+minutes, goals, assists, clean sheets, defensive contribution, saves/bonus/cards, aggregation,
+per-position regression, and Monte Carlo simulation) are complete. The engine runs end-to-end
+producing a per-gameweek projection with a full outcome distribution and component breakdown, but
+is **not yet validated** — Phase 3 (backtesting) is next.
 
 ## Development
 
