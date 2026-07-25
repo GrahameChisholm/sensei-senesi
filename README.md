@@ -8,7 +8,9 @@ and definitions of done — it is the reference spec for this repo.
 
 ## Status
 
-Phase 0 (project setup) is in progress.
+Phase 0 (project setup) and Phase 1 (data foundation — FPL/Understat clients, ID crosswalk,
+point-in-time snapshots, storage schema, validation) are complete. Phase 2 (the prediction
+engine) is next.
 
 ## Development
 

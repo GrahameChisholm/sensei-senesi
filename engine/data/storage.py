@@ -1,0 +1,126 @@
+"""SQLite storage schema (1.3) — structured relational data: players, teams, fixtures, gameweek
+results, and the ground-truth results table every backtest scores against.
+
+Point-in-time *snapshots* (the anti-leakage mechanism) are immutable parquet files, not rows in
+this database — see snapshots.py. This module holds the plain relational bookkeeping: current
+player/team reference data, the fixture list, and — critically — the ``GameweekResult`` table
+recording what *actually* happened, which is append-only and never revised once a gameweek is
+final.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    create_engine,
+)
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+DEFAULT_DB_PATH = "data_store/fpl.sqlite"
+
+# SQLite has no native tz-aware timestamp storage: a tz-aware datetime written here round-trips
+# as a naive one on read (value unchanged, offset dropped). Convention: every datetime passed
+# into this module is UTC, tz-aware or not — callers comparing a read-back value against one
+# they constructed should not assume tzinfo survives the round trip.
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(primary_key=True)  # FPL team id
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    short_name: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class Player(Base):
+    __tablename__ = "players"
+
+    id: Mapped[int] = mapped_column(primary_key=True)  # FPL element id
+    first_name: Mapped[str] = mapped_column(String, nullable=False)
+    second_name: Mapped[str] = mapped_column(String, nullable=False)
+    web_name: Mapped[str] = mapped_column(String, nullable=False)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    position: Mapped[str] = mapped_column(String, nullable=False)  # GK/DEF/MID/FWD
+    understat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Fixture(Base):
+    __tablename__ = "fixtures"
+
+    id: Mapped[int] = mapped_column(primary_key=True)  # FPL fixture id
+    event: Mapped[int | None] = mapped_column(Integer, nullable=True)  # gameweek number
+    kickoff_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    team_h: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    team_a: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    team_h_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    team_a_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    finished: Mapped[bool] = mapped_column(default=False)
+
+
+class GameweekResult(Base):
+    """Ground truth: what a player actually scored in a gameweek. Append-only — a backtest's
+    scoring reference, never touched once FPL marks the gameweek final (``event.data_checked``).
+    """
+
+    __tablename__ = "gameweek_results"
+    __table_args__ = (
+        UniqueConstraint("player_id", "event", name="uq_gameweek_result_player_event"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    event: Mapped[int] = mapped_column(Integer, nullable=False)  # gameweek number
+    fixture_id: Mapped[int] = mapped_column(ForeignKey("fixtures.id"), nullable=False)
+    minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_points: Mapped[int] = mapped_column(Integer, nullable=False)
+    goals_scored: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    assists: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    clean_sheets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    goals_conceded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    defensive_contribution: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    saves: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bonus: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bps: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    yellow_cards: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    red_cards: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    penalties_missed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class DataFreshness(Base):
+    """Last-updated record per source (1.4) — lets a future dashboard show data freshness, and
+    lets validation reason about how stale the last *good* pull was.
+    """
+
+    __tablename__ = "data_freshness"
+
+    source: Mapped[str] = mapped_column(String, primary_key=True)  # e.g. "fpl", "understat"
+    last_successful_pull_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_attempt_ok: Mapped[bool] = mapped_column(default=True)
+
+
+def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
+    return create_engine(f"sqlite:///{db_path}")
+
+
+def init_db(db_path: str = DEFAULT_DB_PATH) -> Engine:
+    """Create the schema if it doesn't exist yet. Safe to call every process start."""
+    engine = get_engine(db_path)
+    Base.metadata.create_all(engine)
+    return engine

@@ -1,0 +1,2678 @@
+{
+  "players": [
+    {
+      "id": "8260",
+      "player_name": "Erling Haaland",
+      "games": "31",
+      "time": "2581",
+      "goals": "27",
+      "xG": "31.65399668365717",
+      "assists": "5",
+      "xA": "4.7517555598169565",
+      "shots": "122",
+      "key_passes": "29",
+      "yellow_cards": "1",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Manchester City",
+      "npg": "20",
+      "npxG": "25.564646281301975",
+      "xGChain": "30.19725350290537",
+      "xGBuildup": "3.128645434975624"
+    },
+    {
+      "id": "8497",
+      "player_name": "Cole Palmer",
+      "games": "34",
+      "time": "2640",
+      "goals": "22",
+      "xG": "17.83224501274526",
+      "assists": "11",
+      "xA": "11.869294486939907",
+      "shots": "108",
+      "key_passes": "72",
+      "yellow_cards": "7",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Chelsea,Manchester City",
+      "npg": "13",
+      "npxG": "10.981725485995412",
+      "xGChain": "31.036520244553685",
+      "xGBuildup": "15.302413104102015"
+    },
+    {
+      "id": "5232",
+      "player_name": "Alexander Isak",
+      "games": "30",
+      "time": "2305",
+      "goals": "21",
+      "xG": "22.07426631450653",
+      "assists": "2",
+      "xA": "3.6520401313900948",
+      "shots": "78",
+      "key_passes": "27",
+      "yellow_cards": "1",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Newcastle United",
+      "npg": "16",
+      "npxG": "17.507253035902977",
+      "xGChain": "24.041151970624924",
+      "xGBuildup": "5.754798140376806"
+    },
+    {
+      "id": "1679",
+      "player_name": "Dominic Solanke",
+      "games": "38",
+      "time": "3346",
+      "goals": "19",
+      "xG": "21.40683087334037",
+      "assists": "3",
+      "xA": "3.5437498800456524",
+      "shots": "109",
+      "key_passes": "39",
+      "yellow_cards": "3",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Bournemouth",
+      "npg": "17",
+      "npxG": "19.12332433462143",
+      "xGChain": "22.5880119279027",
+      "xGBuildup": "4.080137750133872"
+    },
+    {
+      "id": "6055",
+      "player_name": "Phil Foden",
+      "games": "35",
+      "time": "2895",
+      "goals": "19",
+      "xG": "11.307983005419374",
+      "assists": "8",
+      "xA": "8.51623285189271",
+      "shots": "105",
+      "key_passes": "73",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Manchester City",
+      "npg": "19",
+      "npxG": "11.307983005419374",
+      "xGChain": "30.41696721315384",
+      "xGBuildup": "16.99899828247726"
+    },
+    {
+      "id": "8865",
+      "player_name": "Ollie Watkins",
+      "games": "37",
+      "time": "3250",
+      "goals": "19",
+      "xG": "19.26459836959839",
+      "assists": "13",
+      "xA": "7.745744535699487",
+      "shots": "106",
+      "key_passes": "45",
+      "yellow_cards": "4",
+      "red_cards": "0",
+      "position": "F",
+      "team_title": "Aston Villa",
+      "npg": "19",
+      "npxG": "19.26459836959839",
+      "xGChain": "29.229417741298676",
+      "xGBuildup": "5.899641819298267"
+    },
+    {
+      "id": "1250",
+      "player_name": "Mohamed Salah",
+      "games": "32",
+      "time": "2556",
+      "goals": "18",
+      "xG": "21.941274393349886",
+      "assists": "10",
+      "xA": "12.332044444978237",
+      "shots": "114",
+      "key_passes": "66",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Liverpool",
+      "npg": "13",
+      "npxG": "16.613166783005",
+      "xGChain": "31.875095803290606",
+      "xGBuildup": "8.363566914573312"
+    },
+    {
+      "id": "453",
+      "player_name": "Son Heung-Min",
+      "games": "35",
+      "time": "2989",
+      "goals": "17",
+      "xG": "12.978620901703835",
+      "assists": "10",
+      "xA": "13.341020658612251",
+      "shots": "85",
+      "key_passes": "69",
+      "yellow_cards": "1",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Tottenham",
+      "npg": "15",
+      "npxG": "11.45628322660923",
+      "xGChain": "30.115575216710567",
+      "xGBuildup": "10.445971379056573"
+    },
+    {
+      "id": "1776",
+      "player_name": "Jarrod Bowen",
+      "games": "34",
+      "time": "3026",
+      "goals": "16",
+      "xG": "13.498636420816183",
+      "assists": "6",
+      "xA": "6.437707958742976",
+      "shots": "85",
+      "key_passes": "32",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F M",
+      "team_title": "West Ham",
+      "npg": "16",
+      "npxG": "13.498636420816183",
+      "xGChain": "17.76942592486739",
+      "xGBuildup": "2.457054629921913"
+    },
+    {
+      "id": "5735",
+      "player_name": "Jean-Philippe Mateta",
+      "games": "35",
+      "time": "2303",
+      "goals": "16",
+      "xG": "12.290523625910282",
+      "assists": "5",
+      "xA": "3.52706278860569",
+      "shots": "46",
+      "key_passes": "32",
+      "yellow_cards": "3",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Crystal Palace",
+      "npg": "14",
+      "npxG": "10.768185935914516",
+      "xGChain": "15.486321330070496",
+      "xGBuildup": "2.852151058614254"
+    },
+    {
+      "id": "7322",
+      "player_name": "Bukayo Saka",
+      "games": "35",
+      "time": "2990",
+      "goals": "16",
+      "xG": "16.807056225836277",
+      "assists": "8",
+      "xA": "11.325986489653587",
+      "shots": "107",
+      "key_passes": "89",
+      "yellow_cards": "4",
+      "red_cards": "0",
+      "position": "F",
+      "team_title": "Arsenal",
+      "npg": "10",
+      "npxG": "12.240043208003044",
+      "xGChain": "30.357597015798092",
+      "xGBuildup": "13.228619534522295"
+    },
+    {
+      "id": "4456",
+      "player_name": "Chris Wood",
+      "games": "31",
+      "time": "1797",
+      "goals": "14",
+      "xG": "13.364272002130747",
+      "assists": "1",
+      "xA": "1.987032251432538",
+      "shots": "48",
+      "key_passes": "22",
+      "yellow_cards": "0",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Nottingham Forest",
+      "npg": "14",
+      "npxG": "13.364272002130747",
+      "xGChain": "15.345352198928595",
+      "xGBuildup": "0.9163662036880851"
+    },
+    {
+      "id": "10048",
+      "player_name": "Nicolas Jackson",
+      "games": "35",
+      "time": "2818",
+      "goals": "14",
+      "xG": "19.860593939200044",
+      "assists": "5",
+      "xA": "5.2836981769651175",
+      "shots": "80",
+      "key_passes": "36",
+      "yellow_cards": "10",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Chelsea",
+      "npg": "14",
+      "npxG": "19.860593939200044",
+      "xGChain": "27.917255371809006",
+      "xGBuildup": "7.270463835448027"
+    },
+    {
+      "id": "5220",
+      "player_name": "Kai Havertz",
+      "games": "37",
+      "time": "2651",
+      "goals": "13",
+      "xG": "13.465729914605618",
+      "assists": "7",
+      "xA": "5.814370539039373",
+      "shots": "69",
+      "key_passes": "45",
+      "yellow_cards": "11",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Arsenal",
+      "npg": "12",
+      "npxG": "12.704561084508896",
+      "xGChain": "24.790123470127583",
+      "xGBuildup": "9.346141943708062"
+    },
+    {
+      "id": "5786",
+      "player_name": "Yoane Wissa",
+      "games": "34",
+      "time": "2556",
+      "goals": "12",
+      "xG": "11.16999962553382",
+      "assists": "3",
+      "xA": "3.828521143645048",
+      "shots": "67",
+      "key_passes": "29",
+      "yellow_cards": "7",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Brentford",
+      "npg": "12",
+      "npxG": "11.16999962553382",
+      "xGChain": "16.368419870734215",
+      "xGBuildup": "4.587590790353715"
+    },
+    {
+      "id": "7080",
+      "player_name": "Matheus Cunha",
+      "games": "32",
+      "time": "2499",
+      "goals": "12",
+      "xG": "10.229120277799666",
+      "assists": "7",
+      "xA": "3.920058634132147",
+      "shots": "73",
+      "key_passes": "28",
+      "yellow_cards": "8",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Wolverhampton Wanderers",
+      "npg": "11",
+      "npxG": "9.467951440252364",
+      "xGChain": "12.985038012266159",
+      "xGBuildup": "2.336798165924847"
+    },
+    {
+      "id": "7698",
+      "player_name": "Leandro Trossard",
+      "games": "34",
+      "time": "1649",
+      "goals": "12",
+      "xG": "9.575767548754811",
+      "assists": "1",
+      "xA": "3.252073733136058",
+      "shots": "60",
+      "key_passes": "24",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Arsenal",
+      "npg": "12",
+      "npxG": "9.575767548754811",
+      "xGChain": "16.976479506120086",
+      "xGBuildup": "5.5028668232262135"
+    },
+    {
+      "id": "8845",
+      "player_name": "Hee-Chan Hwang",
+      "games": "29",
+      "time": "2154",
+      "goals": "12",
+      "xG": "8.681871520355344",
+      "assists": "3",
+      "xA": "3.1403315979987383",
+      "shots": "45",
+      "key_passes": "17",
+      "yellow_cards": "6",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Wolverhampton Wanderers",
+      "npg": "11",
+      "npxG": "7.920702653005719",
+      "xGChain": "12.023936153389513",
+      "xGBuildup": "2.6239349097013474"
+    },
+    {
+      "id": "6026",
+      "player_name": "Richarlison",
+      "games": "28",
+      "time": "1511",
+      "goals": "11",
+      "xG": "9.619059151038527",
+      "assists": "4",
+      "xA": "1.9676255472004414",
+      "shots": "61",
+      "key_passes": "15",
+      "yellow_cards": "3",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Tottenham",
+      "npg": "11",
+      "npxG": "9.619059151038527",
+      "xGChain": "12.735109627246857",
+      "xGBuildup": "2.2886698860675097"
+    },
+    {
+      "id": "8150",
+      "player_name": "Anthony Gordon",
+      "games": "35",
+      "time": "2956",
+      "goals": "11",
+      "xG": "11.293779235333204",
+      "assists": "10",
+      "xA": "8.833045985549688",
+      "shots": "81",
+      "key_passes": "56",
+      "yellow_cards": "10",
+      "red_cards": "1",
+      "position": "F M S",
+      "team_title": "Newcastle United",
+      "npg": "10",
+      "npxG": "10.53261036798358",
+      "xGChain": "26.570194900035858",
+      "xGBuildup": "11.442161984741688"
+    },
+    {
+      "id": "8706",
+      "player_name": "Eberechi Eze",
+      "games": "27",
+      "time": "2097",
+      "goals": "11",
+      "xG": "9.37310928851366",
+      "assists": "4",
+      "xA": "6.844833366572857",
+      "shots": "83",
+      "key_passes": "54",
+      "yellow_cards": "3",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Crystal Palace",
+      "npg": "10",
+      "npxG": "8.611940443515778",
+      "xGChain": "16.38165108114481",
+      "xGBuildup": "6.3479389026761055"
+    },
+    {
+      "id": "10720",
+      "player_name": "Darwin N\u00fa\u00f1ez",
+      "games": "36",
+      "time": "2037",
+      "goals": "11",
+      "xG": "19.187851031310856",
+      "assists": "8",
+      "xA": "5.950456521473825",
+      "shots": "108",
+      "key_passes": "33",
+      "yellow_cards": "9",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Liverpool",
+      "npg": "11",
+      "npxG": "18.42668213415891",
+      "xGChain": "25.07862750068307",
+      "xGBuildup": "5.313199203461409"
+    },
+    {
+      "id": "10846",
+      "player_name": "Juli\u00e1n \u00c1lvarez",
+      "games": "36",
+      "time": "2682",
+      "goals": "11",
+      "xG": "14.373571239411831",
+      "assists": "8",
+      "xA": "5.823111834935844",
+      "shots": "98",
+      "key_passes": "66",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Manchester City",
+      "npg": "9",
+      "npxG": "12.851233504712582",
+      "xGChain": "27.162230297923088",
+      "xGBuildup": "13.089299127459526"
+    },
+    {
+      "id": "11717",
+      "player_name": "Carlton Morris",
+      "games": "38",
+      "time": "2879",
+      "goals": "11",
+      "xG": "12.306741118431091",
+      "assists": "4",
+      "xA": "3.6919509368017316",
+      "shots": "72",
+      "key_passes": "22",
+      "yellow_cards": "4",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Luton",
+      "npg": "6",
+      "npxG": "8.500896904617548",
+      "xGChain": "12.545526312664151",
+      "xGBuildup": "5.202579701319337"
+    },
+    {
+      "id": "1228",
+      "player_name": "Bruno Fernandes",
+      "games": "35",
+      "time": "3121",
+      "goals": "10",
+      "xG": "10.746266636997461",
+      "assists": "8",
+      "xA": "13.15852378681302",
+      "shots": "95",
+      "key_passes": "113",
+      "yellow_cards": "9",
+      "red_cards": "0",
+      "position": "F M",
+      "team_title": "Manchester United",
+      "npg": "6",
+      "npxG": "6.940422397106886",
+      "xGChain": "22.69340828806162",
+      "xGBuildup": "12.64676270633936"
+    },
+    {
+      "id": "5221",
+      "player_name": "Leon Bailey",
+      "games": "35",
+      "time": "2112",
+      "goals": "10",
+      "xG": "6.4655649326741695",
+      "assists": "9",
+      "xA": "10.299157902598381",
+      "shots": "53",
+      "key_passes": "51",
+      "yellow_cards": "5",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Aston Villa",
+      "npg": "10",
+      "npxG": "6.4655649326741695",
+      "xGChain": "17.98974223807454",
+      "xGBuildup": "6.671372391283512"
+    },
+    {
+      "id": "6854",
+      "player_name": "Diogo Jota",
+      "games": "21",
+      "time": "1164",
+      "goals": "10",
+      "xG": "6.724682793021202",
+      "assists": "3",
+      "xA": "3.19649357162416",
+      "shots": "41",
+      "key_passes": "23",
+      "yellow_cards": "1",
+      "red_cards": "1",
+      "position": "F S",
+      "team_title": "Liverpool",
+      "npg": "10",
+      "npxG": "6.724682793021202",
+      "xGChain": "12.289753511548042",
+      "xGBuildup": "5.313873592764139"
+    },
+    {
+      "id": "9948",
+      "player_name": "Michael Olise",
+      "games": "19",
+      "time": "1281",
+      "goals": "10",
+      "xG": "5.6874131839722395",
+      "assists": "6",
+      "xA": "5.196664724498987",
+      "shots": "56",
+      "key_passes": "35",
+      "yellow_cards": "0",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Crystal Palace",
+      "npg": "9",
+      "npxG": "4.926244312897325",
+      "xGChain": "12.075153382495046",
+      "xGBuildup": "5.0466043297201395"
+    },
+    {
+      "id": "11055",
+      "player_name": "Rasmus H\u00f8jlund",
+      "games": "30",
+      "time": "2210",
+      "goals": "10",
+      "xG": "9.338883213698864",
+      "assists": "2",
+      "xA": "1.779460173100233",
+      "shots": "38",
+      "key_passes": "28",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Manchester United",
+      "npg": "10",
+      "npxG": "9.338883213698864",
+      "xGChain": "11.463255237787962",
+      "xGBuildup": "2.9498381465673447"
+    },
+    {
+      "id": "11718",
+      "player_name": "Elijah Adebayo",
+      "games": "27",
+      "time": "1422",
+      "goals": "10",
+      "xG": "6.630781220272183",
+      "assists": "0",
+      "xA": "0.8136616554111242",
+      "shots": "31",
+      "key_passes": "14",
+      "yellow_cards": "1",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Luton",
+      "npg": "10",
+      "npxG": "6.630781220272183",
+      "xGChain": "8.281278105452657",
+      "xGBuildup": "1.9411640595644712"
+    },
+    {
+      "id": "468",
+      "player_name": "Callum Wilson",
+      "games": "20",
+      "time": "963",
+      "goals": "9",
+      "xG": "10.12450959533453",
+      "assists": "1",
+      "xA": "0.9339367430657148",
+      "shots": "35",
+      "key_passes": "8",
+      "yellow_cards": "3",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Newcastle United",
+      "npg": "7",
+      "npxG": "8.602172024548054",
+      "xGChain": "10.547705547884107",
+      "xGBuildup": "1.8611295819282532"
+    },
+    {
+      "id": "6122",
+      "player_name": "Douglas Luiz",
+      "games": "35",
+      "time": "3043",
+      "goals": "9",
+      "xG": "7.572099968791008",
+      "assists": "5",
+      "xA": "5.288189608603716",
+      "shots": "48",
+      "key_passes": "53",
+      "yellow_cards": "12",
+      "red_cards": "0",
+      "position": "M",
+      "team_title": "Aston Villa",
+      "npg": "5",
+      "npxG": "4.527424611151218",
+      "xGChain": "17.31126916781068",
+      "xGBuildup": "13.624405791983008"
+    },
+    {
+      "id": "6552",
+      "player_name": "Bryan Mbeumo",
+      "games": "25",
+      "time": "1954",
+      "goals": "9",
+      "xG": "9.158370908349752",
+      "assists": "6",
+      "xA": "5.14017678797245",
+      "shots": "53",
+      "key_passes": "32",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Brentford",
+      "npg": "6",
+      "npxG": "6.874864336103201",
+      "xGChain": "15.155989956110716",
+      "xGBuildup": "6.123919734731317"
+    },
+    {
+      "id": "8272",
+      "player_name": "Jo\u00e3o Pedro",
+      "games": "31",
+      "time": "2026",
+      "goals": "9",
+      "xG": "11.918903339654207",
+      "assists": "3",
+      "xA": "5.4223863165825605",
+      "shots": "75",
+      "key_passes": "37",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Brighton",
+      "npg": "5",
+      "npxG": "8.113133335486054",
+      "xGChain": "17.548418318852782",
+      "xGBuildup": "7.590120053850114"
+    },
+    {
+      "id": "10717",
+      "player_name": "Rodrigo Muniz",
+      "games": "26",
+      "time": "1602",
+      "goals": "9",
+      "xG": "8.481916300952435",
+      "assists": "1",
+      "xA": "1.3883774541318417",
+      "shots": "72",
+      "key_passes": "16",
+      "yellow_cards": "1",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Fulham",
+      "npg": "9",
+      "npxG": "8.481916300952435",
+      "xGChain": "9.755544383078814",
+      "xGBuildup": "2.1016076635569334"
+    },
+    {
+      "id": "618",
+      "player_name": "Raheem Sterling",
+      "games": "31",
+      "time": "1987",
+      "goals": "8",
+      "xG": "8.573790527880192",
+      "assists": "4",
+      "xA": "4.971372967585921",
+      "shots": "51",
+      "key_passes": "30",
+      "yellow_cards": "7",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Chelsea",
+      "npg": "8",
+      "npxG": "8.573790527880192",
+      "xGChain": "19.289956534281373",
+      "xGBuildup": "8.898095147684216"
+    },
+    {
+      "id": "2496",
+      "player_name": "Rodri",
+      "games": "34",
+      "time": "2967",
+      "goals": "8",
+      "xG": "4.294270480051637",
+      "assists": "9",
+      "xA": "5.32604681327939",
+      "shots": "62",
+      "key_passes": "50",
+      "yellow_cards": "8",
+      "red_cards": "1",
+      "position": "M",
+      "team_title": "Manchester City",
+      "npg": "8",
+      "npxG": "4.294270480051637",
+      "xGChain": "31.623008400201797",
+      "xGBuildup": "26.291744768619537"
+    },
+    {
+      "id": "2517",
+      "player_name": "Martin Odegaard",
+      "games": "35",
+      "time": "3117",
+      "goals": "8",
+      "xG": "7.670226177200675",
+      "assists": "10",
+      "xA": "11.577396512031555",
+      "shots": "77",
+      "key_passes": "102",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "M",
+      "team_title": "Arsenal",
+      "npg": "6",
+      "npxG": "6.147925289347768",
+      "xGChain": "29.81505699455738",
+      "xGBuildup": "18.138023640960455"
+    },
+    {
+      "id": "6456",
+      "player_name": "Callum Hudson-Odoi",
+      "games": "29",
+      "time": "1844",
+      "goals": "8",
+      "xG": "3.01959465444088",
+      "assists": "1",
+      "xA": "3.0873287972062826",
+      "shots": "38",
+      "key_passes": "36",
+      "yellow_cards": "0",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Nottingham Forest",
+      "npg": "8",
+      "npxG": "3.01959465444088",
+      "xGChain": "12.357455093413591",
+      "xGBuildup": "6.948451370000839"
+    },
+    {
+      "id": "6691",
+      "player_name": "Dejan Kulusevski",
+      "games": "36",
+      "time": "2787",
+      "goals": "8",
+      "xG": "5.835474932566285",
+      "assists": "3",
+      "xA": "8.615606566891074",
+      "shots": "57",
+      "key_passes": "65",
+      "yellow_cards": "7",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Tottenham",
+      "npg": "8",
+      "npxG": "5.835474932566285",
+      "xGChain": "23.71713701635599",
+      "xGBuildup": "12.507268408313394"
+    },
+    {
+      "id": "10408",
+      "player_name": "Luis D\u00edaz",
+      "games": "37",
+      "time": "2706",
+      "goals": "8",
+      "xG": "12.864595355466008",
+      "assists": "5",
+      "xA": "6.482230054214597",
+      "shots": "94",
+      "key_passes": "64",
+      "yellow_cards": "3",
+      "red_cards": "0",
+      "position": "F S",
+      "team_title": "Liverpool",
+      "npg": "8",
+      "npxG": "12.864595355466008",
+      "xGChain": "24.42669267952442",
+      "xGBuildup": "10.309036564081907"
+    },
+    {
+      "id": "11296",
+      "player_name": "Cody Gakpo",
+      "games": "35",
+      "time": "1640",
+      "goals": "8",
+      "xG": "8.769219513982534",
+      "assists": "5",
+      "xA": "4.2288118079304695",
+      "shots": "66",
+      "key_passes": "25",
+      "yellow_cards": "1",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Liverpool",
+      "npg": "8",
+      "npxG": "8.769219513982534",
+      "xGChain": "17.55027423426509",
+      "xGBuildup": "6.47403072565794"
+    },
+    {
+      "id": "11363",
+      "player_name": "Antoine Semenyo",
+      "games": "33",
+      "time": "2141",
+      "goals": "8",
+      "xG": "6.423830641433597",
+      "assists": "2",
+      "xA": "3.799709178507328",
+      "shots": "70",
+      "key_passes": "29",
+      "yellow_cards": "7",
+      "red_cards": "0",
+      "position": "M S",
+      "team_title": "Bournemouth",
+      "npg": "8",
+      "npxG": "6.423830641433597",
+      "xGChain": "15.41077795997262",
+      "xGBuildup": "5.7127093356102705"
+    },
+    {
+      "id": "12027",
+      "player_name": "Mohammed Kudus",
+      "games": "33",
+      "time": "2490",
+      "goals": "8",
+      "xG": "5.1772670187056065",
+      "assists": "6",
+      "xA": "3.5089522134512663",
+      "shots": "66",
+      "key_passes": "28",
+      "yellow_cards": "6",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "West Ham",
+      "npg": "8",
+      "npxG": "5.1772670187056065",
+      "xGChain": "11.516938520595431",
+      "xGBuildup": "4.337017804384232"
+    },
+    {
+      "id": "556",
+      "player_name": "Marcus Rashford",
+      "games": "33",
+      "time": "2292",
+      "goals": "7",
+      "xG": "7.661536030471325",
+      "assists": "2",
+      "xA": "2.390108224004507",
+      "shots": "62",
+      "key_passes": "24",
+      "yellow_cards": "2",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Manchester United",
+      "npg": "5",
+      "npxG": "6.13919834792614",
+      "xGChain": "12.686340739950538",
+      "xGBuildup": "4.950286580249667"
+    },
+    {
+      "id": "843",
+      "player_name": "James Ward-Prowse",
+      "games": "37",
+      "time": "3025",
+      "goals": "7",
+      "xG": "5.6392913637682796",
+      "assists": "7",
+      "xA": "8.108484361320734",
+      "shots": "44",
+      "key_passes": "64",
+      "yellow_cards": "4",
+      "red_cards": "0",
+      "position": "M S",
+      "team_title": "West Ham",
+      "npg": "5",
+      "npxG": "4.116953688673675",
+      "xGChain": "11.991799759678543",
+      "xGBuildup": "7.065227452665567"
+    },
+    {
+      "id": "1726",
+      "player_name": "Abdoulaye Doucour\u00e9",
+      "games": "32",
+      "time": "2678",
+      "goals": "7",
+      "xG": "10.20444649644196",
+      "assists": "1",
+      "xA": "2.55271128565073",
+      "shots": "47",
+      "key_passes": "33",
+      "yellow_cards": "7",
+      "red_cards": "0",
+      "position": "M",
+      "team_title": "Everton",
+      "npg": "7",
+      "npxG": "10.20444649644196",
+      "xGChain": "13.33745107613504",
+      "xGBuildup": "5.22493714094162"
+    },
+    {
+      "id": "3697",
+      "player_name": "Odsonne Edouard",
+      "games": "30",
+      "time": "1534",
+      "goals": "7",
+      "xG": "7.869511350989342",
+      "assists": "0",
+      "xA": "1.0359194399788976",
+      "shots": "51",
+      "key_passes": "18",
+      "yellow_cards": "4",
+      "red_cards": "0",
+      "position": "F M S",
+      "team_title": "Crystal Palace",
+      "npg": "7",
+      "npxG": "7.869511350989342",
+      "xGChain": "8.31682275235653",
+      "xGBuildup": "2.1359799914062023"
+    },
+    {
+      "id": "4105",
+      "player_name": "Ra\u00fal Jim\u00e9nez",
+      "games": "24",
+      "time": "1423",
+      "goals": "7",
+      "xG": "5.9900733437389135",
+      "assists": "0",
+      "xA": "1.6923745833337307",
+      "shots": "41",
+      "key_passes": "11",
+      "yellow_cards": "3",
+      "red_cards": "1",
+      "position": "F S",
+      "team_title": "Fulham",
+      "npg": "7",
+      "npxG": "5.9900733437389135",
+      "xGChain": "7.9016893692314625",
+      "xGBuildup": "1.7369755171239376"
+    },
+    {
+      "id": "5553",
+      "player_name": "Declan Rice",
+      "games": "38",
+      "time": "3256",
+      "goals": "7",
+      "xG": "3.186093623749912",
+      "assists": "8",
+      "xA": "5.895036246627569",
+      "shots": "58",
+      "key_passes": "47",
+      "yellow_cards": "5",
+      "red_cards": "0",
+      "position": "M S",
+      "team_title": "Arsenal",
+      "npg": "7",
+      "npxG": "3.186093623749912",
+      "xGChain": "19.678100544027984",
+      "xGBuildup": "16.131323732435703"
+    }
+  ],
+  "teams": {
+    "71": {
+      "id": "71",
+      "title": "Aston Villa",
+      "history": [
+        {
+          "h_a": "a",
+          "xG": 1.486,
+          "xGA": 4.32208,
+          "npxG": 1.486,
+          "npxGA": 4.32208,
+          "ppda": {
+            "att": 324,
+            "def": 28
+          },
+          "ppda_allowed": {
+            "att": 255,
+            "def": 17
+          },
+          "deep": 6,
+          "deep_allowed": 9,
+          "scored": 1,
+          "missed": 5,
+          "xpts": 0.1709,
+          "result": "l",
+          "date": "2023-08-12 16:30:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -2.83608
+        },
+        {
+          "h_a": "h",
+          "xG": 3.24336,
+          "xGA": 0.721465,
+          "npxG": 2.48219,
+          "npxGA": 0.721465,
+          "ppda": {
+            "att": 204,
+            "def": 12
+          },
+          "ppda_allowed": {
+            "att": 385,
+            "def": 23
+          },
+          "deep": 13,
+          "deep_allowed": 2,
+          "scored": 4,
+          "missed": 0,
+          "xpts": 2.8068999999999997,
+          "result": "w",
+          "date": "2023-08-20 13:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 1.760725
+        },
+        {
+          "h_a": "a",
+          "xG": 2.83691,
+          "xGA": 0.630605,
+          "npxG": 2.83691,
+          "npxGA": 0.630605,
+          "ppda": {
+            "att": 365,
+            "def": 15
+          },
+          "ppda_allowed": {
+            "att": 254,
+            "def": 31
+          },
+          "deep": 9,
+          "deep_allowed": 8,
+          "scored": 3,
+          "missed": 1,
+          "xpts": 2.7695000000000003,
+          "result": "w",
+          "date": "2023-08-27 13:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 2.206305
+        },
+        {
+          "h_a": "a",
+          "xG": 0.615503,
+          "xGA": 2.73138,
+          "npxG": 0.615503,
+          "npxGA": 2.73138,
+          "ppda": {
+            "att": 543,
+            "def": 8
+          },
+          "ppda_allowed": {
+            "att": 248,
+            "def": 29
+          },
+          "deep": 3,
+          "deep_allowed": 11,
+          "scored": 0,
+          "missed": 3,
+          "xpts": 0.1952,
+          "result": "l",
+          "date": "2023-09-03 13:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -2.1158770000000002
+        },
+        {
+          "h_a": "h",
+          "xG": 2.31518,
+          "xGA": 1.11696,
+          "npxG": 1.55401,
+          "npxGA": 1.11696,
+          "ppda": {
+            "att": 141,
+            "def": 31
+          },
+          "ppda_allowed": {
+            "att": 286,
+            "def": 30
+          },
+          "deep": 14,
+          "deep_allowed": 7,
+          "scored": 3,
+          "missed": 1,
+          "xpts": 2.2635,
+          "result": "w",
+          "date": "2023-09-16 14:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 0.43704999999999994
+        },
+        {
+          "h_a": "a",
+          "xG": 1.13479,
+          "xGA": 1.19716,
+          "npxG": 1.13479,
+          "npxGA": 1.19716,
+          "ppda": {
+            "att": 283,
+            "def": 13
+          },
+          "ppda_allowed": {
+            "att": 221,
+            "def": 25
+          },
+          "deep": 6,
+          "deep_allowed": 8,
+          "scored": 1,
+          "missed": 0,
+          "xpts": 1.2832000000000001,
+          "result": "w",
+          "date": "2023-09-24 13:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": -0.062370000000000037
+        },
+        {
+          "h_a": "h",
+          "xG": 1.90746,
+          "xGA": 1.72819,
+          "npxG": 1.90746,
+          "npxGA": 1.72819,
+          "ppda": {
+            "att": 321,
+            "def": 33
+          },
+          "ppda_allowed": {
+            "att": 146,
+            "def": 34
+          },
+          "deep": 15,
+          "deep_allowed": 11,
+          "scored": 6,
+          "missed": 1,
+          "xpts": 1.4983,
+          "result": "w",
+          "date": "2023-09-30 11:30:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 0.17927000000000004
+        },
+        {
+          "h_a": "a",
+          "xG": 1.81618,
+          "xGA": 1.76232,
+          "npxG": 1.81618,
+          "npxGA": 1.76232,
+          "ppda": {
+            "att": 223,
+            "def": 15
+          },
+          "ppda_allowed": {
+            "att": 239,
+            "def": 21
+          },
+          "deep": 9,
+          "deep_allowed": 3,
+          "scored": 1,
+          "missed": 1,
+          "xpts": 1.3806000000000003,
+          "result": "d",
+          "date": "2023-10-08 13:00:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": 0.0538599999999998
+        }
+      ]
+    },
+    "72": {
+      "id": "72",
+      "title": "Everton",
+      "history": [
+        {
+          "h_a": "h",
+          "xG": 2.59001,
+          "xGA": 1.58144,
+          "npxG": 2.59001,
+          "npxGA": 1.58144,
+          "ppda": {
+            "att": 341,
+            "def": 23
+          },
+          "ppda_allowed": {
+            "att": 174,
+            "def": 10
+          },
+          "deep": 7,
+          "deep_allowed": 6,
+          "scored": 0,
+          "missed": 1,
+          "xpts": 2.1102,
+          "result": "l",
+          "date": "2023-08-12 14:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": 1.00857
+        },
+        {
+          "h_a": "a",
+          "xG": 0.721465,
+          "xGA": 3.24336,
+          "npxG": 0.721465,
+          "npxGA": 2.48219,
+          "ppda": {
+            "att": 385,
+            "def": 23
+          },
+          "ppda_allowed": {
+            "att": 204,
+            "def": 12
+          },
+          "deep": 2,
+          "deep_allowed": 13,
+          "scored": 0,
+          "missed": 4,
+          "xpts": 0.1276,
+          "result": "l",
+          "date": "2023-08-20 13:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -1.760725
+        },
+        {
+          "h_a": "h",
+          "xG": 1.89792,
+          "xGA": 1.40228,
+          "npxG": 1.89792,
+          "npxGA": 1.40228,
+          "ppda": {
+            "att": 313,
+            "def": 24
+          },
+          "ppda_allowed": {
+            "att": 194,
+            "def": 19
+          },
+          "deep": 7,
+          "deep_allowed": 4,
+          "scored": 0,
+          "missed": 1,
+          "xpts": 1.7305000000000001,
+          "result": "l",
+          "date": "2023-08-26 14:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": 0.4956400000000001
+        },
+        {
+          "h_a": "a",
+          "xG": 2.73871,
+          "xGA": 1.575,
+          "npxG": 2.73871,
+          "npxGA": 1.575,
+          "ppda": {
+            "att": 225,
+            "def": 26
+          },
+          "ppda_allowed": {
+            "att": 256,
+            "def": 20
+          },
+          "deep": 3,
+          "deep_allowed": 5,
+          "scored": 2,
+          "missed": 2,
+          "xpts": 2.2155,
+          "result": "d",
+          "date": "2023-09-02 11:30:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": 1.1637100000000002
+        },
+        {
+          "h_a": "h",
+          "xG": 0.28317,
+          "xGA": 0.802605,
+          "npxG": 0.28317,
+          "npxGA": 0.802605,
+          "ppda": {
+            "att": 404,
+            "def": 17
+          },
+          "ppda_allowed": {
+            "att": 126,
+            "def": 18
+          },
+          "deep": 3,
+          "deep_allowed": 10,
+          "scored": 0,
+          "missed": 1,
+          "xpts": 0.75,
+          "result": "l",
+          "date": "2023-09-17 15:30:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -0.5194350000000001
+        },
+        {
+          "h_a": "a",
+          "xG": 2.51497,
+          "xGA": 1.57402,
+          "npxG": 2.51497,
+          "npxGA": 1.57402,
+          "ppda": {
+            "att": 359,
+            "def": 25
+          },
+          "ppda_allowed": {
+            "att": 210,
+            "def": 15
+          },
+          "deep": 10,
+          "deep_allowed": 6,
+          "scored": 3,
+          "missed": 1,
+          "xpts": 2.0396,
+          "result": "w",
+          "date": "2023-09-23 16:30:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 0.94095
+        },
+        {
+          "h_a": "h",
+          "xG": 3.65377,
+          "xGA": 1.5102,
+          "npxG": 3.65377,
+          "npxGA": 1.5102,
+          "ppda": {
+            "att": 84,
+            "def": 15
+          },
+          "ppda_allowed": {
+            "att": 275,
+            "def": 22
+          },
+          "deep": 11,
+          "deep_allowed": 1,
+          "scored": 1,
+          "missed": 2,
+          "xpts": 2.6572,
+          "result": "l",
+          "date": "2023-09-30 14:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": 2.1435700000000004
+        },
+        {
+          "h_a": "h",
+          "xG": 3.16482,
+          "xGA": 0.981732,
+          "npxG": 3.16482,
+          "npxGA": 0.981732,
+          "ppda": {
+            "att": 243,
+            "def": 34
+          },
+          "ppda_allowed": {
+            "att": 191,
+            "def": 22
+          },
+          "deep": 8,
+          "deep_allowed": 13,
+          "scored": 3,
+          "missed": 0,
+          "xpts": 2.7104,
+          "result": "w",
+          "date": "2023-10-07 14:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 2.183088
+        }
+      ]
+    },
+    "73": {
+      "id": "73",
+      "title": "Bournemouth",
+      "history": [
+        {
+          "h_a": "h",
+          "xG": 1.51025,
+          "xGA": 1.4834,
+          "npxG": 1.51025,
+          "npxGA": 1.4834,
+          "ppda": {
+            "att": 138,
+            "def": 27
+          },
+          "ppda_allowed": {
+            "att": 292,
+            "def": 30
+          },
+          "deep": 9,
+          "deep_allowed": 8,
+          "scored": 1,
+          "missed": 1,
+          "xpts": 1.3845999999999998,
+          "result": "d",
+          "date": "2023-08-12 14:00:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": 0.02685000000000004
+        },
+        {
+          "h_a": "a",
+          "xG": 1.3867,
+          "xGA": 3.25448,
+          "npxG": 1.3867,
+          "npxGA": 2.33406,
+          "ppda": {
+            "att": 356,
+            "def": 32
+          },
+          "ppda_allowed": {
+            "att": 167,
+            "def": 23
+          },
+          "deep": 8,
+          "deep_allowed": 11,
+          "scored": 1,
+          "missed": 3,
+          "xpts": 0.3288,
+          "result": "l",
+          "date": "2023-08-19 14:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -0.94736
+        },
+        {
+          "h_a": "h",
+          "xG": 0.483582,
+          "xGA": 2.26115,
+          "npxG": 0.483582,
+          "npxGA": 2.26115,
+          "ppda": {
+            "att": 316,
+            "def": 31
+          },
+          "ppda_allowed": {
+            "att": 200,
+            "def": 26
+          },
+          "deep": 6,
+          "deep_allowed": 20,
+          "scored": 0,
+          "missed": 2,
+          "xpts": 0.26039999999999996,
+          "result": "l",
+          "date": "2023-08-26 11:30:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -1.7775680000000003
+        },
+        {
+          "h_a": "a",
+          "xG": 2.11013,
+          "xGA": 3.07185,
+          "npxG": 2.11013,
+          "npxGA": 3.07185,
+          "ppda": {
+            "att": 294,
+            "def": 21
+          },
+          "ppda_allowed": {
+            "att": 137,
+            "def": 24
+          },
+          "deep": 5,
+          "deep_allowed": 15,
+          "scored": 2,
+          "missed": 2,
+          "xpts": 0.7923,
+          "result": "d",
+          "date": "2023-09-02 14:00:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": -0.9617200000000001
+        },
+        {
+          "h_a": "h",
+          "xG": 1.32515,
+          "xGA": 1.39677,
+          "npxG": 1.32515,
+          "npxGA": 1.39677,
+          "ppda": {
+            "att": 343,
+            "def": 21
+          },
+          "ppda_allowed": {
+            "att": 160,
+            "def": 28
+          },
+          "deep": 9,
+          "deep_allowed": 17,
+          "scored": 0,
+          "missed": 0,
+          "xpts": 1.3224,
+          "result": "d",
+          "date": "2023-09-17 13:00:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": -0.07162000000000002
+        },
+        {
+          "h_a": "a",
+          "xG": 1.58984,
+          "xGA": 2.14533,
+          "npxG": 1.58984,
+          "npxGA": 2.14533,
+          "ppda": {
+            "att": 352,
+            "def": 35
+          },
+          "ppda_allowed": {
+            "att": 156,
+            "def": 28
+          },
+          "deep": 4,
+          "deep_allowed": 8,
+          "scored": 1,
+          "missed": 3,
+          "xpts": 0.9499,
+          "result": "l",
+          "date": "2023-09-24 13:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -0.55549
+        },
+        {
+          "h_a": "h",
+          "xG": 0.644443,
+          "xGA": 4.0742,
+          "npxG": 0.644443,
+          "npxGA": 2.55187,
+          "ppda": {
+            "att": 330,
+            "def": 22
+          },
+          "ppda_allowed": {
+            "att": 167,
+            "def": 28
+          },
+          "deep": 13,
+          "deep_allowed": 15,
+          "scored": 0,
+          "missed": 4,
+          "xpts": 0.0368,
+          "result": "l",
+          "date": "2023-09-30 14:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -1.9074270000000002
+        },
+        {
+          "h_a": "a",
+          "xG": 0.981732,
+          "xGA": 3.16482,
+          "npxG": 0.981732,
+          "npxGA": 3.16482,
+          "ppda": {
+            "att": 191,
+            "def": 22
+          },
+          "ppda_allowed": {
+            "att": 243,
+            "def": 34
+          },
+          "deep": 13,
+          "deep_allowed": 8,
+          "scored": 0,
+          "missed": 3,
+          "xpts": 0.1958,
+          "result": "l",
+          "date": "2023-10-07 14:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -2.183088
+        }
+      ]
+    },
+    "78": {
+      "id": "78",
+      "title": "Crystal Palace",
+      "history": [
+        {
+          "h_a": "a",
+          "xG": 2.27616,
+          "xGA": 0.422704,
+          "npxG": 2.27616,
+          "npxGA": 0.422704,
+          "ppda": {
+            "att": 101,
+            "def": 23
+          },
+          "ppda_allowed": {
+            "att": 312,
+            "def": 22
+          },
+          "deep": 9,
+          "deep_allowed": 2,
+          "scored": 1,
+          "missed": 0,
+          "xpts": 2.6568,
+          "result": "w",
+          "date": "2023-08-12 14:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 1.853456
+        },
+        {
+          "h_a": "h",
+          "xG": 1.06916,
+          "xGA": 2.20593,
+          "npxG": 1.06916,
+          "npxGA": 1.4448,
+          "ppda": {
+            "att": 230,
+            "def": 16
+          },
+          "ppda_allowed": {
+            "att": 192,
+            "def": 20
+          },
+          "deep": 10,
+          "deep_allowed": 7,
+          "scored": 0,
+          "missed": 1,
+          "xpts": 0.5810000000000001,
+          "result": "l",
+          "date": "2023-08-21 19:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -0.37564
+        },
+        {
+          "h_a": "a",
+          "xG": 1.06061,
+          "xGA": 0.948011,
+          "npxG": 1.06061,
+          "npxGA": 0.948011,
+          "ppda": {
+            "att": 318,
+            "def": 25
+          },
+          "ppda_allowed": {
+            "att": 160,
+            "def": 25
+          },
+          "deep": 5,
+          "deep_allowed": 5,
+          "scored": 1,
+          "missed": 1,
+          "xpts": 1.4223000000000001,
+          "result": "d",
+          "date": "2023-08-26 14:00:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": 0.112599
+        },
+        {
+          "h_a": "h",
+          "xG": 2.32935,
+          "xGA": 1.13911,
+          "npxG": 2.32935,
+          "npxGA": 1.13911,
+          "ppda": {
+            "att": 296,
+            "def": 25
+          },
+          "ppda_allowed": {
+            "att": 191,
+            "def": 29
+          },
+          "deep": 11,
+          "deep_allowed": 8,
+          "scored": 3,
+          "missed": 2,
+          "xpts": 2.2419000000000002,
+          "result": "w",
+          "date": "2023-09-03 13:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 1.1902399999999997
+        },
+        {
+          "h_a": "a",
+          "xG": 1.11696,
+          "xGA": 2.31518,
+          "npxG": 1.11696,
+          "npxGA": 1.55401,
+          "ppda": {
+            "att": 286,
+            "def": 30
+          },
+          "ppda_allowed": {
+            "att": 141,
+            "def": 31
+          },
+          "deep": 7,
+          "deep_allowed": 14,
+          "scored": 1,
+          "missed": 3,
+          "xpts": 0.5355000000000001,
+          "result": "l",
+          "date": "2023-09-16 14:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -0.43704999999999994
+        },
+        {
+          "h_a": "h",
+          "xG": 0.37236,
+          "xGA": 0.542678,
+          "npxG": 0.37236,
+          "npxGA": 0.542678,
+          "ppda": {
+            "att": 253,
+            "def": 18
+          },
+          "ppda_allowed": {
+            "att": 275,
+            "def": 30
+          },
+          "deep": 3,
+          "deep_allowed": 9,
+          "scored": 0,
+          "missed": 0,
+          "xpts": 1.0838,
+          "result": "d",
+          "date": "2023-09-23 14:00:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": -0.17031799999999997
+        },
+        {
+          "h_a": "a",
+          "xG": 1.19015,
+          "xGA": 1.55408,
+          "npxG": 1.19015,
+          "npxGA": 1.55408,
+          "ppda": {
+            "att": 398,
+            "def": 19
+          },
+          "ppda_allowed": {
+            "att": 106,
+            "def": 29
+          },
+          "deep": 1,
+          "deep_allowed": 16,
+          "scored": 1,
+          "missed": 0,
+          "xpts": 1.0893000000000002,
+          "result": "w",
+          "date": "2023-09-30 14:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": -0.36392999999999986
+        },
+        {
+          "h_a": "h",
+          "xG": 0.982452,
+          "xGA": 1.22105,
+          "npxG": 0.982452,
+          "npxGA": 1.22105,
+          "ppda": {
+            "att": 282,
+            "def": 17
+          },
+          "ppda_allowed": {
+            "att": 310,
+            "def": 22
+          },
+          "deep": 5,
+          "deep_allowed": 12,
+          "scored": 0,
+          "missed": 0,
+          "xpts": 1.1563999999999999,
+          "result": "d",
+          "date": "2023-10-07 16:30:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": -0.23859799999999998
+        }
+      ]
+    },
+    "80": {
+      "id": "80",
+      "title": "Chelsea",
+      "history": [
+        {
+          "h_a": "h",
+          "xG": 1.93258,
+          "xGA": 1.29994,
+          "npxG": 1.93258,
+          "npxGA": 1.29994,
+          "ppda": {
+            "att": 170,
+            "def": 19
+          },
+          "ppda_allowed": {
+            "att": 421,
+            "def": 21
+          },
+          "deep": 11,
+          "deep_allowed": 9,
+          "scored": 1,
+          "missed": 1,
+          "xpts": 1.8441,
+          "result": "d",
+          "date": "2023-08-13 15:30:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": 0.6326399999999999
+        },
+        {
+          "h_a": "a",
+          "xG": 1.60916,
+          "xGA": 1.71234,
+          "npxG": 0.847993,
+          "npxGA": 0.951168,
+          "ppda": {
+            "att": 116,
+            "def": 22
+          },
+          "ppda_allowed": {
+            "att": 351,
+            "def": 13
+          },
+          "deep": 9,
+          "deep_allowed": 3,
+          "scored": 1,
+          "missed": 3,
+          "xpts": 1.2349,
+          "result": "l",
+          "date": "2023-08-20 15:30:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": -0.10317500000000002
+        },
+        {
+          "h_a": "h",
+          "xG": 3.41419,
+          "xGA": 0.465741,
+          "npxG": 3.41419,
+          "npxGA": 0.465741,
+          "ppda": {
+            "att": 142,
+            "def": 20
+          },
+          "ppda_allowed": {
+            "att": 440,
+            "def": 23
+          },
+          "deep": 17,
+          "deep_allowed": 4,
+          "scored": 3,
+          "missed": 0,
+          "xpts": 2.8739,
+          "result": "w",
+          "date": "2023-08-25 19:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 2.948449
+        },
+        {
+          "h_a": "h",
+          "xG": 2.28442,
+          "xGA": 1.1505,
+          "npxG": 2.28442,
+          "npxGA": 1.1505,
+          "ppda": {
+            "att": 118,
+            "def": 19
+          },
+          "ppda_allowed": {
+            "att": 347,
+            "def": 18
+          },
+          "deep": 18,
+          "deep_allowed": 2,
+          "scored": 0,
+          "missed": 1,
+          "xpts": 2.1948,
+          "result": "l",
+          "date": "2023-09-02 14:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": 1.1339199999999998
+        },
+        {
+          "h_a": "a",
+          "xG": 1.39677,
+          "xGA": 1.32515,
+          "npxG": 1.39677,
+          "npxGA": 1.32515,
+          "ppda": {
+            "att": 160,
+            "def": 28
+          },
+          "ppda_allowed": {
+            "att": 343,
+            "def": 21
+          },
+          "deep": 17,
+          "deep_allowed": 9,
+          "scored": 0,
+          "missed": 0,
+          "xpts": 1.3992,
+          "result": "d",
+          "date": "2023-09-17 13:00:00",
+          "wins": 0,
+          "draws": 1,
+          "loses": 0,
+          "pts": 1,
+          "npxGD": 0.07162000000000002
+        },
+        {
+          "h_a": "h",
+          "xG": 1.19716,
+          "xGA": 1.13479,
+          "npxG": 1.19716,
+          "npxGA": 1.13479,
+          "ppda": {
+            "att": 221,
+            "def": 25
+          },
+          "ppda_allowed": {
+            "att": 283,
+            "def": 13
+          },
+          "deep": 8,
+          "deep_allowed": 6,
+          "scored": 0,
+          "missed": 1,
+          "xpts": 1.4203,
+          "result": "l",
+          "date": "2023-09-24 13:00:00",
+          "wins": 0,
+          "draws": 0,
+          "loses": 1,
+          "pts": 0,
+          "npxGD": 0.062370000000000037
+        },
+        {
+          "h_a": "a",
+          "xG": 1.98461,
+          "xGA": 0.889383,
+          "npxG": 1.98461,
+          "npxGA": 0.889383,
+          "ppda": {
+            "att": 361,
+            "def": 25
+          },
+          "ppda_allowed": {
+            "att": 306,
+            "def": 29
+          },
+          "deep": 8,
+          "deep_allowed": 7,
+          "scored": 2,
+          "missed": 0,
+          "xpts": 2.2208,
+          "result": "w",
+          "date": "2023-10-02 19:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 1.095227
+        },
+        {
+          "h_a": "a",
+          "xG": 1.97566,
+          "xGA": 0.956642,
+          "npxG": 1.2145,
+          "npxGA": 0.956642,
+          "ppda": {
+            "att": 274,
+            "def": 35
+          },
+          "ppda_allowed": {
+            "att": 459,
+            "def": 20
+          },
+          "deep": 10,
+          "deep_allowed": 3,
+          "scored": 4,
+          "missed": 1,
+          "xpts": 2.2096,
+          "result": "w",
+          "date": "2023-10-07 14:00:00",
+          "wins": 1,
+          "draws": 0,
+          "loses": 0,
+          "pts": 3,
+          "npxGD": 0.2578579999999999
+        }
+      ]
+    }
+  },
+  "dates": [
+    {
+      "id": "22275",
+      "isResult": true,
+      "h": {
+        "id": "92",
+        "title": "Burnley",
+        "short_title": "BUR"
+      },
+      "a": {
+        "id": "88",
+        "title": "Manchester City",
+        "short_title": "MCI"
+      },
+      "goals": {
+        "h": "0",
+        "a": "3"
+      },
+      "xG": {
+        "h": "0.311032",
+        "a": "2.40074"
+      },
+      "datetime": "2023-08-11 19:00:00",
+      "forecast": {
+        "w": "0.0177",
+        "d": "0.0854",
+        "l": "0.8969"
+      }
+    },
+    {
+      "id": "22276",
+      "isResult": true,
+      "h": {
+        "id": "83",
+        "title": "Arsenal",
+        "short_title": "ARS"
+      },
+      "a": {
+        "id": "249",
+        "title": "Nottingham Forest",
+        "short_title": "NOT"
+      },
+      "goals": {
+        "h": "2",
+        "a": "1"
+      },
+      "xG": {
+        "h": "0.84262",
+        "a": "0.966305"
+      },
+      "datetime": "2023-08-12 11:30:00",
+      "forecast": {
+        "w": "0.2797",
+        "d": "0.3363",
+        "l": "0.384"
+      }
+    },
+    {
+      "id": "22277",
+      "isResult": true,
+      "h": {
+        "id": "73",
+        "title": "Bournemouth",
+        "short_title": "BOU"
+      },
+      "a": {
+        "id": "81",
+        "title": "West Ham",
+        "short_title": "WHU"
+      },
+      "goals": {
+        "h": "1",
+        "a": "1"
+      },
+      "xG": {
+        "h": "1.51025",
+        "a": "1.4834"
+      },
+      "datetime": "2023-08-12 14:00:00",
+      "forecast": {
+        "w": "0.3559",
+        "d": "0.3169",
+        "l": "0.3272"
+      }
+    },
+    {
+      "id": "22278",
+      "isResult": true,
+      "h": {
+        "id": "220",
+        "title": "Brighton",
+        "short_title": "BRI"
+      },
+      "a": {
+        "id": "256",
+        "title": "Luton",
+        "short_title": "LUT"
+      },
+      "goals": {
+        "h": "4",
+        "a": "1"
+      },
+      "xG": {
+        "h": "4.36748",
+        "a": "1.88594"
+      },
+      "datetime": "2023-08-12 14:00:00",
+      "forecast": {
+        "w": "0.879",
+        "d": "0.0876",
+        "l": "0.0334"
+      }
+    },
+    {
+      "id": "22279",
+      "isResult": true,
+      "h": {
+        "id": "72",
+        "title": "Everton",
+        "short_title": "EVE"
+      },
+      "a": {
+        "id": "228",
+        "title": "Fulham",
+        "short_title": "FLH"
+      },
+      "goals": {
+        "h": "0",
+        "a": "1"
+      },
+      "xG": {
+        "h": "2.59001",
+        "a": "1.58144"
+      },
+      "datetime": "2023-08-12 14:00:00",
+      "forecast": {
+        "w": "0.6371",
+        "d": "0.1989",
+        "l": "0.164"
+      }
+    },
+    {
+      "id": "22280",
+      "isResult": true,
+      "h": {
+        "id": "238",
+        "title": "Sheffield United",
+        "short_title": "SHE"
+      },
+      "a": {
+        "id": "78",
+        "title": "Crystal Palace",
+        "short_title": "CRY"
+      },
+      "goals": {
+        "h": "0",
+        "a": "1"
+      },
+      "xG": {
+        "h": "0.422704",
+        "a": "2.27616"
+      },
+      "datetime": "2023-08-12 14:00:00",
+      "forecast": {
+        "w": "0.0358",
+        "d": "0.1179",
+        "l": "0.8463"
+      }
+    },
+    {
+      "id": "22281",
+      "isResult": true,
+      "h": {
+        "id": "86",
+        "title": "Newcastle United",
+        "short_title": "NEW"
+      },
+      "a": {
+        "id": "71",
+        "title": "Aston Villa",
+        "short_title": "AVL"
+      },
+      "goals": {
+        "h": "5",
+        "a": "1"
+      },
+      "xG": {
+        "h": "4.32208",
+        "a": "1.486"
+      },
+      "datetime": "2023-08-12 16:30:00",
+      "forecast": {
+        "w": "0.8987",
+        "d": "0.0665",
+        "l": "0.0348"
+      }
+    },
+    {
+      "id": "22282",
+      "isResult": true,
+      "h": {
+        "id": "244",
+        "title": "Brentford",
+        "short_title": "BRE"
+      },
+      "a": {
+        "id": "82",
+        "title": "Tottenham",
+        "short_title": "TOT"
+      },
+      "goals": {
+        "h": "2",
+        "a": "2"
+      },
+      "xG": {
+        "h": "1.90756",
+        "a": "1.45316"
+      },
+      "datetime": "2023-08-13 13:00:00",
+      "forecast": {
+        "w": "0.4985",
+        "d": "0.2608",
+        "l": "0.2407"
+      }
+    },
+    {
+      "id": "22283",
+      "isResult": true,
+      "h": {
+        "id": "80",
+        "title": "Chelsea",
+        "short_title": "CHE"
+      },
+      "a": {
+        "id": "87",
+        "title": "Liverpool",
+        "short_title": "LIV"
+      },
+      "goals": {
+        "h": "1",
+        "a": "1"
+      },
+      "xG": {
+        "h": "1.93258",
+        "a": "1.29994"
+      },
+      "datetime": "2023-08-13 15:30:00",
+      "forecast": {
+        "w": "0.5323",
+        "d": "0.2472",
+        "l": "0.2205"
+      }
+    },
+    {
+      "id": "22284",
+      "isResult": true,
+      "h": {
+        "id": "89",
+        "title": "Manchester United",
+        "short_title": "MUN"
+      },
+      "a": {
+        "id": "229",
+        "title": "Wolverhampton Wanderers",
+        "short_title": "WOL"
+      },
+      "goals": {
+        "h": "1",
+        "a": "0"
+      },
+      "xG": {
+        "h": "1.97087",
+        "a": "1.72228"
+      },
+      "datetime": "2023-08-14 19:00:00",
+      "forecast": {
+        "w": "0.4419",
+        "d": "0.2505",
+        "l": "0.3076"
+      }
+    },
+    {
+      "id": "22285",
+      "isResult": true,
+      "h": {
+        "id": "249",
+        "title": "Nottingham Forest",
+        "short_title": "NOT"
+      },
+      "a": {
+        "id": "238",
+        "title": "Sheffield United",
+        "short_title": "SHE"
+      },
+      "goals": {
+        "h": "2",
+        "a": "1"
+      },
+      "xG": {
+        "h": "1.37181",
+        "a": "0.551038"
+      },
+      "datetime": "2023-08-18 18:45:00",
+      "forecast": {
+        "w": "0.5965",
+        "d": "0.2786",
+        "l": "0.1249"
+      }
+    },
+    {
+      "id": "22286",
+      "isResult": true,
+      "h": {
+        "id": "229",
+        "title": "Wolverhampton Wanderers",
+        "short_title": "WOL"
+      },
+      "a": {
+        "id": "220",
+        "title": "Brighton",
+        "short_title": "BRI"
+      },
+      "goals": {
+        "h": "1",
+        "a": "4"
+      },
+      "xG": {
+        "h": "2.68821",
+        "a": "3.15562"
+      },
+      "datetime": "2023-08-19 14:00:00",
+      "forecast": {
+        "w": "0.3046",
+        "d": "0.2057",
+        "l": "0.4897"
+      }
+    },
+    {
+      "id": "22287",
+      "isResult": true,
+      "h": {
+        "id": "228",
+        "title": "Fulham",
+        "short_title": "FLH"
+      },
+      "a": {
+        "id": "244",
+        "title": "Brentford",
+        "short_title": "BRE"
+      },
+      "goals": {
+        "h": "0",
+        "a": "3"
+      },
+      "xG": {
+        "h": "0.399899",
+        "a": "3.46888"
+      },
+      "datetime": "2023-08-19 14:00:00",
+      "forecast": {
+        "w": "0.005",
+        "d": "0.0284",
+        "l": "0.9666"
+      }
+    },
+    {
+      "id": "22288",
+      "isResult": true,
+      "h": {
+        "id": "87",
+        "title": "Liverpool",
+        "short_title": "LIV"
+      },
+      "a": {
+        "id": "73",
+        "title": "Bournemouth",
+        "short_title": "BOU"
+      },
+      "goals": {
+        "h": "3",
+        "a": "1"
+      },
+      "xG": {
+        "h": "3.25448",
+        "a": "1.3867"
+      },
+      "datetime": "2023-08-19 14:00:00",
+      "forecast": {
+        "w": "0.8032",
+        "d": "0.1308",
+        "l": "0.066"
+      }
+    },
+    {
+      "id": "22290",
+      "isResult": true,
+      "h": {
+        "id": "82",
+        "title": "Tottenham",
+        "short_title": "TOT"
+      },
+      "a": {
+        "id": "89",
+        "title": "Manchester United",
+        "short_title": "MUN"
+      },
+      "goals": {
+        "h": "2",
+        "a": "0"
+      },
+      "xG": {
+        "h": "2.53904",
+        "a": "2.44604"
+      },
+      "datetime": "2023-08-19 16:30:00",
+      "forecast": {
+        "w": "0.4211",
+        "d": "0.2102",
+        "l": "0.3687"
+      }
+    },
+    {
+      "id": "22291",
+      "isResult": true,
+      "h": {
+        "id": "88",
+        "title": "Manchester City",
+        "short_title": "MCI"
+      },
+      "a": {
+        "id": "86",
+        "title": "Newcastle United",
+        "short_title": "NEW"
+      },
+      "goals": {
+        "h": "1",
+        "a": "0"
+      },
+      "xG": {
+        "h": "1.22528",
+        "a": "0.257154"
+      },
+      "datetime": "2023-08-19 19:00:00",
+      "forecast": {
+        "w": "0.6449",
+        "d": "0.2857",
+        "l": "0.0694"
+      }
+    },
+    {
+      "id": "22292",
+      "isResult": true,
+      "h": {
+        "id": "71",
+        "title": "Aston Villa",
+        "short_title": "AVL"
+      },
+      "a": {
+        "id": "72",
+        "title": "Everton",
+        "short_title": "EVE"
+      },
+      "goals": {
+        "h": "4",
+        "a": "0"
+      },
+      "xG": {
+        "h": "3.24336",
+        "a": "0.721465"
+      },
+      "datetime": "2023-08-20 13:00:00",
+      "forecast": {
+        "w": "0.9138",
+        "d": "0.0655",
+        "l": "0.0207"
+      }
+    },
+    {
+      "id": "22293",
+      "isResult": true,
+      "h": {
+        "id": "81",
+        "title": "West Ham",
+        "short_title": "WHU"
+      },
+      "a": {
+        "id": "80",
+        "title": "Chelsea",
+        "short_title": "CHE"
+      },
+      "goals": {
+        "h": "3",
+        "a": "1"
+      },
+      "xG": {
+        "h": "1.71234",
+        "a": "1.60916"
+      },
+      "datetime": "2023-08-20 15:30:00",
+      "forecast": {
+        "w": "0.3947",
+        "d": "0.2905",
+        "l": "0.3148"
+      }
+    },
+    {
+      "id": "22294",
+      "isResult": true,
+      "h": {
+        "id": "78",
+        "title": "Crystal Palace",
+        "short_title": "CRY"
+      },
+      "a": {
+        "id": "83",
+        "title": "Arsenal",
+        "short_title": "ARS"
+      },
+      "goals": {
+        "h": "0",
+        "a": "1"
+      },
+      "xG": {
+        "h": "1.06916",
+        "a": "2.20593"
+      },
+      "datetime": "2023-08-21 19:00:00",
+      "forecast": {
+        "w": "0.1279",
+        "d": "0.1973",
+        "l": "0.6748"
+      }
+    },
+    {
+      "id": "22295",
+      "isResult": true,
+      "h": {
+        "id": "80",
+        "title": "Chelsea",
+        "short_title": "CHE"
+      },
+      "a": {
+        "id": "256",
+        "title": "Luton",
+        "short_title": "LUT"
+      },
+      "goals": {
+        "h": "3",
+        "a": "0"
+      },
+      "xG": {
+        "h": "3.41419",
+        "a": "0.465741"
+      },
+      "datetime": "2023-08-25 19:00:00",
+      "forecast": {
+        "w": "0.9422",
+        "d": "0.0473",
+        "l": "0.0105"
+      }
+    }
+  ]
+}
