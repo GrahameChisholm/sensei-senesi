@@ -7,11 +7,13 @@ import pandas as pd
 import pytest
 
 from backtest.baselines import (
+    constant_predictions,
     naive_form_predictions,
     paired_bootstrap_test,
     permutation_test_hit_rate,
     pure_xg_predictions,
     template_captain_predictions,
+    training_median,
 )
 
 
@@ -69,6 +71,27 @@ def test_pure_xg_predictions_no_opponent_adjustment_no_minutes_model():
     assert out.loc[1, "expected_points"] == pytest.approx(0.5 * 4 + 0.1 * 3)
     # MID: goal points = 5, assist points = 3, scaled by 45/90 = 0.5
     assert out.loc[2, "expected_points"] == pytest.approx((0.2 * 5 + 0.3 * 3) * 0.5)
+
+
+def test_training_median_computes_median_of_training_history():
+    history = pd.DataFrame({"total_points": [1.0, 1.0, 2.0, 5.0, 100.0]})
+
+    assert training_median(history) == pytest.approx(2.0)
+
+
+def test_constant_predictions_assigns_flat_value_to_every_row():
+    players = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3],
+            "position": ["MID", "FWD", "DEF"],
+            "gameweek": [5, 5, 5],
+        }
+    )
+
+    out = constant_predictions(players, value=1.0)
+
+    assert list(out["expected_points"]) == [1.0, 1.0, 1.0]
+    assert list(out.columns) == ["player_id", "position", "gameweek", "expected_points"]
 
 
 def test_paired_bootstrap_test_detects_engine_beating_baseline():

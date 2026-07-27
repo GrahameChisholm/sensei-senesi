@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from engine.models.clean_sheets import (
+    DEFAULT_DIXON_COLES_RHO,
     CleanSheetProjection,
     clean_sheet_probability,
     dixon_coles_tau,
     expected_goals_conceded_penalty,
+    fit_dixon_coles_rho,
     project_clean_sheet,
     scoreline_distribution,
     split_by_venue,
@@ -186,3 +189,40 @@ def test_project_clean_sheet_weak_opponent_attack_improves_clean_sheet_odds():
     strong_opponent = project_clean_sheet(1.5, 1.0, 2.2, 1.4, 1.4)
     weak_opponent = project_clean_sheet(1.5, 1.0, 0.4, 1.4, 1.4)
     assert weak_opponent.clean_sheet_probability > strong_opponent.clean_sheet_probability
+
+
+def test_fit_dixon_coles_rho_falls_back_when_too_few_matches():
+    rho = fit_dixon_coles_rho(
+        home_lambda=pd.Series([1.2, 1.3]),
+        away_lambda=pd.Series([1.0, 1.1]),
+        home_goals=pd.Series([1, 2]),
+        away_goals=pd.Series([0, 1]),
+        min_matches=50,
+    )
+    assert rho == DEFAULT_DIXON_COLES_RHO
+
+
+def test_fit_dixon_coles_rho_recovers_a_known_rho_from_simulated_scorelines():
+    rng = np.random.default_rng(0)
+    true_rho = -0.12
+    n = 400
+    max_goals = 6
+    home_lambda = rng.uniform(0.8, 1.8, n)
+    away_lambda = rng.uniform(0.8, 1.8, n)
+    home_goals = np.empty(n, dtype=int)
+    away_goals = np.empty(n, dtype=int)
+    scores = [(i, j) for i in range(max_goals + 1) for j in range(max_goals + 1)]
+    for k in range(n):
+        joint = scoreline_distribution(
+            home_lambda[k], away_lambda[k], rho=true_rho, max_goals=max_goals
+        )
+        idx = rng.choice(len(scores), p=joint.flatten())
+        home_goals[k], away_goals[k] = scores[idx]
+
+    fitted_rho = fit_dixon_coles_rho(
+        pd.Series(home_lambda),
+        pd.Series(away_lambda),
+        pd.Series(home_goals),
+        pd.Series(away_goals),
+    )
+    assert fitted_rho == pytest.approx(true_rho, abs=0.05)

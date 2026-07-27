@@ -20,12 +20,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pandas as pd
+
+from engine.rates import shrink_toward_prior
 from engine.scoring import GOAL_POINTS, PENALTY_MISS_POINTS, POSITIONS
 
 # League-wide average penalty conversion rate, used only when a taker's own historical sample is
 # too thin to trust (BUILD_PLAN 2.2 penalty sub-model). Not asserted precise — a reasonable prior
 # pending Phase 3 calibration against real data.
 DEFAULT_PENALTY_CONVERSION_RATE = 0.76
+
+
+def realized_penalty_goals(
+    player_matches: pd.DataFrame, goals_col: str = "goals", npg_col: str = "npg"
+) -> pd.Series:
+    """Per-match realized penalty goals = ``goals - npg`` (Understat's own non-penalty split),
+    clipped at 0. This is the retrospectively-available proxy for "this player took and scored a
+    penalty" the penalty sub-model's training data needs (ENGINE_IMPROVEMENTS.md 1.3).
+
+    FPL's bootstrap-static data has no retained per-gameweek history of ``penalties_order``
+    (who's the current designated taker) to replay for a backtest — it's a live-only squad-role
+    field, not a point-in-time snapshot series. Understat's per-match ``goals`` vs ``npg`` (already
+    fetched by ``engine/data/understat_client.py``) gives the same signal retrospectively, at full
+    historical depth, with zero new client code. Combine with FPL/vaastav's ``penalties_missed``
+    column for full attempt counts (goals + misses), and aggregate across players/gameweeks in the
+    backtest driver's feature-engineering stage, not here — this function only derives the
+    per-match realized-goals column itself.
+    """
+    return (player_matches[goals_col] - player_matches[npg_col]).clip(lower=0)
 
 
 def expected_non_penalty_goal_rate(
@@ -62,6 +84,34 @@ def expected_team_penalties(
     if team_penalty_win_rate_per_game < 0 or opponent_xga_per_90 < 0:
         raise ValueError("rates must be non-negative")
     return team_penalty_win_rate_per_game * (opponent_xga_per_90 / league_avg_xga_per_90)
+
+
+def fit_penalty_conversion_rates(
+    penalty_attempts: pd.DataFrame,
+    player_id_col: str = "player_id",
+    scored_col: str = "scored",
+    shrinkage_k: float = 8.0,
+) -> tuple[dict[int, float], float]:
+    """Per-player penalty conversion rates, shrunk toward the league average for thin samples
+    (ENGINE_IMPROVEMENTS.md 1.2 — this was a hardcoded placeholder despite the regression layer
+    existing), reusing :func:`engine.rates.shrink_toward_prior` — the same shrinkage already used
+    by the assists model (2.3) for low-sample players, rather than inventing new statistical
+    machinery. ``penalty_attempts`` is one row per realized penalty attempt, ``scored_col`` a
+    0/1 outcome column (see :func:`realized_penalty_goals` for deriving these retrospectively from
+    Understat data). Returns ``(per_player_rate, league_average_rate)`` — refit every gameweek by
+    the walk-forward harness from ``training_history`` only.
+    """
+    if penalty_attempts.empty:
+        return {}, DEFAULT_PENALTY_CONVERSION_RATE
+    league_avg = float(penalty_attempts[scored_col].mean())
+    rates: dict[int, float] = {}
+    for player_id, group in penalty_attempts.groupby(player_id_col):
+        individual_rate = float(group[scored_col].mean())
+        individual_weight = float(len(group))
+        rates[int(player_id)] = shrink_toward_prior(
+            individual_rate, individual_weight, league_avg, shrinkage_k
+        )
+    return rates, league_avg
 
 
 @dataclass(frozen=True)

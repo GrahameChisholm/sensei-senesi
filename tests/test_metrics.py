@@ -10,7 +10,10 @@ from backtest.metrics import (
     bias_by_group,
     captaincy_hit_rate,
     component_calibration,
+    floor_ceiling_coverage,
     player_accuracy,
+    rank_correlation,
+    top_n_mean_actual,
 )
 
 
@@ -70,6 +73,52 @@ def test_bias_by_group_flags_severe_systematic_overrating():
 
     row = report.by_group.set_index("position").loc["FWD"]
     assert row["mean_residual"] == pytest.approx(3.0, abs=0.2)
+    assert row["severe"]
+
+
+def test_bias_by_group_significant_but_small_effect_not_flagged_severe():
+    # Reproduces ENGINE_IMPROVEMENTS.md Correction 2: a small (~4% of mean actual) but, at large n,
+    # statistically significant bias should NOT be flagged severe once an effect-size floor applies.
+    rng = np.random.default_rng(3)
+    n = 2000
+    actual = rng.normal(1.8, 1.0, n)
+    predicted = actual - 0.07 + rng.normal(0, 1.0, n)
+    predictions = pd.DataFrame(
+        {
+            "player_id": range(n),
+            "position": ["MID"] * n,
+            "gameweek": [1] * n,
+            "expected_points": predicted,
+        }
+    )
+    actuals = pd.DataFrame({"player_id": range(n), "gameweek": [1] * n, "total_points": actual})
+
+    report = bias_by_group(predictions, actuals, group_col="position")
+
+    row = report.by_group.set_index("position").loc["MID"]
+    assert row["p_value"] < 0.01  # genuinely statistically significant
+    assert not row["severe"]  # but too small to matter
+
+
+def test_bias_by_group_significant_and_large_effect_flagged_severe():
+    rng = np.random.default_rng(4)
+    n = 2000
+    actual = rng.normal(1.8, 1.0, n)
+    predicted = actual - 1.0 + rng.normal(0, 1.0, n)
+    predictions = pd.DataFrame(
+        {
+            "player_id": range(n),
+            "position": ["FWD"] * n,
+            "gameweek": [1] * n,
+            "expected_points": predicted,
+        }
+    )
+    actuals = pd.DataFrame({"player_id": range(n), "gameweek": [1] * n, "total_points": actual})
+
+    report = bias_by_group(predictions, actuals, group_col="position")
+
+    row = report.by_group.set_index("position").loc["FWD"]
+    assert row["p_value"] < 0.01
     assert row["severe"]
 
 
@@ -151,3 +200,73 @@ def test_captaincy_hit_rate_raises_when_no_overlapping_gameweeks():
 
     with pytest.raises(ValueError):
         captaincy_hit_rate(predictions, actuals, starting_xi_by_gameweek={2: {1}})
+
+
+def test_top_n_mean_actual_surfaces_skill_at_the_top():
+    # Predicted ranking correctly identifies the two highest actual scorers per gameweek even
+    # though the low end of the pool is noisy -- top-N should read that skill; a wide N wouldn't.
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4] * 2,
+            "gameweek": [1] * 4 + [2] * 4,
+            "expected_points": [9.0, 8.0, 2.0, 1.0, 9.0, 8.0, 2.0, 1.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4] * 2,
+            "gameweek": [1] * 4 + [2] * 4,
+            "total_points": [10.0, 6.0, 3.0, 0.0, 12.0, 4.0, 1.0, 2.0],
+        }
+    )
+
+    report = top_n_mean_actual(predictions, actuals, ns=(1, 2, 4))
+
+    by_n = report.by_n.set_index("n")
+    assert by_n.loc[1, "mean_actual"] == pytest.approx((10.0 + 12.0) / 2)
+    assert by_n.loc[2, "mean_actual"] == pytest.approx(((10.0 + 6.0) / 2 + (12.0 + 4.0) / 2) / 2)
+    assert by_n.loc[4, "n_gameweeks"] == 2
+
+
+def test_rank_correlation_overall_and_by_group_and_restricted_to_starters():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "position": ["MID", "MID", "FWD", "FWD"],
+            "gameweek": [1, 1, 1, 1],
+            "expected_points": [9.0, 1.0, 8.0, 2.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 1, 1],
+            "total_points": [10.0, 0.0, 9.0, 1.0],
+            "minutes": [90, 0, 90, 90],
+        }
+    )
+
+    report = rank_correlation(predictions, actuals, group_col="position")
+    assert report.overall == pytest.approx(1.0)
+    by_group = report.by_group.set_index("position")
+    assert by_group.loc["MID", "spearman"] == pytest.approx(1.0)
+    assert by_group.loc["FWD", "spearman"] == pytest.approx(1.0)
+
+    restricted = rank_correlation(predictions, actuals, minutes_col="minutes")
+    # Player 2 (0 minutes) is dropped; the remaining 3 rows are still perfectly rank-correlated.
+    assert restricted.overall == pytest.approx(1.0)
+
+
+def test_floor_ceiling_coverage_fraction_within_bounds():
+    floor = pd.Series([0.0, 0.0, 5.0])
+    ceiling = pd.Series([5.0, 5.0, 10.0])
+    actual = pd.Series([2.0, 6.0, 7.0])  # within, outside, within
+
+    coverage = floor_ceiling_coverage(floor, ceiling, actual)
+
+    assert coverage == pytest.approx(2 / 3)
+
+
+def test_floor_ceiling_coverage_mismatched_lengths_raises():
+    with pytest.raises(ValueError):
+        floor_ceiling_coverage(pd.Series([0.0]), pd.Series([1.0, 2.0]), pd.Series([0.5, 0.5]))

@@ -36,6 +36,11 @@ __all__ = [
     "component_calibration",
     "CaptaincyHitRateResult",
     "captaincy_hit_rate",
+    "TopNReport",
+    "top_n_mean_actual",
+    "RankCorrelationReport",
+    "rank_correlation",
+    "floor_ceiling_coverage",
 ]
 
 
@@ -91,13 +96,20 @@ def player_accuracy(
 @dataclass(frozen=True)
 class BiasReport:
     """Residual (predicted − actual) analysis per group — detects systematic over/under-rating of
-    a position or price tier, not just average error (BUILD_PLAN 3.2). ``severe`` flags groups
-    where a one-sample t-test rejects "mean residual is zero" at ``severity_p_threshold`` — the
-    signal the Phase 3.6 Definition-of-Done gate checks."""
+    a position or price tier, not just average error (BUILD_PLAN 3.2). ``severe`` requires **both**
+    statistical significance (a one-sample t-test rejects "mean residual is zero" at
+    ``severity_p_threshold``) **and** an effect-size floor (``abs(mean_residual)`` exceeds
+    ``min_absolute_effect`` points, or ``min_relative_effect`` of the group's mean actual points) —
+    significance alone isn't enough, since with a large enough sample any nonzero bias becomes
+    "significant" regardless of whether it's big enough to matter (see
+    planning/ENGINE_IMPROVEMENTS.md Correction 2, which found the p-value-only version flagged a
+    4%-of-mean MID bias while clearing a 6.8%-of-mean FWD bias purely because MID had 4x the
+    sample). ``severe`` is the signal the Phase 3.6 Definition-of-Done gate checks."""
 
     by_group: (
         pd.DataFrame
-    )  # columns: <group_col>, mean_residual, std_residual, n, t_stat, p_value, severe
+    )  # columns: <group_col>, mean_residual, mean_actual, std_residual, n, t_stat, p_value,
+    # effect_size_floor, severe
 
 
 def bias_by_group(
@@ -107,28 +119,39 @@ def bias_by_group(
     predicted_col: str = PREDICTED_COL,
     actual_col: str = ACTUAL_COL,
     severity_p_threshold: float = 0.01,
+    min_absolute_effect: float = 0.25,
+    min_relative_effect: float = 0.10,
 ) -> BiasReport:
+    """``min_absolute_effect`` (points) and ``min_relative_effect`` (fraction of the group's mean
+    actual points) jointly set the effect-size floor a group's mean residual must clear — whichever
+    is larger — before statistical significance alone can flag it ``severe``."""
     merged = _merge_predictions_and_actuals(predictions, actuals, predicted_col, actual_col)
     rows = []
     for group, g in merged.groupby(group_col):
         residuals = g["error"].to_numpy(dtype=float)
         n = len(residuals)
         mean_residual = float(residuals.mean())
+        mean_actual = float(g[actual_col].abs().mean())
         std_residual = float(residuals.std(ddof=1)) if n > 1 else 0.0
         if n > 1 and std_residual > 0:
             t_stat, p_value = scipy_stats.ttest_1samp(residuals, popmean=0.0)
             t_stat, p_value = float(t_stat), float(p_value)
         else:
             t_stat, p_value = float("nan"), float("nan")
+        effect_size_floor = max(min_absolute_effect, min_relative_effect * mean_actual)
+        significant = not np.isnan(p_value) and p_value < severity_p_threshold
+        severe = bool(significant and abs(mean_residual) > effect_size_floor)
         rows.append(
             {
                 group_col: group,
                 "mean_residual": mean_residual,
+                "mean_actual": mean_actual,
                 "std_residual": std_residual,
                 "n": n,
                 "t_stat": t_stat,
                 "p_value": p_value,
-                "severe": bool(p_value < severity_p_threshold) if not np.isnan(p_value) else False,
+                "effect_size_floor": effect_size_floor,
+                "severe": severe,
             }
         )
     return BiasReport(by_group=pd.DataFrame(rows))
@@ -263,3 +286,110 @@ def captaincy_hit_rate(
         raw_hit_rate=raw_hit_rate,
         played_as_expected_hit_rate=played_as_expected_hit_rate,
     )
+
+
+@dataclass(frozen=True)
+class TopNReport:
+    """Mean actual points of the top-N predicted picks, per gameweek then averaged across
+    gameweeks (ENGINE_IMPROVEMENTS.md 2.1) — the metric that actually surfaces skill at the top of
+    the distribution, which pooled MAE/Spearman can't see: every real FPL decision (captaincy,
+    transfers, chips) only ever reads the top of the ranking, so a model can be simultaneously
+    worse at whole-pool rank correlation and better at the decisions that matter."""
+
+    by_n: pd.DataFrame  # columns: n, mean_actual, n_gameweeks
+
+
+def top_n_mean_actual(
+    predictions: pd.DataFrame,
+    actuals: pd.DataFrame,
+    ns: tuple[int, ...] = (1, 5, 10, 20),
+    predicted_col: str = PREDICTED_COL,
+    actual_col: str = ACTUAL_COL,
+    gameweek_col: str = GAMEWEEK_COL,
+) -> TopNReport:
+    merged = _merge_predictions_and_actuals(predictions, actuals, predicted_col, actual_col)
+    rows = []
+    for n in ns:
+        per_gw_means = [
+            float(g.nlargest(min(n, len(g)), predicted_col)[actual_col].mean())
+            for _, g in merged.groupby(gameweek_col)
+        ]
+        rows.append(
+            {
+                "n": n,
+                "mean_actual": float(np.mean(per_gw_means)) if per_gw_means else float("nan"),
+                "n_gameweeks": len(per_gw_means),
+            }
+        )
+    return TopNReport(by_n=pd.DataFrame(rows))
+
+
+@dataclass(frozen=True)
+class RankCorrelationReport:
+    """Spearman rank correlation between predicted and actual points — overall, and (optionally)
+    broken out by an arbitrary group column (position, price tier, ...). A single pooled Spearman
+    is dominated by the will-they-play axis (ENGINE_IMPROVEMENTS.md 2.1): pass ``minutes_col`` to
+    restrict to players who actually started, separating "ranks footballers well" from "ranks
+    availability well"."""
+
+    overall: float
+    by_group: pd.DataFrame | None  # columns: <group_col>, spearman, n
+
+
+def rank_correlation(
+    predictions: pd.DataFrame,
+    actuals: pd.DataFrame,
+    predicted_col: str = PREDICTED_COL,
+    actual_col: str = ACTUAL_COL,
+    group_col: str | None = None,
+    minutes_col: str | None = None,
+) -> RankCorrelationReport:
+    """``minutes_col``, if given, filters to rows with minutes > 0 before computing correlation —
+    the "restricted to starters" variant (``minutes_col`` is read from ``actuals``, matching
+    ``captaincy_hit_rate``'s convention). ``group_col``, if given, additionally breaks the
+    correlation out per group (e.g. per position or per price tier)."""
+    merged = _merge_predictions_and_actuals(predictions, actuals, predicted_col, actual_col)
+    if minutes_col is not None:
+        merged = merged.merge(
+            actuals[[PLAYER_ID_COL, GAMEWEEK_COL, minutes_col]],
+            on=[PLAYER_ID_COL, GAMEWEEK_COL],
+        )
+        merged = merged[merged[minutes_col] > 0]
+
+    overall = (
+        float(scipy_stats.spearmanr(merged[predicted_col], merged[actual_col]).correlation)
+        if len(merged) >= 2
+        else float("nan")
+    )
+
+    by_group = None
+    if group_col is not None:
+        rows = [
+            {
+                group_col: group,
+                "spearman": (
+                    float(scipy_stats.spearmanr(g[predicted_col], g[actual_col]).correlation)
+                    if len(g) >= 2
+                    else float("nan")
+                ),
+                "n": len(g),
+            }
+            for group, g in merged.groupby(group_col)
+        ]
+        by_group = pd.DataFrame(rows)
+    return RankCorrelationReport(overall=overall, by_group=by_group)
+
+
+def floor_ceiling_coverage(floor: pd.Series, ceiling: pd.Series, actual: pd.Series) -> float:
+    """Fraction of rows where the realised outcome fell within ``[floor, ceiling]`` — checks
+    whether the simulation layer's (``engine/simulate.py``, BUILD_PLAN 2.9) spread is honest, not
+    just its mean (ENGINE_IMPROVEMENTS.md 2.1). Pair with ``component_calibration`` on
+    ``prob_big_haul`` vs ``actual >= 10`` for the other half of that same recommendation — both
+    read straight off ``PlayerSimulationSummary``, no new modelling required."""
+    floor_arr = np.asarray(floor, dtype=float)
+    ceiling_arr = np.asarray(ceiling, dtype=float)
+    actual_arr = np.asarray(actual, dtype=float)
+    if not (len(floor_arr) == len(ceiling_arr) == len(actual_arr)):
+        raise ValueError("floor, ceiling, and actual must be the same length")
+    within = (actual_arr >= floor_arr) & (actual_arr <= ceiling_arr)
+    return float(within.mean())

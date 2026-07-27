@@ -28,6 +28,9 @@ logs/predictions/*
 *.sqlite3
 *.db
 
+# Real-backtest driver output (backtest/run_season.py) — regenerable, not source
+backtest/reports/
+
 # Notebooks — exploration only, keep checkpoints out
 notebooks/.ipynb_checkpoints/
 .ipynb_checkpoints/

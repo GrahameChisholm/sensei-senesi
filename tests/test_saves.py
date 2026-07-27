@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from engine.models.saves import (
+    DEFAULT_AWAY_SHOT_MULTIPLIER,
+    DEFAULT_SAVE_CONVERSION_RATE,
     SavesProjection,
     expected_saves,
     expected_shots_faced,
+    fit_away_shot_multiplier,
+    fit_save_conversion_rate,
     project_saves,
 )
 from engine.scoring import PENALTY_SAVE_POINTS
@@ -75,6 +80,34 @@ def test_saves_projection_rejects_negative_fields():
 def test_saves_projection_rejects_bad_penalty_save_rate():
     with pytest.raises(ValueError):
         SavesProjection(expected_saves=1.0, expected_penalties_faced=0.0, penalty_save_rate=1.5)
+
+
+def test_fit_save_conversion_rate_recovers_empirical_ratio():
+    shots_faced = pd.Series([10.0] * 10)
+    saves = pd.Series([7.0] * 10)  # 70 saves / 100 shots
+
+    rate = fit_save_conversion_rate(shots_faced, saves, min_shots=30.0)
+
+    assert rate == pytest.approx(0.7)
+
+
+def test_fit_save_conversion_rate_falls_back_when_too_few_shots():
+    rate = fit_save_conversion_rate(pd.Series([5.0]), pd.Series([3.0]), min_shots=30.0)
+    assert rate == DEFAULT_SAVE_CONVERSION_RATE
+
+
+def test_fit_away_shot_multiplier_recovers_empirical_ratio():
+    home = pd.Series([4.0] * 25)
+    away = pd.Series([5.0] * 25)
+
+    multiplier = fit_away_shot_multiplier(home, away, min_rows=20)
+
+    assert multiplier == pytest.approx(1.25)
+
+
+def test_fit_away_shot_multiplier_falls_back_when_too_few_rows():
+    multiplier = fit_away_shot_multiplier(pd.Series([4.0, 4.0]), pd.Series([5.0, 5.0]), min_rows=20)
+    assert multiplier == DEFAULT_AWAY_SHOT_MULTIPLIER
 
 
 def test_project_saves_end_to_end():

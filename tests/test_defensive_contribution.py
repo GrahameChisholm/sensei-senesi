@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from engine.models.defensive_contribution import (
+    DEFAULT_OVERDISPERSION,
     DefensiveContributionProjection,
     expected_defensive_action_rate,
+    fit_overdispersion,
     negative_binomial_params,
     opponent_possession_adjustment,
     probability_clears_threshold,
@@ -122,3 +126,32 @@ def test_project_defensive_contribution_rejects_gk():
 def test_project_defensive_contribution_rejects_unknown_position():
     with pytest.raises(ValueError):
         project_defensive_contribution("XYZ", 5.0, opponent_possession_share=0.5)
+
+
+def test_fit_overdispersion_falls_back_when_too_few_rows():
+    alpha = fit_overdispersion(pd.Series([5, 6, 7]), pd.Series([5.0, 5.0, 5.0]), min_rows=100)
+    assert alpha == DEFAULT_OVERDISPERSION
+
+
+def test_fit_overdispersion_falls_back_for_underdispersed_data():
+    n = 200
+    mu = np.full(n, 8.0)
+    actual = mu.copy()  # variance == 0, below mu -> a negative method-of-moments estimate
+    alpha = fit_overdispersion(pd.Series(actual), pd.Series(mu), min_rows=100)
+    assert alpha == DEFAULT_OVERDISPERSION
+
+
+def test_fit_overdispersion_recovers_positive_alpha_for_overdispersed_data():
+    rng = np.random.default_rng(0)
+    n = 2000
+    true_alpha = 0.25
+    mu = 8.0
+    r = 1.0 / true_alpha
+    p = r / (r + mu)
+    actual = rng.negative_binomial(r, p, size=n)
+    expected_mu = np.full(n, mu)
+
+    fitted_alpha = fit_overdispersion(pd.Series(actual), pd.Series(expected_mu), min_rows=100)
+
+    assert fitted_alpha > 0
+    assert fitted_alpha == pytest.approx(true_alpha, rel=0.3)

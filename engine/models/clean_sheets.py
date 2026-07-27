@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize_scalar
 from scipy.stats import poisson
 
 from engine.models._discrete import expected_floor_division
@@ -112,6 +113,57 @@ def scoreline_distribution(
             joint[x, y] *= dixon_coles_tau(x, y, home_lambda, away_lambda, rho)
     joint = np.clip(joint, 0.0, None)
     return joint / joint.sum()
+
+
+def fit_dixon_coles_rho(
+    home_lambda: pd.Series,
+    away_lambda: pd.Series,
+    home_goals: pd.Series,
+    away_goals: pd.Series,
+    min_matches: int = 50,
+) -> float:
+    """MLE fit of the Dixon-Coles ``rho`` against real match scorelines (ENGINE_IMPROVEMENTS.md
+    1.2 — this constant was never fitted despite ``engine/regression.py`` existing to do exactly
+    this kind of fitting). Global, not per-position — rho describes a match-level scoreline
+    correlation, not a per-position relationship, so this is a direct MLE rather than a
+    :class:`engine.regression.PerPositionRegression` fit. Each match's ``home_lambda``/
+    ``away_lambda`` must already be that match's own point-in-time team-goal-rate lambdas (as
+    computed by the caller from pre-match rates via :func:`team_expected_goals_rate`) — this
+    function only does the optimization, refit every gameweek by the walk-forward harness from
+    ``training_history`` only. Falls back to :data:`DEFAULT_DIXON_COLES_RHO` when fewer than
+    ``min_matches`` rows are available, since an early-season sample is too thin to trust a fitted
+    correlation parameter over the untuned default.
+    """
+    n = len(home_goals)
+    if n < min_matches:
+        return DEFAULT_DIXON_COLES_RHO
+
+    home_lambda_arr = np.asarray(home_lambda, dtype=float)
+    away_lambda_arr = np.asarray(away_lambda, dtype=float)
+    home_goals_arr = np.asarray(home_goals, dtype=int)
+    away_goals_arr = np.asarray(away_goals, dtype=int)
+
+    def neg_log_likelihood(rho: float) -> float:
+        log_lik = 0.0
+        for i in range(n):
+            tau = dixon_coles_tau(
+                int(home_goals_arr[i]),
+                int(away_goals_arr[i]),
+                home_lambda_arr[i],
+                away_lambda_arr[i],
+                rho,
+            )
+            tau = max(tau, 1e-10)  # guard the four adjusted cells against a clipped-negative value
+            prob = (
+                tau
+                * poisson.pmf(home_goals_arr[i], home_lambda_arr[i])
+                * poisson.pmf(away_goals_arr[i], away_lambda_arr[i])
+            )
+            log_lik += np.log(max(prob, 1e-300))
+        return -log_lik
+
+    result = minimize_scalar(neg_log_likelihood, bounds=(-0.2, 0.2), method="bounded")
+    return float(result.x)
 
 
 def clean_sheet_probability(

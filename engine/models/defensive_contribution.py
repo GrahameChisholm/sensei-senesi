@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+import pandas as pd
 from scipy.stats import nbinom
 
 from engine.scoring import DEFENSIVE_CONTRIBUTION_POINTS, DEFENSIVE_CONTRIBUTION_THRESHOLD, GK
@@ -91,6 +93,32 @@ def probability_clears_threshold(
         return 0.0
     n, p = negative_binomial_params(mu, alpha)
     return float(1.0 - nbinom.cdf(threshold - 1, n, p))
+
+
+def fit_overdispersion(
+    actual_actions: pd.Series, expected_mu: pd.Series, min_rows: int = 100
+) -> float:
+    """Method-of-moments Negative Binomial dispersion, refit every gameweek per position from real
+    defensive-action counts (ENGINE_IMPROVEMENTS.md 1.2 — this was a hardcoded placeholder despite
+    the regression layer existing). A distributional dispersion parameter, not a regression
+    coefficient — there's no feature set being weighted, just a variance-vs-mean estimate, so this
+    is a direct method-of-moments fit rather than a :class:`engine.regression.PerPositionRegression`
+    call (the driver calls this once per position via a plain ``groupby``, not that class).
+
+    Since ``variance = mu + alpha*mu^2`` under this parametrization,
+    ``alpha = mean((y - mu)^2 - mu) / mean(mu^2)``. Falls back to :data:`DEFAULT_OVERDISPERSION`
+    when the sample is too thin, or when the estimate is non-positive (an under-dispersed sample —
+    the Negative Binomial requires ``alpha > 0``).
+    """
+    y = np.asarray(actual_actions, dtype=float)
+    mu = np.asarray(expected_mu, dtype=float)
+    if len(y) < min_rows:
+        return DEFAULT_OVERDISPERSION
+    denominator = np.mean(mu**2)
+    if denominator <= 0:
+        return DEFAULT_OVERDISPERSION
+    alpha = float(np.mean((y - mu) ** 2 - mu) / denominator)
+    return alpha if alpha > 0 else DEFAULT_OVERDISPERSION
 
 
 @dataclass(frozen=True)

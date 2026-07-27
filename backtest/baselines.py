@@ -30,6 +30,8 @@ __all__ = [
     "template_captain_predictions",
     "naive_form_predictions",
     "pure_xg_predictions",
+    "training_median",
+    "constant_predictions",
     "PairedBootstrapResult",
     "paired_bootstrap_test",
     "PermutationTestResult",
@@ -95,6 +97,28 @@ def pure_xg_predictions(
         df[npxg_per_90_col] * goal_points + df[xa_per_90_col] * ASSIST_POINTS
     ) * minutes_factor
     return df[[PLAYER_ID_COL, POSITION_COL, GAMEWEEK_COL, EXPECTED_POINTS_COL]]
+
+
+def training_median(history: pd.DataFrame, actual_col: str = "total_points") -> float:
+    """The training-sample median actual points (ENGINE_IMPROVEMENTS.md 2.2: "the current bar is
+    too low" -- the naive-form baseline turned out to score *worse* than a flat median predictor,
+    so a constant baseline is a genuine floor, not a strawman). Point-in-time-safe by construction
+    as long as the caller passes only ``training_history`` (never the gameweek being predicted) —
+    the same discipline :func:`naive_form_predictions` applies via its forward shift.
+    """
+    return float(history[actual_col].median())
+
+
+def constant_predictions(players: pd.DataFrame, value: float) -> pd.DataFrame:
+    """BUILD_PLAN 3.3 / ENGINE_IMPROVEMENTS.md 2.2 — "predict the median every time." Assigns the
+    same flat ``value`` to every row in ``players`` regardless of any player-specific signal.
+    ``players`` needs only ``player_id``, ``position``, ``gameweek`` — no outcome column at all, so
+    this baseline can never leak (there is nothing to leak from). Derive ``value`` with
+    :func:`training_median` (or any other point-in-time-safe statistic) before calling this.
+    """
+    out = players[[PLAYER_ID_COL, POSITION_COL, GAMEWEEK_COL]].copy()
+    out[EXPECTED_POINTS_COL] = float(value)
+    return out
 
 
 @dataclass(frozen=True)

@@ -66,6 +66,14 @@ def test_phase2_pipeline_runs_end_to_end_without_leakage():
             "fixture_congestion": np.random.default_rng(3).integers(0, 3, 100).astype(float),
             "chance_of_playing_next_round": np.full(100, 100.0),
             "status_score": np.full(100, encode_status("a")),
+            "days_since_last_appearance": np.random.default_rng(7)
+            .integers(0, 14, 100)
+            .astype(float),
+            "zero_minute_streak_length": np.random.default_rng(8).integers(0, 3, 100).astype(float),
+            "start_rate_last_3": np.random.default_rng(9).uniform(0.5, 1.0, 100),
+            "start_rate_last_6": np.random.default_rng(10).uniform(0.5, 1.0, 100),
+            "start_rate_last_15": np.random.default_rng(11).uniform(0.5, 1.0, 100),
+            "team_rotation_propensity": np.random.default_rng(12).uniform(0.0, 1.0, 100),
         }
     )
     started = pd.Series(np.random.default_rng(4).choice([0, 1], size=100, p=[0.2, 0.8]))
@@ -81,9 +89,15 @@ def test_phase2_pipeline_runs_end_to_end_without_leakage():
                 "fixture_congestion": 0.0,
                 "chance_of_playing_next_round": 100.0,
                 "status_score": encode_status("a"),
+                "days_since_last_appearance": 7.0,
+                "zero_minute_streak_length": 0.0,
+                "start_rate_last_3": 0.9,
+                "start_rate_last_6": 0.9,
+                "start_rate_last_15": 0.85,
+                "team_rotation_propensity": 0.3,
             }
         ]
-    )
+    )[FEATURE_COLUMNS]
     assert list(this_player_features.columns) == FEATURE_COLUMNS
     minutes_distribution = minutes_model.predict(this_player_features)[0]
 

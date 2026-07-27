@@ -8,7 +8,7 @@ import pytest
 
 from engine.models.bonus import BonusModel, build_features
 from engine.models.minutes import MinutesModel, encode_status
-from engine.pipeline import project_gameweek_pool
+from engine.pipeline import FittedConstants, project_gameweek_pool
 
 
 @pytest.fixture(scope="module")
@@ -22,6 +22,12 @@ def fitted_minutes_model() -> MinutesModel:
             "fixture_congestion": rng.integers(0, 3, n).astype(float),
             "chance_of_playing_next_round": np.full(n, 100.0),
             "status_score": np.full(n, encode_status("a")),
+            "days_since_last_appearance": rng.integers(0, 14, n).astype(float),
+            "zero_minute_streak_length": rng.integers(0, 3, n).astype(float),
+            "start_rate_last_3": rng.uniform(0.3, 1.0, n),
+            "start_rate_last_6": rng.uniform(0.3, 1.0, n),
+            "start_rate_last_15": rng.uniform(0.3, 1.0, n),
+            "team_rotation_propensity": rng.uniform(0.0, 1.0, n),
         }
     )
     started = pd.Series(rng.choice([0, 1], size=n, p=[0.2, 0.8]))
@@ -50,6 +56,12 @@ def _base_row(player_id: int, position: str) -> dict:
         "fixture_congestion": 0.0,
         "chance_of_playing_next_round": 100.0,
         "status_score": encode_status("a"),
+        "days_since_last_appearance": 7.0,
+        "zero_minute_streak_length": 0.0,
+        "start_rate_last_3": 0.9,
+        "start_rate_last_6": 0.9,
+        "start_rate_last_15": 0.85,
+        "team_rotation_propensity": 0.3,
         "npxg_per_90": 0.4,
         "xa_per_90": 0.2,
         "team_xg_per_90": 1.5,
@@ -134,6 +146,105 @@ def test_clean_sheet_probability_in_valid_range(
     assert predictions["clean_sheet_probability"].between(0.0, 1.0).all()
 
 
+def test_minutes_buckets_and_gated_clean_sheet_probability_emitted(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    predictions = project_gameweek_pool(synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model)
+
+    for col in ["p_zero", "p_1_to_59", "p_60_plus", "player_clean_sheet_probability"]:
+        assert col in predictions.columns
+        assert predictions[col].between(0.0, 1.0).all()
+
+    bucket_sum = predictions["p_zero"] + predictions["p_1_to_59"] + predictions["p_60_plus"]
+    pd.testing.assert_series_equal(
+        bucket_sum, pd.Series(1.0, index=predictions.index), check_names=False, atol=1e-6
+    )
+
+    # Gated probability can never exceed the ungated team-level probability (Correction 1).
+    assert (
+        predictions["player_clean_sheet_probability"] <= predictions["clean_sheet_probability"]
+    ).all()
+    expected = predictions["clean_sheet_probability"] * predictions["p_60_plus"]
+    pd.testing.assert_series_equal(
+        predictions["player_clean_sheet_probability"], expected, check_names=False, atol=1e-9
+    )
+
+
 def test_empty_pool_raises(fitted_minutes_model, fitted_bonus_model):
     with pytest.raises(ValueError):
         project_gameweek_pool(pd.DataFrame(), 1, fitted_minutes_model, fitted_bonus_model)
+
+
+def test_fitted_constants_default_matches_no_argument_behavior(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    without_argument = project_gameweek_pool(
+        synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model
+    )
+    with_default_constants = project_gameweek_pool(
+        synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model, FittedConstants()
+    )
+    pd.testing.assert_frame_equal(without_argument, with_default_constants)
+
+
+def test_fitted_save_conversion_rate_changes_saves_projection(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    baseline = project_gameweek_pool(
+        synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model
+    ).set_index("player_id")
+    higher_conversion = project_gameweek_pool(
+        synthetic_pool,
+        1,
+        fitted_minutes_model,
+        fitted_bonus_model,
+        FittedConstants(save_conversion_rate=0.95),
+    ).set_index("player_id")
+
+    # GK's saves should rise with a higher fitted save conversion rate; outfield players are
+    # untouched by this constant.
+    assert higher_conversion.loc[1, "saves"] > baseline.loc[1, "saves"]
+    assert higher_conversion.loc[2, "saves"] == pytest.approx(baseline.loc[2, "saves"])
+
+
+def test_fitted_dc_overdispersion_alpha_changes_defensive_contribution(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    baseline = project_gameweek_pool(
+        synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model
+    ).set_index("player_id")
+    custom_alpha = project_gameweek_pool(
+        synthetic_pool,
+        1,
+        fitted_minutes_model,
+        fitted_bonus_model,
+        FittedConstants(dc_overdispersion_alpha={"DEF": 0.6, "MID": 0.6, "FWD": 0.6}),
+    ).set_index("player_id")
+
+    assert custom_alpha.loc[2, "defensive_contribution"] != pytest.approx(
+        baseline.loc[2, "defensive_contribution"]
+    )
+
+
+def test_penalty_sub_model_activates_via_optional_row_columns(
+    fitted_minutes_model, fitted_bonus_model
+):
+    row = _base_row(7, "FWD")
+    row["team_expected_penalties"] = 0.3
+    row["taker_share"] = 1.0
+    pool = pd.DataFrame([row])
+
+    predictions = project_gameweek_pool(
+        pool,
+        1,
+        fitted_minutes_model,
+        fitted_bonus_model,
+        FittedConstants(penalty_conversion_rate_by_player={7: 0.9}),
+    ).set_index("player_id")
+
+    # A fixed goals rate plus a designated, high-conversion penalty taker role must add strictly
+    # positive expected goal points beyond the no-penalty-role baseline.
+    no_penalty_role = project_gameweek_pool(
+        pd.DataFrame([_base_row(7, "FWD")]), 1, fitted_minutes_model, fitted_bonus_model
+    ).set_index("player_id")
+    assert predictions.loc[7, "goals"] > no_penalty_role.loc[7, "goals"]

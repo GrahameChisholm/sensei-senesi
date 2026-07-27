@@ -15,22 +15,62 @@ rates.py``).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+
 import pandas as pd
 
 from engine.aggregate import ComponentBreakdown, aggregate_gameweek
 from engine.models.assists import project_assists
 from engine.models.bonus import BonusModel, build_features
 from engine.models.cards import project_cards
-from engine.models.clean_sheets import project_clean_sheet
-from engine.models.defensive_contribution import project_defensive_contribution
-from engine.models.goals import project_goals
+from engine.models.clean_sheets import DEFAULT_DIXON_COLES_RHO, project_clean_sheet
+from engine.models.defensive_contribution import (
+    DEFAULT_OVERDISPERSION,
+    project_defensive_contribution,
+)
+from engine.models.goals import DEFAULT_PENALTY_CONVERSION_RATE, project_goals
 from engine.models.minutes import FEATURE_COLUMNS as MINUTES_FEATURE_COLUMNS
 from engine.models.minutes import MinutesModel
-from engine.models.saves import project_saves
+from engine.models.saves import (
+    DEFAULT_AWAY_SHOT_MULTIPLIER,
+    DEFAULT_SAVE_CONVERSION_RATE,
+    project_saves,
+)
 from engine.projections import PlayerGameweekProjection, project_player_gameweek
-from engine.scoring import GK
+from engine.scoring import DEF, FWD, GK, MID
 
-__all__ = ["GAMEWEEK_POOL_COLUMNS", "project_gameweek_pool"]
+__all__ = ["GAMEWEEK_POOL_COLUMNS", "FittedConstants", "project_gameweek_pool"]
+
+
+@dataclass(frozen=True)
+class FittedConstants:
+    """Per-gameweek-refit values for the five component constants that BUILD_PLAN 2.8's
+    regression layer was meant to fit but never did (ENGINE_IMPROVEMENTS.md Tier 1.2) — Dixon-Coles
+    ``rho``, the saves model's conversion rate and away-shot multiplier, defensive contribution's
+    Negative Binomial overdispersion (per position), and per-player penalty conversion rates.
+
+    Every field defaults to the corresponding component's own existing ``DEFAULT_*`` constant, so
+    ``project_gameweek_pool(players, gameweek, minutes_model, bonus_model)`` called with no
+    ``fitted_constants`` argument is byte-for-byte today's (pre-Tier-1.2) behavior. Construct one
+    of these once per gameweek from ``training_history`` via each component's own ``fit_*``
+    function (``fit_dixon_coles_rho``, ``fit_save_conversion_rate``, ``fit_away_shot_multiplier``,
+    ``fit_overdispersion``, ``fit_penalty_conversion_rates``) — see ``backtest/run_season.py``.
+    """
+
+    dixon_coles_rho: float = DEFAULT_DIXON_COLES_RHO
+    save_conversion_rate: float = DEFAULT_SAVE_CONVERSION_RATE
+    away_shot_multiplier: float = DEFAULT_AWAY_SHOT_MULTIPLIER
+    dc_overdispersion_alpha: Mapping[str, float] = field(
+        default_factory=lambda: {
+            DEF: DEFAULT_OVERDISPERSION,
+            MID: DEFAULT_OVERDISPERSION,
+            FWD: DEFAULT_OVERDISPERSION,
+        }
+    )
+    penalty_conversion_rate_by_player: Mapping[int, float] = field(default_factory=dict)
+    league_avg_penalty_conversion_rate: float = DEFAULT_PENALTY_CONVERSION_RATE
+
 
 # Every column ``project_gameweek_pool`` reads from its ``players`` input, beyond the minutes
 # model's own FEATURE_COLUMNS. GK-only and outfield-only columns are documented inline below.
@@ -61,6 +101,7 @@ def _project_one_player(
     row: pd.Series,
     minutes_distribution,
     bonus_model: BonusModel,
+    fitted_constants: FittedConstants,
 ) -> tuple[PlayerGameweekProjection, ComponentBreakdown, float]:
     """Returns (projection, breakdown, clean_sheet_probability) — the probability is surfaced
     separately since it isn't otherwise recoverable from the breakdown alone (BUILD_PLAN 3.2's
@@ -72,6 +113,11 @@ def _project_one_player(
         opponent_xga_per_90=row["opponent_xga_per_90"],
         league_avg_xga_per_90=row["league_avg_xga_per_90"],
         expected_minutes=expected_minutes,
+        team_expected_penalties=float(row.get("team_expected_penalties", 0.0)),
+        taker_share=float(row.get("taker_share", 0.0)),
+        penalty_conversion_rate=fitted_constants.penalty_conversion_rate_by_player.get(
+            player_id, fitted_constants.league_avg_penalty_conversion_rate
+        ),
     )
     assists = project_assists(
         player_xa_per_90=row["xa_per_90"],
@@ -86,6 +132,7 @@ def _project_one_player(
         opponent_xga_per_90=row["opponent_xga_per_90"],
         league_avg_xga_per_90=row["league_avg_xga_per_90"],
         expected_minutes=expected_minutes,
+        rho=fitted_constants.dixon_coles_rho,
     )
     cards = project_cards(
         yellow_card_rate_per_90=row["yellow_card_rate_per_90"],
@@ -101,6 +148,8 @@ def _project_one_player(
             league_avg_xga_per_90=row["league_avg_xga_per_90"],
             is_home=bool(row["is_home"]),
             expected_minutes=expected_minutes,
+            save_conversion_rate=fitted_constants.save_conversion_rate,
+            away_shot_multiplier=fitted_constants.away_shot_multiplier,
         )
         defensive_action_rate_for_bonus = 0.0
     else:
@@ -109,6 +158,7 @@ def _project_one_player(
             player_actions_per_90=row["dc_per_90"],
             opponent_possession_share=row["opponent_possession_share"],
             expected_minutes=expected_minutes,
+            alpha=fitted_constants.dc_overdispersion_alpha.get(position, DEFAULT_OVERDISPERSION),
         )
         saves = None
         defensive_action_rate_for_bonus = row["dc_per_90"]
@@ -152,17 +202,33 @@ def project_gameweek_pool(
     gameweek: int,
     minutes_model: MinutesModel,
     bonus_model: BonusModel,
+    fitted_constants: FittedConstants | None = None,
 ) -> pd.DataFrame:
     """Run the full Phase 2 chain for every row of ``players`` (one row per player, columns per
     :data:`GAMEWEEK_POOL_COLUMNS`) and return one prediction row per player.
 
     The returned frame carries ``expected_points`` (the headline number) plus every line of the
-    BUILD_PLAN 2.7 component breakdown and ``clean_sheet_probability`` — the same fields the web
-    app's "detail on click" view and Phase 3's calibration checks both need, so callers don't have
-    to re-derive them from a separate call.
+    BUILD_PLAN 2.7 component breakdown, the minutes model's own bucket probabilities (``p_zero``,
+    ``p_1_to_59``, ``p_60_plus``), ``clean_sheet_probability`` (team-level, NOT gated by whether
+    this player individually plays 60+ minutes) and ``player_clean_sheet_probability`` (gated:
+    ``clean_sheet_probability * p_60_plus``, the like-for-like quantity to compare against FPL's
+    own player-level ``clean_sheets`` outcome column — see ENGINE_IMPROVEMENTS.md Correction 1,
+    which found comparing the *ungated* team probability against the *gated* actual outcome
+    produced a spurious ~2.4x miscalibration signal that vanished once compared correctly). These
+    are the same fields the web app's "detail on click" view and Phase 3's calibration checks both
+    need, so callers don't have to re-derive them from a separate call.
+
+    ``fitted_constants``, if given, supplies per-gameweek-refit values for the five component
+    constants BUILD_PLAN 2.8's regression layer was meant to fit (ENGINE_IMPROVEMENTS.md Tier 1.2)
+    — omitting it reproduces every component's own untuned ``DEFAULT_*`` behavior unchanged. Two
+    further optional per-row columns activate the goals model's penalty sub-model when present
+    (silently defaulting to 0.0, i.e. disabled, when absent): ``team_expected_penalties`` and
+    ``taker_share`` (see ``engine/models/goals.py``'s ``realized_penalty_goals``/
+    ``fit_penalty_conversion_rates`` for how to derive these from real data).
     """
     if players.empty:
         raise ValueError("players must not be empty")
+    fitted_constants = fitted_constants or FittedConstants()
 
     minutes_distributions = minutes_model.predict(players)
     rows = []
@@ -172,7 +238,7 @@ def project_gameweek_pool(
         player_id = int(row["player_id"])
         position = row["position"]
         _projection, breakdown, clean_sheet_probability = _project_one_player(
-            player_id, position, gameweek, row, minutes_distribution, bonus_model
+            player_id, position, gameweek, row, minutes_distribution, bonus_model, fitted_constants
         )
         rows.append(
             {
@@ -181,7 +247,13 @@ def project_gameweek_pool(
                 "gameweek": gameweek,
                 "expected_points": breakdown.total,
                 "expected_minutes": minutes_distribution.expected_minutes,
+                "p_zero": minutes_distribution.p_zero,
+                "p_1_to_59": minutes_distribution.p_1_to_59,
+                "p_60_plus": minutes_distribution.p_60_plus,
                 "clean_sheet_probability": clean_sheet_probability,
+                "player_clean_sheet_probability": (
+                    clean_sheet_probability * minutes_distribution.p_60_plus
+                ),
                 "appearance": breakdown.appearance,
                 "goals": breakdown.goals,
                 "assists": breakdown.assists,

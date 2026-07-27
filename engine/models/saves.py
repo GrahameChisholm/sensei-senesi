@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+import pandas as pd
+
 from engine.models._discrete import expected_floor_division
 from engine.scoring import PENALTY_SAVE_POINTS, SAVES_PER_POINT
 
@@ -59,6 +62,41 @@ def expected_saves(
     if not 0.0 <= save_conversion_rate <= 1.0:
         raise ValueError("save_conversion_rate must be in [0, 1]")
     return shots_faced * save_conversion_rate
+
+
+def fit_save_conversion_rate(
+    shots_faced: pd.Series, saves: pd.Series, min_shots: float = 30.0
+) -> float:
+    """Empirical save conversion rate = total saves / total shots faced, refit every gameweek from
+    real data (ENGINE_IMPROVEMENTS.md 1.2 — this was a hardcoded placeholder despite the
+    regression layer existing to fit exactly this kind of rate). A simple ratio, not a regression
+    coefficient — there's no per-position or per-feature structure here to fit, just a
+    league-average rate. Falls back to :data:`DEFAULT_SAVE_CONVERSION_RATE` when the training
+    sample's total shots faced is too thin to trust an empirical ratio.
+    """
+    total_shots = float(np.asarray(shots_faced, dtype=float).sum())
+    if total_shots < min_shots:
+        return DEFAULT_SAVE_CONVERSION_RATE
+    total_saves = float(np.asarray(saves, dtype=float).sum())
+    return float(np.clip(total_saves / total_shots, 0.0, 1.0))
+
+
+def fit_away_shot_multiplier(
+    home_shots_faced_per_90: pd.Series,
+    away_shots_faced_per_90: pd.Series,
+    min_rows: int = 20,
+) -> float:
+    """Empirical ratio of away-venue to home-venue shots faced per 90, refit every gameweek
+    (ENGINE_IMPROVEMENTS.md 1.2). Falls back to :data:`DEFAULT_AWAY_SHOT_MULTIPLIER` when either
+    side has too few rows to trust the ratio."""
+    home = np.asarray(home_shots_faced_per_90, dtype=float)
+    away = np.asarray(away_shots_faced_per_90, dtype=float)
+    if len(home) < min_rows or len(away) < min_rows:
+        return DEFAULT_AWAY_SHOT_MULTIPLIER
+    home_mean = home.mean()
+    if home_mean <= 0:
+        return DEFAULT_AWAY_SHOT_MULTIPLIER
+    return float(away.mean() / home_mean)
 
 
 @dataclass(frozen=True)

@@ -55,6 +55,12 @@ def _synthetic_training_data(
     fixture_congestion = rng.integers(0, 4, n).astype(float)
     chance_of_playing = rng.choice([0, 25, 50, 75, 100], n).astype(float)
     status_score = rng.choice([0.0, 0.75, 1.0], n)
+    days_since_last_appearance = rng.integers(0, 30, n).astype(float)
+    zero_minute_streak_length = rng.integers(0, 6, n).astype(float)
+    start_rate_last_3 = rng.uniform(0, 1, n)
+    start_rate_last_6 = rng.uniform(0, 1, n)
+    start_rate_last_15 = rng.uniform(0, 1, n)
+    team_rotation_propensity = rng.uniform(0, 1, n)
 
     features = pd.DataFrame(
         {
@@ -63,13 +69,25 @@ def _synthetic_training_data(
             "fixture_congestion": fixture_congestion,
             "chance_of_playing_next_round": chance_of_playing,
             "status_score": status_score,
+            "days_since_last_appearance": days_since_last_appearance,
+            "zero_minute_streak_length": zero_minute_streak_length,
+            "start_rate_last_3": start_rate_last_3,
+            "start_rate_last_6": start_rate_last_6,
+            "start_rate_last_15": start_rate_last_15,
+            "team_rotation_propensity": team_rotation_propensity,
         }
     )
 
     # A player with a high recent start rate and full fitness starts; low-fitness/low-usage
-    # players don't. This gives the classifiers genuine, learnable signal.
+    # players don't, and a long zero-minute streak further suppresses starting. This gives the
+    # classifiers genuine, learnable signal across the extended feature set too.
     fitness_component = status_score * 0.4 + (chance_of_playing / 100) * 0.3
-    start_propensity = recent_start_rate * 0.6 + fitness_component
+    start_propensity = (
+        recent_start_rate * 0.4
+        + fitness_component
+        + start_rate_last_3 * 0.2
+        - (zero_minute_streak_length / 6) * 0.3
+    )
     started = (start_propensity + rng.normal(0, 0.1, n) > 0.5).astype(int)
 
     minutes = np.zeros(n)
@@ -111,6 +129,12 @@ def test_minutes_model_high_fitness_high_start_rate_favours_60_plus():
                 "fixture_congestion": 0.0,
                 "chance_of_playing_next_round": 100.0,
                 "status_score": 1.0,
+                "days_since_last_appearance": 0.0,
+                "zero_minute_streak_length": 0.0,
+                "start_rate_last_3": 1.0,
+                "start_rate_last_6": 1.0,
+                "start_rate_last_15": 1.0,
+                "team_rotation_propensity": 0.1,
             }
         ]
     )
@@ -122,6 +146,12 @@ def test_minutes_model_high_fitness_high_start_rate_favours_60_plus():
                 "fixture_congestion": 3.0,
                 "chance_of_playing_next_round": 0.0,
                 "status_score": 0.0,
+                "days_since_last_appearance": 30.0,
+                "zero_minute_streak_length": 5.0,
+                "start_rate_last_3": 0.0,
+                "start_rate_last_6": 0.0,
+                "start_rate_last_15": 0.0,
+                "team_rotation_propensity": 0.9,
             }
         ]
     )
@@ -131,6 +161,34 @@ def test_minutes_model_high_fitness_high_start_rate_favours_60_plus():
 
     assert nailed_dist.p_60_plus > fringe_dist.p_60_plus
     assert nailed_dist.expected_minutes > fringe_dist.expected_minutes
+
+
+def test_minutes_model_zero_minute_streak_suppresses_p_60_plus():
+    # A player mid a long zero-minute streak is categorically different from one rested for a
+    # single match (ENGINE_IMPROVEMENTS.md 1.1) -- holding every other feature fixed, a longer
+    # streak should predict materially lower p_60_plus.
+    features, started, minutes = _synthetic_training_data()
+    model = MinutesModel().fit(features, started, minutes)
+
+    base_row = {
+        "recent_start_rate": 0.6,
+        "recent_minutes_ewma": 60.0,
+        "fixture_congestion": 1.0,
+        "chance_of_playing_next_round": 75.0,
+        "status_score": 0.75,
+        "days_since_last_appearance": 7.0,
+        "start_rate_last_3": 0.6,
+        "start_rate_last_6": 0.6,
+        "start_rate_last_15": 0.6,
+        "team_rotation_propensity": 0.5,
+    }
+    rested_one_match = pd.DataFrame([{**base_row, "zero_minute_streak_length": 1.0}])
+    long_streak = pd.DataFrame([{**base_row, "zero_minute_streak_length": 5.0}])
+
+    rested_dist = model.predict(rested_one_match)[0]
+    streak_dist = model.predict(long_streak)[0]
+
+    assert rested_dist.p_60_plus > streak_dist.p_60_plus
 
 
 def test_minutes_model_predict_before_fit_raises():
@@ -150,6 +208,12 @@ def test_minutes_model_handles_single_class_training_data():
             "fixture_congestion": [0.0] * n,
             "chance_of_playing_next_round": [100.0] * n,
             "status_score": [1.0] * n,
+            "days_since_last_appearance": [0.0] * n,
+            "zero_minute_streak_length": [0.0] * n,
+            "start_rate_last_3": [1.0] * n,
+            "start_rate_last_6": [1.0] * n,
+            "start_rate_last_15": [1.0] * n,
+            "team_rotation_propensity": [0.2] * n,
         }
     )
     started = pd.Series([1] * n)

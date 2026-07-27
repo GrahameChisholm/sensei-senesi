@@ -23,14 +23,26 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 
 MINUTES_60_PLUS_THRESHOLD = 60
 
-# Per BUILD_PLAN 2.1 "Inputs" table. Position and squad depth are deliberately excluded — see
-# "Considered and cut" in the plan (structural redundancy / no clean data source respectively).
+# Per BUILD_PLAN 2.1 "Inputs" table, extended per ENGINE_IMPROVEMENTS.md Tier 1.1 — the real
+# single-season backtest found the model starved of signal (AUC 0.81 for "played at all", 6,618
+# points misallocated to players who never appeared) because three of the five original features
+# were hardcoded/defaulted in the backtest driver, and the single EWMA start-rate level couldn't
+# express "recently nailed-on but historically fringe" (or the reverse). Position and squad depth
+# remain deliberately excluded — see "Considered and cut" in BUILD_PLAN 2.1 (structural redundancy
+# / no clean data source respectively). Every feature below is computed point-in-time-safe by the
+# backtest driver's feature-engineering stage (``backtest/run_season.py``), not by this module.
 FEATURE_COLUMNS = [
     "recent_start_rate",
     "recent_minutes_ewma",
     "fixture_congestion",
     "chance_of_playing_next_round",
     "status_score",
+    "days_since_last_appearance",
+    "zero_minute_streak_length",
+    "start_rate_last_3",
+    "start_rate_last_6",
+    "start_rate_last_15",
+    "team_rotation_propensity",
 ]
 
 # FPL's `status` code -> a coarse numeric availability proxy. `news` free text is deliberately
