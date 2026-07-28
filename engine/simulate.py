@@ -441,6 +441,7 @@ def _score_team(
         team_clean_sheet,
         played_60_plus,
         defensive_actions,
+        minutes,
     )
 
     total_points = (
@@ -479,10 +480,15 @@ def _predict_bonus(
     team_clean_sheet: np.ndarray,
     played_60_plus: np.ndarray,
     defensive_actions: np.ndarray,
+    minutes: np.ndarray,
 ) -> np.ndarray:
     """Bonus via the regression proxy applied to each player's *realized* stats this run (BUILD_PLAN
     2.9 step 6) -- flattened into one batched DataFrame across all (player, run) pairs for one
-    fast vectorized ``predict`` call rather than one call per run."""
+    fast vectorized ``predict`` call rather than one call per run. ``minutes`` is this same run's
+    own *drawn* minutes (ENGINE_IMPROVEMENTS_3.md A.2) -- the simulation-layer equivalent of the
+    point-estimate path's modelled expected minutes, so a run where a player is drawn to play 10
+    minutes doesn't get bonus on the strength of its other realized-but-minutes-independent
+    features alone."""
     n_players, n_runs = indiv_goals.shape
     rows = []
     for i, player in enumerate(players):
@@ -495,6 +501,7 @@ def _predict_bonus(
                     clean_sheet_probability=float(clean_sheet_realized[run]),
                     defensive_action_rate=float(defensive_actions[i, run]),
                     position=player.position,
+                    expected_minutes=float(minutes[i, run]),
                 )
             )
     features = pd.DataFrame(rows)

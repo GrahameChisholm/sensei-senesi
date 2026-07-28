@@ -14,6 +14,7 @@ from engine.models.saves import (
     fit_away_shot_multiplier,
     fit_save_conversion_rate,
     project_saves,
+    project_saves_from_own_rate,
 )
 from engine.scoring import PENALTY_SAVE_POINTS
 
@@ -121,3 +122,33 @@ def test_project_saves_end_to_end():
     assert isinstance(projection, SavesProjection)
     assert projection.expected_saves > 0
     assert projection.expected_points > 0
+
+
+def test_project_saves_from_own_rate_scales_with_minutes():
+    full = project_saves_from_own_rate(3.0, expected_minutes=90.0)
+    half = project_saves_from_own_rate(3.0, expected_minutes=45.0)
+    assert half.expected_saves == pytest.approx(full.expected_saves / 2)
+
+
+def test_project_saves_from_own_rate_shrinkage_disabled_by_default():
+    projection = project_saves_from_own_rate(3.0, expected_minutes=90.0)
+    assert projection.expected_saves == pytest.approx(3.0)
+
+
+def test_project_saves_from_own_rate_shrinks_a_thin_sample_toward_the_league_prior():
+    # ENGINE_IMPROVEMENTS_3.md D.1: one standout match shouldn't be taken at face value for a
+    # keeper with barely any prior history.
+    shrunk = project_saves_from_own_rate(
+        8.0,
+        expected_minutes=90.0,
+        individual_weight=90.0,
+        league_avg_save_rate_per_90=3.0,
+        shrinkage_k=270.0,
+    )
+    assert shrunk.expected_saves == pytest.approx((90 * 8.0 + 270 * 3.0) / 360)
+    assert 3.0 < shrunk.expected_saves < 8.0
+
+
+def test_project_saves_from_own_rate_rejects_negative_rate():
+    with pytest.raises(ValueError):
+        project_saves_from_own_rate(-1.0)

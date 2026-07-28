@@ -8,6 +8,7 @@ import pytest
 
 from backtest.metrics import (
     bias_by_group,
+    brier_vs_constant,
     captaincy_hit_rate,
     component_calibration,
     floor_ceiling_coverage,
@@ -142,6 +143,92 @@ def test_bias_by_group_no_bias_for_unbiased_predictions():
     report = bias_by_group(predictions, actuals, group_col="position")
 
     assert not report.by_group.set_index("position").loc["MID", "severe"]
+
+
+def test_bias_by_group_sources_group_col_from_actuals_when_absent_from_predictions():
+    # ENGINE_IMPROVEMENTS_3.md B.2: a price tier lives only in ground truth, not on every
+    # prediction row the way "position" already does.
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "position": ["MID", "MID", "MID", "MID"],
+            "gameweek": [1, 1, 1, 1],
+            "expected_points": [5.0, 5.0, 5.0, 5.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 1, 1],
+            "total_points": [4.0, 4.0, 4.0, 4.0],
+            "price_tier": ["cheap", "cheap", "expensive", "expensive"],
+        }
+    )
+
+    report = bias_by_group(predictions, actuals, group_col="price_tier")
+
+    assert set(report.by_group["price_tier"]) == {"cheap", "expensive"}
+    assert report.by_group["mean_residual"].eq(1.0).all()
+
+
+def test_bias_by_group_min_relative_effect_zero_uses_absolute_floor_only():
+    # A bias that's a small % of a high-scoring group's mean actual, but a large absolute value,
+    # should flag with min_relative_effect=0.0 even though the default (0.10) would clear it
+    # (ENGINE_IMPROVEMENTS_3.md B.2 — the premium price tier's own failure mode).
+    rng = np.random.default_rng(4)
+    n = 200
+    predicted = np.full(2 * n, 3.0)
+    # +0.2 absolute, ~7% relative bias with a little noise so the significance test isn't singular.
+    actual = 2.8 + rng.normal(0, 0.05, 2 * n)
+    predictions = pd.DataFrame(
+        {
+            "player_id": range(2 * n),
+            "position": ["MID"] * (2 * n),
+            "gameweek": [1] * (2 * n),
+            "expected_points": predicted,
+        }
+    )
+    actuals = pd.DataFrame(
+        {"player_id": range(2 * n), "gameweek": [1] * (2 * n), "total_points": actual}
+    )
+
+    default_floor = bias_by_group(predictions, actuals, group_col="position")
+    absolute_only = bias_by_group(
+        predictions, actuals, group_col="position", min_absolute_effect=0.1, min_relative_effect=0.0
+    )
+
+    assert not default_floor.by_group.set_index("position").loc["MID", "severe"]
+    assert absolute_only.by_group.set_index("position").loc["MID", "severe"]
+
+
+def test_brier_vs_constant_beats_constant_when_predictions_discriminate():
+    rng = np.random.default_rng(3)
+    n = 2000
+    predicted = rng.uniform(0, 1, n)
+    actual = (rng.uniform(0, 1, n) < predicted).astype(float)
+
+    report = brier_vs_constant(pd.Series(predicted), pd.Series(actual))
+
+    assert report.beats_constant
+    assert report.brier < report.constant_brier
+
+
+def test_brier_vs_constant_loses_to_constant_when_overconfident():
+    # Every row predicts near-certainty in the wrong direction half the time -- badly
+    # miscalibrated despite having real (if inverted) discriminative signal, the same shape as the
+    # shipped clean-sheet defect (ENGINE_IMPROVEMENTS_3.md A.1/B.3).
+    predicted = pd.Series([0.9] * 50 + [0.9] * 50)
+    actual = pd.Series([1.0] * 20 + [0.0] * 80)  # base rate 0.2, but predicted is ~0.9 throughout
+
+    report = brier_vs_constant(predicted, actual)
+
+    assert not report.beats_constant
+    assert report.brier > report.constant_brier
+
+
+def test_brier_vs_constant_mismatched_lengths_raises():
+    with pytest.raises(ValueError):
+        brier_vs_constant(pd.Series([0.1, 0.2]), pd.Series([1.0]))
 
 
 def test_component_calibration_perfectly_calibrated_probabilities():

@@ -46,6 +46,8 @@ __all__ = [
     "mean_calibration",
     "MinutesDiagnosticsReport",
     "minutes_model_diagnostics",
+    "BrierComparisonReport",
+    "brier_vs_constant",
 ]
 
 
@@ -129,8 +131,21 @@ def bias_by_group(
 ) -> BiasReport:
     """``min_absolute_effect`` (points) and ``min_relative_effect`` (fraction of the group's mean
     actual points) jointly set the effect-size floor a group's mean residual must clear — whichever
-    is larger — before statistical significance alone can flag it ``severe``."""
+    is larger — before statistical significance alone can flag it ``severe``. Pass
+    ``min_relative_effect=0.0`` for a grouping like price tier where the *absolute* error is what
+    costs points regardless of scale (ENGINE_IMPROVEMENTS_3.md B.2 — a relative floor that scales
+    with the group's own mean actual is backwards for a premium price tier, where a large mean
+    actual makes a large absolute bias easier, not harder, to clear).
+
+    ``group_col`` may live in ``predictions`` (e.g. "position", already on every prediction row) or
+    only in ``actuals`` (e.g. a price tier derived from ground truth) — it's merged in from
+    ``actuals`` automatically when not already present in ``predictions``.
+    """
     merged = _merge_predictions_and_actuals(predictions, actuals, predicted_col, actual_col)
+    if group_col not in merged.columns:
+        merged = merged.merge(
+            actuals[[PLAYER_ID_COL, GAMEWEEK_COL, group_col]], on=[PLAYER_ID_COL, GAMEWEEK_COL]
+        )
     rows = []
     for group, g in merged.groupby(group_col):
         residuals = g["error"].to_numpy(dtype=float)
@@ -201,6 +216,36 @@ def component_calibration(
     weights = by_bin["n"] / by_bin["n"].sum()
     mace = float(((by_bin["predicted_mean"] - by_bin["actual_rate"]).abs() * weights).sum())
     return CalibrationReport(by_bin=by_bin, mean_absolute_calibration_error=mace)
+
+
+@dataclass(frozen=True)
+class BrierComparisonReport:
+    """Does this probability component beat predicting the sample's own base rate for every row
+    (ENGINE_IMPROVEMENTS_3.md B.3)? A reliability curve (:class:`CalibrationReport`) can look
+    reasonable bin-by-bin while the component is still, in aggregate, worse than a constant —
+    exactly what the shipped clean-sheet component turned out to be at team level (Brier 0.1895 vs
+    a constant-base-rate Brier of 0.1872) despite a real, measurable AUC. ``beats_constant`` is the
+    floor MACE alone cannot express."""
+
+    brier: float
+    constant_brier: float
+    beats_constant: bool
+
+
+def brier_vs_constant(predicted_probability: pd.Series, actual_outcome: pd.Series) -> BrierComparisonReport:
+    """Compare a component's own Brier score against the Brier score of predicting the sample's
+    realised base rate (``actual_outcome.mean()``) for every row — the simplest possible baseline
+    for any probability forecast."""
+    p = np.asarray(predicted_probability, dtype=float)
+    y = np.asarray(actual_outcome, dtype=float)
+    if len(p) != len(y):
+        raise ValueError("predicted_probability and actual_outcome must be the same length")
+    brier = float(np.mean((p - y) ** 2))
+    base_rate = float(np.mean(y))
+    constant_brier = float(np.mean((base_rate - y) ** 2))
+    return BrierComparisonReport(
+        brier=brier, constant_brier=constant_brier, beats_constant=brier < constant_brier
+    )
 
 
 @dataclass(frozen=True)

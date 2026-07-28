@@ -20,9 +20,36 @@ Two more passes close most of that gap: an exact/normalized match against FPL's 
 (pass ``fpl_id_by_web_name`` to :func:`build_crosswalk`, sourced from vaastav's ``players_raw.csv``
 via :func:`fetch_fpl_web_names`), then a surname-token and a first-initial+surname match — both
 restricted to **unique** candidates only, never an ambiguous best guess, since a wrong match
-silently attributes one player's xG to another. A small hand-maintained overlay table still covers
-the residual for the current season's new signings/transfers. Any Understat player still unmatched
-after every pass **fails loudly**: :func:`build_crosswalk` raises rather than silently dropping it.
+silently attributes one player's xG to another.
+
+**Crosswalk coverage Phase 1** (a real 2025/26 pull, post-C.1: 60.5% matched, 37 unmatched
+significant (>450-minute) players) found the dominant remaining pattern wasn't nicknames at all —
+it was Spanish/Portuguese **maternal-surname drops** ("Marcos Senesi Barón" vs. Understat's
+"Marcos Senesi"), affecting the large majority of those 37. Two more passes close most of that:
+a **token-prefix** match (:func:`_token_prefix_candidates` — one name's tokens are an exact,
+in-order extension of the other's) and a **reversed-name-order** match
+(:func:`_reversed_name_candidate` — a given-name-first vs. family-name-first convention mismatch,
+mostly Japanese/Korean names), each with the same unique-candidate-only discipline as the existing
+heuristic passes. Hyphenation is also now normalized as a word separator (see
+:func:`normalize_name`), since "Smith-Rowe" vs. "Smith Rowe" was otherwise invisible to every pass.
+Together these took the real 2025/26 unmatched-significant count from 37 to 6 — the rest are
+genuine nicknames or spelling variants with no safe automated pass ("Rodri" for "Rodrigo ...
+Cascante", "Yeremi Pino" for "Yéremy Pino Santos") and went into the manual overlay table instead.
+
+A small hand-maintained overlay table still covers the residual for the current season's new
+signings/transfers, and any genuine nickname/spelling variant no automated pass can safely resolve.
+Any Understat player still unmatched after every pass **fails loudly**: :func:`build_crosswalk`
+raises rather than silently dropping it.
+
+**The overlay is keyed by season** (:data:`MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON`), not a flat
+``{understat_id: fpl_id}`` dict, even though ``understat_id`` itself is stable across seasons —
+because ``fpl_id`` is **not**: FPL reassigns element ids every season (the same fact
+``fetch_vaastav_teams`` already documents for team ids), so an entry hand-verified for one season
+would silently point at a completely different real player in any other season. A real multi-season
+pull caught this concretely: Understat displays *both* Emerson Palmieri (West Ham) and Emerson
+Royal (Tottenham) as the bare string "Emerson" in 2022/23 — a genuine cross-player collision no
+automated pass can resolve, needing an overlay entry — but that entry's ``fpl_id`` is only correct
+for the 2022/23 season it was verified against.
 
 That per-player failure only catches the "an Understat player has no FPL match" direction, though —
 it says nothing about an FPL player who simply never got matched to any Understat id, which is the
@@ -46,9 +73,49 @@ import httpx
 VAASTAV_RAW_BASE = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
 
 # Hand-maintained overlay for players Understat and the vaastav FPL id-list name spellings
-# disagree on (nicknames, name-order swaps, transliteration choices) that the exact/normalized
-# matching passes can't resolve on their own. Keyed by Understat player id -> FPL element id.
-# Update each transfer window per BUILD_PLAN 1.1. Empty until a real mismatch is observed and
+# disagree on (nicknames, name-order swaps, transliteration choices, or a genuine cross-player
+# collision no automated pass can resolve) that the exact/normalized matching passes can't resolve
+# on their own. Keyed by **season start year** -> {Understat player id: FPL element id} — never a
+# flat {understat_id: fpl_id} dict, since fpl_id is only meaningful within the one season it was
+# verified against (see this module's own docstring for why). Update each transfer window per
+# BUILD_PLAN 1.1; :func:`build_season_crosswalk` (backtest/run_season.py) looks up its own season's
+# slice automatically.
+MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON: dict[int, dict[int, int]] = {
+    # Hand-verified against the real 2025/26 pull (crosswalk coverage Phase 1) after the
+    # token-prefix/reversed-order passes and hyphen-as-separator normalization closed the rest of
+    # that season's gap — every remaining significant (>450-minute) miss was one of these shapes:
+    2025: {
+        # Nickname is FPL's own designated-taker-style short form, not derivable from the legal name:
+        10715: 673,  # Understat "João Palhinha" -> FPL "João Maria Lobo Alves Palhares Costa Palhinha Gonçalves"
+        7365: 612,  # Understat "Lucas Paquetá" -> FPL "Lucas Tolentino Coelho de Lima"
+        2496: 421,  # Understat "Rodri" -> FPL "Rodrigo 'Rodri' Hernandez Cascante" (nickname quoted in FPL's own name)
+        11384: 646,  # Understat "João Gomes" -> FPL "João Victor Gomes da Silva" (drops both the middle
+        # given name "Victor" and "da Silva" -- not a strict prefix, since "Victor" breaks the in-order
+        # token match token_prefix requires)
+        # Spelling/transliteration variants between the two sources for the same real person:
+        9024: 712,  # Understat "Yeremi Pino" -> FPL "Yéremy Pino Santos"
+        11772: 129,  # Understat "Yehor Yarmolyuk" -> FPL "Yehor Yarmoliuk"
+        12168: 713,  # Understat "Alejandro Jiménez" -> FPL "Álex Jiménez Sánchez" (Alejandro/Álex)
+    },
+    # Hand-verified against a real multi-season backtest pull (ENGINE_IMPROVEMENTS_3.md multi-
+    # season Phase 2): a genuine cross-player collision, not a name-spelling issue -- Understat
+    # displays both Emerson Palmieri (West Ham) and Emerson Royal (Tottenham) as the bare string
+    # "Emerson" in both 2022/23 and 2023/24 (both players stayed at the same clubs both seasons),
+    # and FPL's own web_name "Emerson" belongs to Palmieri in both. Royal needs his own id given
+    # explicitly each season (the ids themselves differ season to season, per this table's whole
+    # reason for existing). Understat only lists one "Emerson" in 2024/25 (Royal isn't tracked
+    # under that bare name that season) and 2025/26 (neither is), so no entry is needed there.
+    2022: {
+        7430: 445,  # Understat "Emerson" (Tottenham, understat_id=7430) -> FPL "Emerson Leite de Souza Junior" (Royal)
+    },
+    2023: {
+        7430: 497,  # Understat "Emerson" (Tottenham, understat_id=7430) -> FPL "Emerson Leite de Souza Junior" (Royal)
+    },
+}
+
+# Live-ingestion default (engine/data/ingest.py): always the one current/live season, so a flat
+# dict is legitimate here (there is only ever one season in play), unlike the backtest driver's
+# season-keyed lookup above. Empty until a real mismatch is observed for the live season and
 # hand-verified — don't pre-guess entries.
 MANUAL_OVERLAY_UNDERSTAT_TO_FPL: dict[int, int] = {}
 
@@ -114,7 +181,7 @@ class CrosswalkEntry:
     fpl_name: str
     understat_name: str
     # "exact" | "normalized" | "web_name_exact" | "web_name_normalized" | "surname_token" |
-    # "initial_surname" | "manual_overlay"
+    # "initial_surname" | "token_prefix" | "reversed_order" | "manual_overlay"
     matched_by: str
 
 
@@ -144,12 +211,20 @@ _NON_DECOMPOSABLE_TRANSLITERATIONS = str.maketrans(
 
 def normalize_name(name: str) -> str:
     """Unescape HTML entities, transliterate letters NFKD can't decompose, strip remaining
-    accents/diacritics, lowercase, collapse whitespace — for fuzzy-but-safe matching."""
+    accents/diacritics, treat hyphens as word separators, lowercase, collapse whitespace — for
+    fuzzy-but-safe matching.
+
+    Hyphens-as-separators (crosswalk coverage Phase 1) closes a real, systematic miss: Understat
+    and FPL disagree on whether a hyphenated surname is one token or two ("Emile Smith-Rowe" vs
+    "Emile Smith Rowe", "Dominic Solanke-Mitchell" vs "Dominic Solanke") — applied uniformly to
+    both sides before any comparison, so this can only ever *split* a token, never merge two
+    distinct names together.
+    """
     unescaped = html.unescape(name)
     transliterated = unescaped.translate(_NON_DECOMPOSABLE_TRANSLITERATIONS)
     decomposed = unicodedata.normalize("NFKD", transliterated)
     ascii_only = decomposed.encode("ascii", "ignore").decode("ascii")
-    return " ".join(ascii_only.lower().split())
+    return " ".join(ascii_only.replace("-", " ").lower().split())
 
 
 def season_to_vaastav_label(season_start_year: int) -> str:
@@ -195,6 +270,46 @@ def _initial_surname_key(normalized_name: str) -> str | None:
     return f"{tokens[0][0]} {tokens[-1]}" if tokens else None
 
 
+def _token_prefix_candidates(
+    understat_tokens: list[str], fpl_tokens_by_id: dict[int, list[str]]
+) -> list[int]:
+    """FPL ids whose normalized name is either an extension of ``understat_tokens`` by one or
+    more *trailing* tokens, or vice versa (crosswalk coverage Phase 1). Understat's display name
+    is almost always "first name + primary surname"; FPL's ``player_idlist.csv`` full legal name
+    often carries one or more *additional* surnames after that (Spanish/Portuguese paternal+
+    maternal surname convention: "Marcos Senesi Barón" vs Understat's "Marcos Senesi") — a plain
+    surname-token match (:func:`_surname_token`, keyed on the *last* word) systematically misses
+    this whole class, since the last word differs while the first N-1 do not. The reverse
+    direction (Understat carries an extra trailing token FPL's doesn't, e.g. "Amad Diallo Traore"
+    vs FPL's "Amad Diallo") is real too, so both directions are checked.
+    """
+    candidates = []
+    for fpl_id, f_tokens in fpl_tokens_by_id.items():
+        m, n = len(understat_tokens), len(f_tokens)
+        if m <= n and f_tokens[:m] == understat_tokens:
+            candidates.append(fpl_id)
+        elif n < m and understat_tokens[:n] == f_tokens:
+            candidates.append(fpl_id)
+    return candidates
+
+
+def _reversed_name_candidate(name: str, normalized_fpl_id_by_name: dict[str, int]) -> int | None:
+    """FPL id for the exact match of ``name`` with its two whitespace-separated blocks swapped
+    (crosswalk coverage Phase 1) — a given-name-first vs. family-name-first convention mismatch
+    (e.g. Understat's "Kaoru Mitoma" vs FPL's "Mitoma Kaoru", "Ao Tanaka" vs "Tanaka Ao"), most
+    often seen with Japanese and Korean names. Swaps on the **raw**, not hyphen-split, whitespace
+    blocks so a hyphenated given name stays intact through the swap ("Hee-Chan Hwang" ->
+    "Hwang Hee-Chan", which *then* normalizes — hyphens included — to match FPL's "Hwang
+    Hee-chan"). Only applies to exactly two blocks; a three-plus-token name has no single
+    unambiguous swap to try.
+    """
+    blocks = name.split()
+    if len(blocks) != 2:
+        return None
+    reversed_name = " ".join(reversed(blocks))
+    return normalized_fpl_id_by_name.get(normalize_name(reversed_name))
+
+
 def _build_token_index(
     fpl_id_by_name: dict[str, int], key_fn: Callable[[str], str | None]
 ) -> dict[str, list[int]]:
@@ -229,21 +344,29 @@ def build_crosswalk(
     """Match every Understat player to an FPL id in **two rounds**, run to completion in order
     (never interleaved — this is what fixed a real ordering bug, see below).
 
-    **Round 1 — precise passes**, in priority order: exact full-name match, normalized full-name
-    match, exact ``web_name`` match, normalized ``web_name`` match (both only if
-    ``fpl_id_by_web_name`` is supplied — see :func:`fetch_fpl_web_names`,
-    ENGINE_IMPROVEMENTS_2.md C.1), then the manual overlay table. These are all supposed to be
-    unambiguous by construction, so if two different Understat players would resolve to the same
-    FPL id via any of them, that's a genuine data anomaly and raises
-    :class:`CrosswalkAmbiguityError` immediately rather than guessing.
+    **Round 1 — precise passes**, in priority order: the manual overlay table **first** (a
+    hand-verified answer always outranks an automatic pass — see crosswalk coverage Phase 1's
+    "two different real players both display as bare 'Emerson' this season" case below for why
+    this isn't just a residual fallback), then exact full-name match, normalized full-name match,
+    exact ``web_name`` match, normalized ``web_name`` match (both only if ``fpl_id_by_web_name`` is
+    supplied — see :func:`fetch_fpl_web_names`, ENGINE_IMPROVEMENTS_2.md C.1). Every pass after the
+    overlay is supposed to be unambiguous by construction, so if two different Understat players
+    would resolve to the same FPL id via any of them, that's a genuine data anomaly and raises
+    :class:`CrosswalkAmbiguityError` immediately rather than guessing — a real 2022/23 case:
+    Understat displays both Emerson Palmieri (West Ham) and Emerson Royal (Tottenham) as the bare
+    string "Emerson" that season, and FPL's own ``web_name`` "Emerson" belongs to only one of them
+    (Palmieri) — so ``web_name_exact`` resolved *both* Understat players to Palmieri's id until the
+    overlay was moved ahead of it and given Royal's own correct id explicitly.
 
     **Round 2 — heuristic passes**, for whatever's left unresolved after round 1: a surname-token
-    match, then a first-initial+surname match against the full-name list, each accepted only when
-    it identifies a candidate that is both (a) **unique** among remaining FPL names sharing that
-    key and (b) **not already claimed** by a round-1 precise match or an earlier round-2 winner —
-    never an ambiguous best guess. Condition (b) is not redundant with (a): a real 2025/26 pull
-    found two on-pitch defenders, "Cristhian Mosquera" and "Yerson Mosquera Valdelamar", where the
-    *first* player's Understat display name is a single word ("Mosquera") that happens to equal the
+    match, a first-initial+surname match, a token-prefix match, then a reversed-name-order match
+    (crosswalk coverage Phase 1 added the latter two — see :func:`_token_prefix_candidates` and
+    :func:`_reversed_name_candidate` for what each catches), each accepted only when it identifies
+    a candidate that is both (a) **unique** among remaining FPL names sharing that key and (b)
+    **not already claimed** by a round-1 precise match or an earlier round-2 winner — never an
+    ambiguous best guess. Condition (b) is not redundant with (a): a real 2025/26 pull found two
+    on-pitch defenders, "Cristhian Mosquera" and "Yerson Mosquera Valdelamar", where the *first*
+    player's Understat display name is a single word ("Mosquera") that happens to equal the
     *second* player's own actual surname — so the naive single-pass version let whichever player
     was iterated first steal the other's rightful id via an unprotected heuristic match. Running
     every precise match to completion before any heuristic match is attempted, and refusing any
@@ -266,6 +389,9 @@ def build_crosswalk(
     }
     surname_index = _build_token_index(fpl_id_by_name, _surname_token)
     initial_surname_index = _build_token_index(fpl_id_by_name, _initial_surname_key)
+    fpl_tokens_by_id = {
+        fpl_id: normalize_name(name).split() for name, fpl_id in fpl_id_by_name.items()
+    }
 
     resolutions: dict[int, tuple[int, str]] = {}  # understat_id -> (fpl_id, matched_by)
     claimed_by: dict[int, UnderstatPlayer] = {}  # fpl_id -> the player that has claimed it so far
@@ -275,11 +401,19 @@ def build_crosswalk(
     for player in understat_players:
         normalized = normalize_name(player.name)
         precise_candidates: list[tuple[int | None, str]] = [
+            # manual_overlay goes FIRST, not last: it's a hand-verified answer for this exact
+            # understat_id, so it should always win over an automatic pass rather than only ever
+            # filling a gap the automatic passes left. A real 2022/23 case forced this: Understat
+            # displays *both* "Emerson Palmieri" (West Ham) and "Emerson Royal" (Tottenham) as the
+            # bare string "Emerson" that season, so web_name_exact resolves either of them to
+            # whichever one FPL's own web_name "Emerson" belongs to (Palmieri) — with overlay
+            # checked last, there was no way to correct Royal's case without also breaking
+            # Palmieri's already-correct one.
+            (overlay.get(player.understat_id), "manual_overlay"),
             (fpl_id_by_name.get(player.name), "exact"),
             (normalized_fpl_id_by_name.get(normalized), "normalized"),
             (fpl_id_by_web_name.get(player.name), "web_name_exact"),
             (normalized_fpl_id_by_web_name.get(normalized), "web_name_normalized"),
-            (overlay.get(player.understat_id), "manual_overlay"),
         ]
         matched = False
         for candidate_id, candidate_pass in precise_candidates:
@@ -297,10 +431,35 @@ def build_crosswalk(
 
     # --- Round 2: heuristic passes, only against ids no precise (or earlier heuristic) match ---
     # already owns -- a precise match elsewhere always outranks a heuristic guess.
+    #
+    # Order within round 2 matters, and it's deliberately *not* the order these passes were added
+    # in: token_prefix and reversed_order each require the *entire* remaining name to line up (not
+    # just one token), so they're tried before surname_token/initial_surname, which only look at a
+    # single token and are more exposed to a coincidental cross-player surname collision. A real
+    # 2025/26 case: "Diego Gómez" (Understat) has a maternal surname FPL drops ("Diego Gómez
+    # Amarilla"), so the *correct* match's own surname-token key is "amarilla", not "gomez" — but
+    # "Joe Gomez" (a real, different Liverpool defender) genuinely does key on "gomez", and was
+    # the only *other* candidate left at that key, so a surname-token-first ordering picked that
+    # wrong id even though it satisfied this pass's own "unique candidate" rule. Trying the
+    # full-name passes first uses the stronger signal before the weaker one gets a chance to be
+    # uniquely (and wrongly) available.
     still_unmatched: list[UnderstatPlayer] = []
     for player in unresolved_after_round1:
         normalized = normalize_name(player.name)
         heuristic_candidates: list[tuple[int, str]] = []
+
+        prefix_candidates = [
+            c
+            for c in set(_token_prefix_candidates(normalized.split(), fpl_tokens_by_id))
+            if c not in claimed_by
+        ]
+        if len(prefix_candidates) == 1:
+            heuristic_candidates.append((prefix_candidates[0], "token_prefix"))
+
+        reversed_candidate = _reversed_name_candidate(player.name, normalized_fpl_id_by_name)
+        if reversed_candidate is not None and reversed_candidate not in claimed_by:
+            heuristic_candidates.append((reversed_candidate, "reversed_order"))
+
         surname_candidates = [
             c for c in surname_index.get(_surname_token(normalized) or "", []) if c not in claimed_by
         ]
@@ -380,9 +539,15 @@ class CrosswalkBuilder:
         self,
         season_start_year: int,
         league_data: dict[str, Any],
-        overlay: dict[int, int] = MANUAL_OVERLAY_UNDERSTAT_TO_FPL,
+        overlay: dict[int, int] | None = None,
         strict: bool = True,
     ) -> list[CrosswalkEntry]:
+        """``overlay`` defaults to this season's own slice of
+        :data:`MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON` — never the flat live-ingestion default,
+        since an fpl_id hand-verified for one season means a different real player in any other
+        (see this module's own docstring). Pass an explicit ``overlay`` to override."""
+        if overlay is None:
+            overlay = MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON.get(season_start_year, {})
         fpl_id_by_name = fetch_fpl_id_list(season_start_year, self.client)
         understat_players = understat_players_from_league_data(league_data)
         return build_crosswalk(understat_players, fpl_id_by_name, overlay=overlay, strict=strict)

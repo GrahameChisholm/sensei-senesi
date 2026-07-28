@@ -32,6 +32,7 @@ def fitted_minutes_model() -> MinutesModel:
             "ownership_log": rng.uniform(0, 5, n),
             "transfers_out_share": rng.uniform(0, 0.1, n),
             "transfers_balance_share": rng.uniform(-0.1, 0.1, n),
+            "is_goalkeeper": np.zeros(n),
         }
     )
     started = pd.Series(rng.choice([0, 1], size=n, p=[0.2, 0.8]))
@@ -46,7 +47,8 @@ def fitted_bonus_model() -> BonusModel:
     for _ in range(150):
         position = rng.choice(["GK", "DEF", "MID", "FWD"])
         eg, ea, cs, dc = rng.uniform(0, 1), rng.uniform(0, 1), rng.uniform(0, 1), rng.uniform(0, 15)
-        rows.append(build_features(eg, ea, cs, dc, position))
+        em = rng.uniform(0, 90)
+        rows.append(build_features(eg, ea, cs, dc, position, expected_minutes=em))
         targets.append(float(np.clip(1.5 * eg + ea + cs, 0, 3)))
     return BonusModel().fit(pd.DataFrame(rows), pd.Series(targets))
 
@@ -70,6 +72,7 @@ def _base_row(player_id: int, position: str) -> dict:
         "ownership_log": 2.0,
         "transfers_out_share": 0.01,
         "transfers_balance_share": 0.0,
+        "is_goalkeeper": 1.0 if position == "GK" else 0.0,
         "npxg_per_90": 0.4,
         "xa_per_90": 0.2,
         "team_xg_per_90": 1.5,
@@ -81,8 +84,7 @@ def _base_row(player_id: int, position: str) -> dict:
         "red_card_rate_per_90": 0.01,
         "dc_per_90": 6.0,
         "opponent_possession_share": 0.5,
-        "opponent_shots_on_target_per_90": 4.0,
-        "is_home": True,
+        "own_save_rate_per_90": 4.0,
     }
 
 
@@ -192,6 +194,7 @@ def test_raw_component_quantities_emitted_for_calibration(
         "expected_goals",
         "expected_assists",
         "expected_bonus",
+        "expected_saves",
     ]:
         assert col in predictions.columns
 
@@ -203,6 +206,11 @@ def test_raw_component_quantities_emitted_for_calibration(
     assert (predictions["expected_goals"] >= 0.0).all()
     assert (predictions["expected_assists"] >= 0.0).all()
     assert predictions["expected_bonus"].between(0.0, 3.0).all()
+
+    # Saves is the mirror image: modelled for GK only, NaN for outfield players.
+    assert predictions.loc[1, "expected_saves"] >= 0.0
+    for pid in (2, 3, 4, 5, 6):
+        assert np.isnan(predictions.loc[pid, "expected_saves"])
 
 
 def test_own_goals_activates_via_optional_row_column(
@@ -254,24 +262,29 @@ def test_fitted_constants_default_matches_no_argument_behavior(
     pd.testing.assert_frame_equal(without_argument, with_default_constants)
 
 
-def test_fitted_save_conversion_rate_changes_saves_projection(
+def test_fitted_save_rate_shrinkage_changes_saves_projection(
     synthetic_pool, fitted_minutes_model, fitted_bonus_model
 ):
+    # ENGINE_IMPROVEMENTS_3.md D.1: the own-rate fallback's shrinkage constants, not the
+    # (unused-for-now) opponent-adjusted project_saves's save_conversion_rate.
     baseline = project_gameweek_pool(
         synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model
     ).set_index("player_id")
-    higher_conversion = project_gameweek_pool(
+    shrunk_toward_lower_prior = project_gameweek_pool(
         synthetic_pool,
         1,
         fitted_minutes_model,
         fitted_bonus_model,
-        FittedConstants(save_conversion_rate=0.95),
+        FittedConstants(
+            league_avg_save_rate_per_90=1.0,
+            save_rate_shrinkage_k=1000.0,
+        ),
     ).set_index("player_id")
 
-    # GK's saves should rise with a higher fitted save conversion rate; outfield players are
+    # GK's saves should fall toward the (lower) league-average prior; outfield players are
     # untouched by this constant.
-    assert higher_conversion.loc[1, "saves"] > baseline.loc[1, "saves"]
-    assert higher_conversion.loc[2, "saves"] == pytest.approx(baseline.loc[2, "saves"])
+    assert shrunk_toward_lower_prior.loc[1, "saves"] < baseline.loc[1, "saves"]
+    assert shrunk_toward_lower_prior.loc[2, "saves"] == pytest.approx(baseline.loc[2, "saves"])
 
 
 def test_fitted_dc_overdispersion_alpha_changes_defensive_contribution(

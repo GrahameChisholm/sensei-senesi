@@ -137,6 +137,37 @@ def test_gate_fails_if_predictions_not_logged_or_not_trusted():
     assert "NOT YET" in report_not_trusted.summary()
 
 
+def test_gate_uses_per_component_calibration_threshold_when_given():
+    # ENGINE_IMPROVEMENTS_3.md B.1: a component whose own historical value is looser than the
+    # global default should still be checked against its own bar, not silently pass or fail
+    # against a one-size-fits-all number.
+    calibration_reports = {
+        "clean_sheet": CalibrationReport(
+            by_bin=pd.DataFrame({"bin": ["a"], "predicted_mean": [0.4], "actual_rate": [0.47], "n": [100]}),
+            mean_absolute_calibration_error=0.07,
+        )
+    }
+
+    default_report = evaluate_definition_of_done(
+        baseline_results=_passing_baseline_results(),
+        bias_reports=_unbiased_reports(),
+        calibration_reports=calibration_reports,
+        predictions_logged=True,
+        trusted_by_user=True,
+    )
+    assert not default_report.calibration_acceptable  # 0.07 > the tightened 0.05 default
+
+    per_component_report = evaluate_definition_of_done(
+        baseline_results=_passing_baseline_results(),
+        bias_reports=_unbiased_reports(),
+        calibration_reports=calibration_reports,
+        predictions_logged=True,
+        trusted_by_user=True,
+        calibration_error_thresholds={"clean_sheet": 0.1},
+    )
+    assert per_component_report.calibration_acceptable
+
+
 def test_gate_fails_on_empty_inputs_rather_than_vacuously_passing():
     report = evaluate_definition_of_done(
         baseline_results={},

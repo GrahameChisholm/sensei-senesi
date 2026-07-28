@@ -14,10 +14,18 @@ import pytest
 
 from backtest.harness import run_walk_forward
 from backtest.run_season import (
-    _team_rate_asof_venue_split,
+    SeasonBacktestData,
+    _composite_gameweek,
+    _fit_league_avg_rate_by_position,
+    _league_venue_multipliers,
+    _pool_season_backtest_data,
+    _team_prior_match_count,
+    _team_rate_asof,
+    _team_rate_asof_shrunk,
     build_penalty_attempts_frame,
     build_stand_in_squad_starting_xi,
     collapse_double_gameweeks,
+    compute_coverage_report,
     compute_days_since_last_appearance,
     compute_fixture_congestion,
     compute_team_rotation_propensity,
@@ -245,46 +253,111 @@ def test_fetch_understat_player_histories_keeps_prior_seasons_drops_future_ones(
     assert list(histories[1]["date"]) == sorted(histories[1]["date"])  # chronologically sorted
 
 
-def test_team_rate_asof_venue_split_uses_only_matching_venue_history():
-    # ENGINE_IMPROVEMENTS_2.md D.5: a team that only ever scores at home in its history must have
-    # its home-fixture rate reflect that, not be diluted by away matches with zero goals.
+def test_team_prior_match_count_counts_strictly_prior_matches():
+    history = pd.DataFrame(
+        {"date": pd.to_datetime(["2025-08-01", "2025-08-08", "2025-08-15"], utc=True)}
+    )
+    assert _team_prior_match_count(history, pd.Timestamp("2025-08-10", tz="UTC")) == 2
+    assert _team_prior_match_count(history, pd.Timestamp("2025-07-01", tz="UTC")) == 0
+
+
+def test_team_prior_match_count_empty_history_is_zero():
+    empty = pd.DataFrame(columns=["date"])
+    assert _team_prior_match_count(empty, pd.Timestamp("2025-08-10", tz="UTC")) == 0
+
+
+def test_team_rate_asof_shrunk_pulls_a_thin_sample_toward_the_league_average():
+    # ENGINE_IMPROVEMENTS_3.md A.1: one match of a wildly unusual rate should not be taken at face
+    # value the way the previous per-team venue split effectively did.
     history = pd.DataFrame(
         {
-            "date": pd.to_datetime(
-                ["2025-08-01", "2025-08-08", "2025-08-15", "2025-08-22"], utc=True
-            ),
-            "xG": [2.0, 0.0, 2.0, 0.0],
-            "xGA": [0.0, 0.0, 0.0, 0.0],
-            "minutes": 90.0,
-            "is_home": [True, False, True, False],
+            "date": pd.to_datetime(["2025-08-01"], utc=True),
+            "xG": [4.0],
+            "xGA": [4.0],
+            "minutes": [90.0],
+            "is_home": [True],
         }
     )
-    before = pd.Timestamp("2025-09-01", tz="UTC")
+    before = pd.Timestamp("2025-08-15", tz="UTC")
+    raw = _team_rate_asof(history, "xG", before)
+    assert raw == pytest.approx(4.0)
 
-    home_rate = _team_rate_asof_venue_split(history, "xG", before, is_home=True)
-    away_rate = _team_rate_asof_venue_split(history, "xG", before, is_home=False)
+    shrunk = _team_rate_asof_shrunk(history, "xG", before, league_avg=1.4, shrinkage_k=4.0)
+    # n_prior=1, k=4 -> weight mostly on the prior: (1*4.0 + 4*1.4) / 5 = 1.92
+    assert shrunk == pytest.approx((1 * 4.0 + 4 * 1.4) / 5)
+    assert 1.4 < shrunk < 4.0
 
-    assert home_rate == pytest.approx(2.0)
-    assert away_rate == pytest.approx(0.0)
 
-
-def test_team_rate_asof_venue_split_falls_back_to_combined_when_venue_subset_empty():
-    # A promoted team's very first home fixture has no prior home-only history at all -- must fall
-    # back to the combined rate rather than returning NaN.
+def test_team_rate_asof_shrunk_barely_moves_a_deep_sample():
     history = pd.DataFrame(
         {
-            "date": pd.to_datetime(["2025-08-08", "2025-08-15"], utc=True),
-            "xG": [1.0, 1.4],
-            "xGA": [0.5, 0.5],
-            "minutes": 90.0,
-            "is_home": [False, False],  # no home matches yet
+            "date": pd.to_datetime([f"2025-{m:02d}-01" for m in range(1, 13)], utc=True),
+            "xG": [1.5] * 12,
+            "xGA": [1.5] * 12,
+            "minutes": [90.0] * 12,
+            "is_home": [True] * 12,
         }
     )
-    before = pd.Timestamp("2025-09-01", tz="UTC")
+    before = pd.Timestamp("2026-01-01", tz="UTC")
+    shrunk = _team_rate_asof_shrunk(history, "xG", before, league_avg=1.0, shrinkage_k=4.0)
+    # n_prior=12, k=4 -> (12*1.5 + 4*1.0) / 16 = 1.375: most of the weight stays on the
+    # individual rate, unlike the single-match case above where the prior dominates.
+    assert shrunk == pytest.approx((12 * 1.5 + 4 * 1.0) / 16)
+    assert shrunk > 1.375 - 1e-9 and shrunk < 1.5
 
-    rate = _team_rate_asof_venue_split(history, "xG", before, is_home=True)
 
-    assert rate == pytest.approx((1.0 + 1.4) / 2, abs=0.2)  # ~ the combined EWMA, not NaN
+def test_team_rate_asof_shrunk_returns_nan_when_no_prior_history():
+    empty = pd.DataFrame(columns=["date", "xG", "xGA", "minutes", "is_home"])
+    before = pd.Timestamp("2025-08-15", tz="UTC")
+    assert pd.isna(_team_rate_asof_shrunk(empty, "xG", before, league_avg=1.4))
+
+
+def test_league_venue_multipliers_reflects_a_real_home_advantage():
+    # Every team scores 2.0 at home and 1.0 away -- a real, sizeable, league-wide venue effect.
+    rows = []
+    for team_id in range(20):
+        for match in range(5):
+            rows.append({"date": pd.Timestamp("2025-08-01", tz="UTC"), "xG": 2.0, "xGA": 1.0, "is_home": True})
+            rows.append({"date": pd.Timestamp("2025-08-01", tz="UTC"), "xG": 1.0, "xGA": 2.0, "is_home": False})
+    team_histories = {str(i): pd.DataFrame(rows) for i in range(20)}
+    xg_mult, xga_mult = _league_venue_multipliers(team_histories, pd.Timestamp("2025-09-01", tz="UTC"))
+    assert xg_mult == pytest.approx(2.0 / 1.5)
+    assert xga_mult == pytest.approx(1.0 / 1.5)
+
+
+def test_league_venue_multipliers_neutral_below_the_minimum_match_count():
+    rows = [{"date": pd.Timestamp("2025-08-01", tz="UTC"), "xG": 2.0, "xGA": 1.0, "is_home": True}]
+    team_histories = {"1": pd.DataFrame(rows)}
+    xg_mult, xga_mult = _league_venue_multipliers(team_histories, pd.Timestamp("2025-08-15", tz="UTC"))
+    assert (xg_mult, xga_mult) == (1.0, 1.0)
+
+
+def test_league_venue_multipliers_neutral_when_no_team_histories():
+    xg_mult, xga_mult = _league_venue_multipliers({}, pd.Timestamp("2025-08-15", tz="UTC"))
+    assert (xg_mult, xga_mult) == (1.0, 1.0)
+
+
+def test_fit_league_avg_rate_by_position_computes_per_90_rate():
+    training_history = pd.DataFrame(
+        {
+            "position": ["DEF"] * 120 + ["MID"] * 120,
+            "minutes": [90.0] * 120 + [90.0] * 120,
+            "yellow_cards": [1] * 12 + [0] * 108 + [0] * 120,  # 12 DEF yellows, 0 MID
+        }
+    )
+    rates = _fit_league_avg_rate_by_position(training_history, "yellow_cards")
+    # DEF: 12 yellows / (120*90) minutes * 90 = 12/120 = 0.1 per 90
+    assert rates["DEF"] == pytest.approx(0.1)
+    assert rates["MID"] == pytest.approx(0.0)
+    assert rates["FWD"] == pytest.approx(0.0)  # no FWD rows at all -> too-thin fallback
+
+
+def test_fit_league_avg_rate_by_position_falls_back_to_zero_for_thin_sample():
+    training_history = pd.DataFrame(
+        {"position": ["DEF"] * 5, "minutes": [90.0] * 5, "red_cards": [1, 0, 0, 0, 0]}
+    )
+    rates = _fit_league_avg_rate_by_position(training_history, "red_cards", min_rows=100)
+    assert rates["DEF"] == pytest.approx(0.0)
 
 
 def test_build_stand_in_squad_starting_xi_picks_highest_minutes_players_who_started():
@@ -313,6 +386,23 @@ def test_build_stand_in_squad_starting_xi_picks_highest_minutes_players_who_star
     assert 4 not in starting_xi[1]  # in the squad (top-4 minutes) but didn't start GW1
     assert 5 not in starting_xi.get(1, set())  # not even in the top-4-minutes squad
     assert starting_xi[2] == {1, 2, 3, 4}  # all four squad members started GW2
+
+
+def test_build_stand_in_squad_starting_xi_excludes_goalkeepers():
+    # ENGINE_IMPROVEMENTS_3.md D.1: a goalkeeper who's never rotated would otherwise dominate a
+    # pure highest-minutes selection -- no real manager captains their keeper.
+    ground_truth = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 1, 1],
+            "position": ["GK", "DEF", "MID", "FWD"],
+            "minutes": [90, 90, 90, 45],  # GK has the most minutes of anyone
+            "starts": [1, 1, 1, 1],
+        }
+    )
+    starting_xi = build_stand_in_squad_starting_xi(ground_truth, squad_size=3)
+    assert 1 not in starting_xi.get(1, set())
+    assert starting_xi[1] == {2, 3, 4}
 
 
 def test_score_season_computes_captaincy_when_starts_column_present():
@@ -472,6 +562,7 @@ def _synthetic_season() -> tuple[pd.DataFrame, pd.DataFrame, dict, dict]:
             rows.append(
                 {
                     "element": player_id,
+                    "name": f"Player {player_id}",
                     "position": position,
                     "team": team,
                     "GW": gw_num,
@@ -498,6 +589,8 @@ def _synthetic_season() -> tuple[pd.DataFrame, pd.DataFrame, dict, dict]:
                     "yellow_cards": 0,
                     "red_cards": 0,
                     "own_goals": 0,
+                    "saves": 0,
+                    "bps": 10 + player_id,
                     "defensive_contribution": 8 if position == "DEF" else 5,
                     "penalties_missed": 0,
                     "team_h_score": a_score if a_home else b_score,
@@ -587,6 +680,51 @@ def test_engineer_features_computes_crowd_features_from_value_selected_transfers
         assert engineered[col].notna().all()
 
 
+def test_compute_coverage_report_surfaces_unmatched_significant_players():
+    # Crosswalk coverage Phase 1: points_excluded_share was previously only a percentage -- there
+    # was no way to see *which* players it referred to without a fresh ad hoc script.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    # _synthetic_season gives everyone exactly 450 minutes (5 gameweeks x 90) -- bump one
+    # gameweek's minutes so every player clears the strict ">450" significance bar.
+    merged_gw = merged_gw.copy()
+    merged_gw.loc[merged_gw["GW"] == 1, "minutes"] = 120
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    # Player 1 (>450 minutes) matched; players 2-4 unmatched.
+    crosswalk = [CrosswalkEntry(fpl_id=1, understat_id=101, fpl_name="P1", understat_name="P1", matched_by="exact")]
+
+    report = compute_coverage_report(merged_gw, crosswalk, engineered)
+
+    unmatched_ids = {p.fpl_id for p in report.unmatched_significant_players}
+    assert 1 not in unmatched_ids
+    assert {2, 3, 4}.issubset(unmatched_ids)
+    for p in report.unmatched_significant_players:
+        assert p.minutes > 450
+        assert p.name  # real player name, not blank
+    assert "Unmatched significant players" in report.summary()
+
+
+def test_engineer_features_includes_goalkeepers_with_zeroed_npxg_xa():
+    # ENGINE_IMPROVEMENTS_3.md D.1: goalkeepers are no longer excluded entirely; their npxG/xA
+    # default to 0.0 (never meaningfully register in Understat, and the crosswalk doesn't try to
+    # match them) rather than the NaN an unmatched *outfield* player correctly gets.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    gk_rows = merged_gw[merged_gw["element"] == 1].copy()
+    gk_rows["element"] = 99
+    gk_rows["position"] = "GK"
+    gk_rows["saves"] = 3
+    merged_gw = pd.concat([merged_gw, gk_rows], ignore_index=True)
+
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+
+    assert "GK" in set(engineered["position"])
+    gk = engineered[engineered["player_id"] == 99]
+    assert not gk.empty
+    assert (gk["npxg_per_90"] == 0.0).all()
+    assert (gk["xa_per_90"] == 0.0).all()
+    assert gk["own_save_rate_per_90"].notna().all()
+    assert (gk["own_save_rate_per_90"] > 0).any()  # picked up the real saves history
+
+
 def test_fit_fn_and_predict_fn_wire_together_via_walk_forward():
     merged_gw, teams, team_histories, player_histories = _synthetic_season()
     engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
@@ -634,6 +772,84 @@ def test_score_season_produces_a_summary_without_crashing():
     assert "bonus" in report.mean_calibrations
 
 
+def test_score_season_computes_saves_mean_calibration_for_goalkeepers():
+    # Phase 3: saves had no calibration check at all -- every other component (goals, assists,
+    # bonus, clean sheets, DC) already had one.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    gk_rows = merged_gw[merged_gw["element"] == 1].copy()
+    gk_rows["element"] = 99
+    gk_rows["position"] = "GK"
+    gk_rows["saves"] = 3
+    merged_gw = pd.concat([merged_gw, gk_rows], ignore_index=True)
+
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    gameweeks = sorted(engineered["gameweek"].unique())
+    predict_fn = make_predict_fn(engineered)
+    result = run_walk_forward(gameweeks, engineered, fit_fn, predict_fn, min_training_gameweeks=1)
+
+    ground_truth = engineered[
+        [
+            "player_id",
+            "gameweek",
+            "position",
+            "total_points",
+            "minutes",
+            "clean_sheets",
+            "defensive_contribution",
+            "goals_scored",
+            "assists",
+            "bonus",
+            "saves",
+        ]
+    ]
+    report = score_season(result.predictions, ground_truth)
+
+    assert "saves" in report.mean_calibrations
+    assert report.mean_calibrations["saves"].mean_predicted >= 0.0
+    assert report.mean_calibrations["saves"].mean_actual == pytest.approx(3.0)
+
+
+def test_score_season_computes_price_tier_bias_and_team_clean_sheet_when_columns_present():
+    # ENGINE_IMPROVEMENTS_3.md B.2/B.3: both are computed only when ground_truth carries the
+    # extra columns they need -- this is the full-column path production's own run_backtest uses.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    gameweeks = sorted(engineered["gameweek"].unique())
+    predict_fn = make_predict_fn(engineered)
+    result = run_walk_forward(gameweeks, engineered, fit_fn, predict_fn, min_training_gameweeks=1)
+
+    ground_truth = engineered[
+        [
+            "player_id",
+            "gameweek",
+            "position",
+            "total_points",
+            "minutes",
+            "clean_sheets",
+            "defensive_contribution",
+            "goals_scored",
+            "assists",
+            "bonus",
+            "value",
+            "team",
+            "was_home",
+            "team_h_score",
+            "team_a_score",
+        ]
+    ]
+    report = score_season(result.predictions, ground_truth)
+
+    assert report.bias_by_price_tier is not None
+    assert "price_tier" in report.bias_by_price_tier.by_group.columns
+    assert report.team_clean_sheet_calibration is not None
+    assert "team_clean_sheet" in report.brier_reports
+    assert "minutes_played_at_all" in report.brier_reports
+    summary = report.summary()
+    assert "Bias by price tier" in summary
+    assert "Team-level clean-sheet MACE" in summary
+    assert "Brier vs. predicting the constant base rate" in summary
+
+
 def test_score_season_includes_pure_xg_baseline_when_player_rates_given():
     # ENGINE_IMPROVEMENTS_2.md D.2: pure_xg is the third baseline BUILD_PLAN 3.3 names but which
     # was never actually wired into the gate.
@@ -664,3 +880,93 @@ def test_score_season_includes_pure_xg_baseline_when_player_rates_given():
 
     assert "pure_xg" in report.baseline_results
     assert "pure_xg" in report.definition_of_done.baseline_results
+
+
+def test_composite_gameweek_disambiguates_seasons():
+    # Multi-season Phase 2: season 2024's GW5 and season 2025's GW5 must never collide once pooled.
+    gws = pd.Series([1, 5, 38])
+    assert list(_composite_gameweek(2024, gws)) == [202401, 202405, 202438]
+    assert list(_composite_gameweek(2025, gws)) == [202501, 202505, 202538]
+
+
+def _synthetic_season_backtest_data(season_start_year: int, dc_data_available: bool = True) -> SeasonBacktestData:
+    """A minimal, network-free SeasonBacktestData for one synthetic season (multi-season Phase 2
+    pooling tests) -- reuses the same synthetic fixture and real fit/predict pipeline every other
+    engineer_features/score_season test in this module does."""
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    if not dc_data_available:
+        merged_gw = merged_gw.drop(columns=["defensive_contribution"])
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    gameweeks = sorted(engineered["gameweek"].unique())
+    predict_fn = make_predict_fn(engineered)
+    result = run_walk_forward(gameweeks, engineered, fit_fn, predict_fn, min_training_gameweeks=1)
+
+    ground_truth = engineered[
+        [
+            "player_id",
+            "gameweek",
+            "position",
+            "total_points",
+            "minutes",
+            "clean_sheets",
+            "defensive_contribution",
+            "goals_scored",
+            "assists",
+            "bonus",
+            "starts",
+            "value",
+            "team",
+            "was_home",
+            "team_h_score",
+            "team_a_score",
+        ]
+    ].copy()
+    ground_truth["dc_data_available"] = bool(engineered.attrs.get("dc_data_available", True))
+    player_rates = engineered[
+        ["player_id", "position", "gameweek", "npxg_per_90", "xa_per_90", "recent_minutes_ewma"]
+    ]
+    coverage = compute_coverage_report(
+        merged_gw, [CrosswalkEntry(1, 101, "P1", "P1", "exact")], engineered
+    )
+    return SeasonBacktestData(
+        season_start_year=season_start_year,
+        predictions=result.predictions,
+        ground_truth=ground_truth,
+        player_rates=player_rates,
+        coverage=coverage,
+    )
+
+
+def test_pool_season_backtest_data_keeps_per_season_and_pools_across_seasons():
+    per_season_data = {
+        2024: _synthetic_season_backtest_data(2024),
+        2025: _synthetic_season_backtest_data(2025),
+    }
+
+    report = _pool_season_backtest_data(per_season_data)
+
+    assert set(report.per_season) == {2024, 2025}
+    for season_report in report.per_season.values():
+        assert isinstance(season_report.accuracy.overall_mae, float)
+    # pooled sample is the concatenation of both seasons -- twice the single-season row count.
+    single_season_n = sum(g["n"] for g in report.per_season[2024].accuracy.by_position.to_dict("records"))
+    pooled_n = sum(g["n"] for g in report.pooled.accuracy.by_position.to_dict("records"))
+    assert pooled_n == 2 * single_season_n
+    assert isinstance(report.pooled.accuracy.overall_mae, float)
+
+
+def test_pool_season_backtest_data_excludes_dc_unavailable_seasons_from_dc_calibration():
+    # Multi-season Phase 2: a season lacking DC's raw archive columns gets a neutral placeholder
+    # rate/outcome upstream, but that placeholder must never count toward DC calibration.
+    per_season_data = {
+        2024: _synthetic_season_backtest_data(2024, dc_data_available=False),
+        2025: _synthetic_season_backtest_data(2025, dc_data_available=True),
+    }
+
+    report = _pool_season_backtest_data(per_season_data)
+
+    # The pooled DC calibration bin counts must match season 2025 alone (2024's placeholder rows
+    # are excluded), not the sum of both seasons.
+    pooled_n = report.pooled.defensive_contribution_calibration.by_bin["n"].sum()
+    season_2025_n = report.per_season[2025].defensive_contribution_calibration.by_bin["n"].sum()
+    assert pooled_n == season_2025_n

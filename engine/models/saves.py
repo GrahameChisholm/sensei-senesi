@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from engine.models._discrete import expected_floor_division
+from engine.rates import shrink_toward_prior
 from engine.scoring import PENALTY_SAVE_POINTS, SAVES_PER_POINT
 
 # Away goalkeepers face somewhat more shots/pressure on average (BUILD_PLAN 2.6 "Inputs" table).
@@ -137,7 +138,14 @@ def project_saves(
     away_shot_multiplier: float = DEFAULT_AWAY_SHOT_MULTIPLIER,
     expected_minutes: float = 90.0,
 ) -> SavesProjection:
-    """Top-level entry point combining shots faced, save conversion, and the penalty-save bonus."""
+    """Top-level entry point combining shots faced, save conversion, and the penalty-save bonus.
+
+    Requires a real ``opponent_shots_on_target_per_90`` — still blocked (BUILD_PLAN 3.2 / Tier
+    3.2): no opponent shots-on-target data source exists yet. See
+    :func:`project_saves_from_own_rate` for the fallback the real backtest driver uses today
+    (ENGINE_IMPROVEMENTS_3.md D.1) — this function remains the intended model once that data
+    source exists, deliberately kept rather than removed.
+    """
     shots_faced = expected_shots_faced(
         opponent_shots_on_target_per_90,
         team_xga_per_90,
@@ -148,6 +156,51 @@ def project_saves(
     )
     return SavesProjection(
         expected_saves=expected_saves(shots_faced, save_conversion_rate),
+        expected_penalties_faced=expected_penalties_faced,
+        penalty_save_rate=penalty_save_rate,
+    )
+
+
+def project_saves_from_own_rate(
+    own_save_rate_per_90: float,
+    expected_minutes: float = 90.0,
+    *,
+    individual_weight: float | None = None,
+    league_avg_save_rate_per_90: float | None = None,
+    shrinkage_k: float = 0.0,
+    expected_penalties_faced: float = 0.0,
+    penalty_save_rate: float = DEFAULT_PENALTY_SAVE_RATE,
+) -> SavesProjection:
+    """Fallback saves projection using a goalkeeper's own per-90 saves EWMA rate rather than an
+    opponent-shots-on-target-driven formula (ENGINE_IMPROVEMENTS_3.md D.1).
+
+    :func:`project_saves`'s real blocker (Tier 3.2 — no opponent shots-on-target data source) only
+    affects its opponent-adjustment term; a keeper's own saves history is already in the vaastav
+    archive, and a real point-in-time measurement found it the better predictor of the two anyway
+    (Spearman 0.138 for a keeper's own saves EWMA vs. 0.056 for team xGC-as-of). This is what lets
+    goalkeepers be scored at all today rather than excluded from the pool entirely — saves are only
+    ~18% of a goalkeeper's scoring, so this unblocks the other ~82% (appearance, clean sheets,
+    goals-conceded, bonus) without needing new data.
+
+    Shrinkage toward the league-average rate (same opt-in shape as
+    :func:`engine.models.cards.project_cards`) only kicks in when ``individual_weight`` and
+    ``league_avg_save_rate_per_90`` are given and ``shrinkage_k`` is positive.
+    """
+    if own_save_rate_per_90 < 0:
+        raise ValueError("own_save_rate_per_90 must be non-negative")
+    if expected_minutes < 0:
+        raise ValueError("expected_minutes must be non-negative")
+    effective_rate = own_save_rate_per_90
+    if (
+        individual_weight is not None
+        and league_avg_save_rate_per_90 is not None
+        and shrinkage_k > 0
+    ):
+        effective_rate = shrink_toward_prior(
+            own_save_rate_per_90, individual_weight, league_avg_save_rate_per_90, shrinkage_k
+        )
+    return SavesProjection(
+        expected_saves=effective_rate * (expected_minutes / 90.0),
         expected_penalties_faced=expected_penalties_faced,
         penalty_save_rate=penalty_save_rate,
     )

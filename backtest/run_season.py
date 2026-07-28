@@ -47,7 +47,7 @@ import argparse
 import io
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,7 @@ import pandas as pd
 from backtest import baselines, gate, metrics
 from backtest.harness import run_walk_forward
 from engine.data.crosswalk import (
+    MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON,
     CrosswalkEntry,
     assert_matched_share,
     build_crosswalk,
@@ -66,6 +67,7 @@ from engine.data.crosswalk import (
     understat_players_from_league_data,
 )
 from engine.data.understat_client import (
+    EARLIEST_SEASON,
     UnderstatClient,
     league_data_to_dataframes,
     player_data_to_dataframe,
@@ -75,7 +77,6 @@ from engine.models.bonus import BonusModel
 from engine.models.clean_sheets import (
     clean_sheet_probability,
     fit_dixon_coles_rho,
-    split_by_venue,
     team_expected_goals_rate,
 )
 from engine.models.defensive_contribution import (
@@ -90,10 +91,20 @@ from engine.models.goals import (
 )
 from engine.models.minutes import FEATURE_COLUMNS as MINUTES_FEATURE_COLUMNS
 from engine.models.minutes import MinutesModel, encode_status
-from engine.models.saves import fit_away_shot_multiplier, fit_save_conversion_rate
+from engine.models.saves import (
+    fit_away_shot_multiplier,
+    fit_save_conversion_rate,
+    project_saves_from_own_rate,
+)
 from engine.pipeline import FittedConstants, project_gameweek_pool
-from engine.rates import effective_sample_minutes, ewma_rate_asof, latest_ewma_rate
-from engine.scoring import DEF, DEFENSIVE_CONTRIBUTION_THRESHOLD, FWD, MID, POSITIONS
+from engine.rates import (
+    effective_sample_minutes,
+    effective_sample_minutes_asof,
+    ewma_rate_asof,
+    latest_ewma_rate,
+    shrink_toward_prior,
+)
+from engine.scoring import DEF, DEFENSIVE_CONTRIBUTION_THRESHOLD, FWD, GK, MID, POSITIONS
 from engine.simulate import (
     DEFAULT_N_RUNS,
     PlayerMatchInputs,
@@ -107,13 +118,37 @@ DEFAULT_HALFLIFE = 10.0
 
 # Goals/assists thin-sample-rate shrinkage strength, in effective-minutes units
 # (ENGINE_IMPROVEMENTS_2.md B.2). Unlike the five Tier 1.2 constants, this has no closed-form
-# per-gameweek estimator — it was selected once via an end-to-end backtest sweep over
-# {0 (disabled), 180, 450, 900} on the real 2025/26 walk-forward: every metric improved at 180
-# (top-10 mean actual 4.65 -> 4.80, max single-gameweek projection 25.5 -> 9.7 pts), while larger
-# values kept improving pooled rank correlation but hurt top-N — the metric ENGINE_IMPROVEMENTS.md
-# 2.1 argues is primary for decisions. Revisit only with a proper nested-CV walk-forward search;
-# treated as a fixed, evidence-based hyperparameter until then, not re-derived every gameweek.
-SHRINKAGE_K = 180.0
+# per-gameweek estimator — it was originally selected via a sweep over {0, 180, 450, 900} on the
+# pre-Tier-A/B/D.1 pipeline (180 was best then). ENGINE_IMPROVEMENTS_3.md's own recommended next
+# step was to re-sweep once the team-rate shrinkage (A.1), multi-season priors (A.4), and
+# goalkeeper inclusion (D.1) changed the population and rate data feeding this constant again.
+# Re-swept over {0, 90, 180, 300, 450, 900} on the real 2025/26 walk-forward with every other
+# Tier A-D change already landed: k=90 dominated on every metric (MAE 1.5836 vs 180's 1.5876,
+# top-10 mean actual 5.21 vs 5.20, pooled rho 0.6343 vs 0.6343, max single-gameweek projection
+# 7.36 vs 7.23) while k=0 (disabled) let a single thin-sample outlier reach 24.8 points in one
+# gameweek. Revisit only with a proper nested-CV walk-forward search; treated as a fixed,
+# evidence-based hyperparameter until then, not re-derived every gameweek.
+SHRINKAGE_K = 90.0
+
+# Card/own-goal thin-sample-rate shrinkage strength, in effective-minutes units
+# (ENGINE_IMPROVEMENTS_3.md A.3) — a real point-in-time pull found an unshrunk red-card rate of
+# 22.9 per 90 minutes sustained for six gameweeks off a single dismissal in a 3-minute cameo, the
+# same defect B.2 fixed for goals/assists, never applied to cards. Yellows are common enough
+# (median rate 0.09/90 across the 2025/26 archive) that a moderate prior weight is enough; reds and
+# own goals are rare enough — and a single observation is different enough in kind from a real rate
+# — that they lean almost entirely on the prior until a real sample accumulates. Initial
+# evidence-based values, not yet swept the way SHRINKAGE_K/TEAM_RATE_SHRINKAGE_K were; revisit with
+# a proper walk-forward sweep.
+YELLOW_CARD_SHRINKAGE_K = 200.0
+RED_CARD_SHRINKAGE_K = 1000.0
+OWN_GOAL_SHRINKAGE_K = 500.0
+
+# ENGINE_IMPROVEMENTS_3.md D.1: shrinkage strength (in effective vaastav-minutes) for the
+# goalkeeper own-rate saves fallback. Saves are far more frequent than cards (a keeper faces
+# several shots most matches), so a keeper's own EWMA carries real signal after just a couple of
+# matches — a much smaller prior weight than the card constants above is appropriate. Initial
+# evidence-based value, not yet swept.
+SAVE_RATE_SHRINKAGE_K = 90.0
 
 # Understat's ``team_title`` -> the vaastav/FPL team-name spelling for the same club, wherever they
 # differ (BUILD_PLAN 1.1's ID-crosswalk problem, at team-name granularity rather than player-id
@@ -136,6 +171,7 @@ __all__ = [
     "fetch_vaastav_merged_gw",
     "fetch_vaastav_teams",
     "fetch_understat_league_data_raw",
+    "fetch_understat_multi_season_league_data",
     "build_season_crosswalk",
     "fetch_understat_player_histories",
     "build_team_rate_histories",
@@ -146,10 +182,14 @@ __all__ = [
     "simulate_gameweek_pool",
     "make_simulate_predict_fn",
     "CoverageReport",
+    "UnmatchedSignificantPlayer",
     "compute_coverage_report",
     "build_stand_in_squad_starting_xi",
     "score_season",
+    "SeasonBacktestData",
     "run_backtest",
+    "MultiSeasonReport",
+    "run_multi_season_backtest",
     "main",
 ]
 
@@ -213,6 +253,43 @@ def fetch_understat_league_data_raw(
     return league_data
 
 
+# ENGINE_IMPROVEMENTS_3.md A.4: team rates previously came from `season_start_year` alone,
+# reintroducing the exact cold-start problem C.3 fixed for player rates (`engine/rates.py`'s own
+# docstring: pass "a single chronologically-sorted history spanning prior seasons into the current
+# one" so the EWMA decay handles the blend with no separate hand-coded rule for early gameweeks).
+# 3 prior seasons is a bounded, cheap default (one extra Understat request per season, each cached
+# independently) — enough for the halflife=10-match EWMA to have real history behind it by GW1
+# without fetching the entire Understat archive back to 2014/15 for a rate that decays out within
+# a season anyway.
+N_PRIOR_SEASONS_FOR_TEAM_RATES = 3
+
+
+def fetch_understat_multi_season_league_data(
+    season_start_year: int,
+    cache_dir: Path,
+    understat: UnderstatClient,
+    refresh: bool = False,
+    n_prior_seasons: int = N_PRIOR_SEASONS_FOR_TEAM_RATES,
+) -> dict[int, dict[str, Any]]:
+    """``season_start_year``'s own league data plus up to ``n_prior_seasons`` before it
+    (ENGINE_IMPROVEMENTS_3.md A.4), each fetched/cached independently via
+    :func:`fetch_understat_league_data_raw`. A team promoted partway through this window simply
+    has no data for the seasons before it was in the league — Understat's ``get_league_data`` only
+    ever returns that season's actual EPL teams, so no special-casing is needed. Returns
+    ``{season: league_data, ...}`` for whichever seasons are at or after
+    :data:`engine.data.understat_client.EARLIEST_SEASON`.
+    """
+    seasons = [
+        s
+        for s in range(season_start_year - n_prior_seasons, season_start_year + 1)
+        if s >= EARLIEST_SEASON
+    ]
+    return {
+        season: fetch_understat_league_data_raw(season, cache_dir, understat, refresh)
+        for season in seasons
+    }
+
+
 def build_season_crosswalk(
     season_start_year: int,
     league_data: dict[str, Any],
@@ -239,9 +316,14 @@ def build_season_crosswalk(
     understat_players = understat_players_from_league_data(league_data)
     fpl_id_by_name = fetch_fpl_id_list(season_start_year, client)
     fpl_id_by_web_name = fetch_fpl_web_names(season_start_year, client)
+    # This season's own overlay slice, not the flat live-ingestion default — fpl_id is only
+    # meaningful within the one season it was hand-verified against (see crosswalk.py's own
+    # docstring on why the overlay is season-keyed).
+    overlay = MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON.get(season_start_year, {})
     entries = build_crosswalk(
         understat_players,
         fpl_id_by_name,
+        overlay=overlay,
         strict=False,
         fpl_id_by_web_name=fpl_id_by_web_name,
     )
@@ -482,26 +564,83 @@ def _team_rate_asof(team_history: pd.DataFrame, stat_col: str, before: pd.Timest
     return latest_ewma_rate(prior, stat_col, minutes_col="minutes")
 
 
-def _team_rate_asof_venue_split(
-    team_history: pd.DataFrame, stat_col: str, before: pd.Timestamp, is_home: bool
-) -> float:
-    """Point-in-time per-90 EWMA rate restricted to the team's own home or away matches
-    (ENGINE_IMPROVEMENTS_2.md D.5 — BUILD_PLAN 2.4's home/away split, "home defence is measurably
-    stronger than away defence", specified but never supplied by the real backtest). Falls back to
-    the combined (both-venue) rate — :func:`_team_rate_asof` — when the venue-specific subset is
-    empty (early season, or a promoted team with too little same-venue history yet): some signal
-    beats none, and this only ever affects the first few matches at a given venue each season.
-    """
+def _team_prior_match_count(team_history: pd.DataFrame, before: pd.Timestamp) -> int:
+    """Matches strictly before ``before`` — the shrinkage weight for
+    :func:`_team_rate_asof_shrunk` (ENGINE_IMPROVEMENTS_3.md A.1). A match count, not
+    :func:`engine.rates.effective_sample_minutes`, since a team's own "sample size" for this
+    purpose is naturally in matches, not minutes (unlike a player, who can appear for a handful of
+    minutes and legitimately deserve a small weight)."""
     if team_history.empty:
-        return float("nan")
-    prior = team_history[team_history["date"] < before]
-    if prior.empty:
-        return float("nan")
-    home_prior, away_prior = split_by_venue(prior, is_home_col="is_home")
-    venue_prior = home_prior if is_home else away_prior
-    if venue_prior.empty:
-        return latest_ewma_rate(prior, stat_col, minutes_col="minutes")
-    return latest_ewma_rate(venue_prior, stat_col, minutes_col="minutes")
+        return 0
+    return int((team_history["date"] < before).sum())
+
+
+# ENGINE_IMPROVEMENTS_3.md A.1: shrinkage strength (in matches) for a team's own point-in-time
+# xG/xGA rate toward the point-in-time league average. Selected via an end-to-end sweep over
+# {2, 4, 8} team-fixtures matches against real 2025/26 clean-sheet outcomes — every metric (MACE,
+# Brier, share of team-fixtures projected above 50%) was best at k=4; see the document's Tier A.1
+# evidence table. Revisit with a proper walk-forward search across seasons, same caveat as
+# SHRINKAGE_K.
+TEAM_RATE_SHRINKAGE_K = 4.0
+
+# Below this many league-wide prior matches, a venue multiplier can't be trusted — hold it at 1.0
+# (venue-neutral) rather than fit one off a handful of games (only ever binds in the season's very
+# first gameweek or two).
+_MIN_MATCHES_FOR_VENUE_MULTIPLIER = 40
+
+
+def _team_rate_asof_shrunk(
+    team_history: pd.DataFrame,
+    stat_col: str,
+    before: pd.Timestamp,
+    league_avg: float,
+    shrinkage_k: float = TEAM_RATE_SHRINKAGE_K,
+) -> float:
+    """Point-in-time per-90 EWMA rate, shrunk toward ``league_avg`` (the same gameweek's own
+    point-in-time league-average rate) by the team's own prior match count
+    (ENGINE_IMPROVEMENTS_3.md A.1). Replaces the previous per-team home/away split
+    (``_team_rate_asof_venue_split``, ENGINE_IMPROVEMENTS_2.md D.5), which measurably made
+    clean-sheet calibration *worse than predicting the league base rate* (Brier 0.1895 vs a
+    constant-base-rate Brier of 0.1872): splitting by venue halves the effective sample behind
+    every team rate, and the home/away effect (~0.33 xGA) is close in size to the per-team-match
+    noise (~0.87 std) — ~10 same-venue matches per team is too thin to estimate a team-specific
+    venue split, even though the league-wide venue effect itself is real (see
+    :func:`_league_venue_multipliers`, applied afterward in :func:`build_fixture_rate_frame`).
+    """
+    raw = _team_rate_asof(team_history, stat_col, before)
+    if pd.isna(raw) or pd.isna(league_avg):
+        return raw
+    n_prior = _team_prior_match_count(team_history, before)
+    return shrink_toward_prior(raw, float(n_prior), league_avg, shrinkage_k)
+
+
+def _league_venue_multipliers(
+    team_histories: dict[str, pd.DataFrame], before: pd.Timestamp
+) -> tuple[float, float]:
+    """Point-in-time, LEAGUE-WIDE home/away multiplier for xG and xGA (ENGINE_IMPROVEMENTS_3.md
+    A.1) — a single pair of numbers fit across every team's matches strictly before ``before``,
+    replacing the previous per-team venue split. ``xg_mult``/``xga_mult`` are each
+    ``home_mean / overall_mean`` for that stat; by construction the away multiplier is
+    ``2 - mult`` (the overall mean is the average of the home and away means), which is how
+    :func:`build_fixture_rate_frame` applies this without a separate away-side computation. Falls
+    back to ``(1.0, 1.0)`` — venue-neutral — when fewer than
+    :data:`_MIN_MATCHES_FOR_VENUE_MULTIPLIER` league-wide matches are available yet (only binds in
+    the season's first gameweek or two).
+    """
+    if not team_histories:
+        return 1.0, 1.0
+    all_matches = pd.concat(team_histories.values(), ignore_index=True)
+    prior = all_matches[all_matches["date"] < before]
+    if len(prior) < _MIN_MATCHES_FOR_VENUE_MULTIPLIER:
+        return 1.0, 1.0
+    home = prior[prior["is_home"]]
+    overall_xg = float(prior["xG"].mean())
+    overall_xga = float(prior["xGA"].mean())
+    if home.empty or not overall_xg or not overall_xga:
+        return 1.0, 1.0
+    xg_mult = float(home["xG"].mean() / overall_xg)
+    xga_mult = float(home["xGA"].mean() / overall_xga)
+    return xg_mult, xga_mult
 
 
 def build_fixture_rate_frame(
@@ -510,7 +649,13 @@ def build_fixture_rate_frame(
     """One row per (team, gameweek): that team's own and its opponent's point-in-time xG/xGA
     rates, the gameweek's league-average xGA, and a Dixon-Coles clean-sheet probability computed
     at the untuned :data:`~engine.models.clean_sheets.DEFAULT_DIXON_COLES_RHO` (used only to build
-    the bonus regression's training features — see module docstring, simplification 3)."""
+    the bonus regression's training features — see module docstring, simplification 3).
+
+    Team rates are shrunk toward the point-in-time league average (:func:`_team_rate_asof_shrunk`)
+    and adjusted by a single league-wide home/away multiplier (:func:`_league_venue_multipliers`),
+    per ENGINE_IMPROVEMENTS_3.md A.1 — see those functions' docstrings for why this replaced the
+    previous per-team venue split.
+    """
     fixtures = (
         gw[
             [
@@ -528,18 +673,62 @@ def build_fixture_rate_frame(
     )
 
     empty = pd.DataFrame(columns=["date", "xG", "xGA", "minutes", "is_home"])
-    fixtures["team_xg_per_90"] = [
-        _team_rate_asof_venue_split(team_histories.get(team, empty), "xG", kickoff, is_home)
-        for team, kickoff, is_home in zip(
-            fixtures["team"], fixtures["kickoff_time"], fixtures["was_home"], strict=True
+    fixtures["_team_xg_raw"] = [
+        _team_rate_asof(team_histories.get(team, empty), "xG", kickoff)
+        for team, kickoff in zip(fixtures["team"], fixtures["kickoff_time"], strict=True)
+    ]
+    fixtures["_team_xga_raw"] = [
+        _team_rate_asof(team_histories.get(team, empty), "xGA", kickoff)
+        for team, kickoff in zip(fixtures["team"], fixtures["kickoff_time"], strict=True)
+    ]
+    # Point-in-time league average of the RAW (unshrunk) rate, per gameweek — the prior every
+    # team's own rate that gameweek shrinks toward.
+    fixtures["_league_avg_xg_raw"] = fixtures.groupby("gameweek")["_team_xg_raw"].transform("mean")
+    fixtures["_league_avg_xga_raw"] = fixtures.groupby("gameweek")["_team_xga_raw"].transform(
+        "mean"
+    )
+    fixtures["_team_xg_shrunk"] = [
+        _team_rate_asof_shrunk(team_histories.get(team, empty), "xG", kickoff, league_avg)
+        for team, kickoff, league_avg in zip(
+            fixtures["team"], fixtures["kickoff_time"], fixtures["_league_avg_xg_raw"], strict=True
         )
     ]
-    fixtures["team_xga_per_90"] = [
-        _team_rate_asof_venue_split(team_histories.get(team, empty), "xGA", kickoff, is_home)
-        for team, kickoff, is_home in zip(
-            fixtures["team"], fixtures["kickoff_time"], fixtures["was_home"], strict=True
+    fixtures["_team_xga_shrunk"] = [
+        _team_rate_asof_shrunk(team_histories.get(team, empty), "xGA", kickoff, league_avg)
+        for team, kickoff, league_avg in zip(
+            fixtures["team"],
+            fixtures["kickoff_time"],
+            fixtures["_league_avg_xga_raw"],
+            strict=True,
         )
     ]
+
+    # Single league-wide venue multiplier, point-in-time as of this gameweek's earliest kickoff —
+    # one fit per gameweek, not per team.
+    venue_mults = {
+        gameweek: _league_venue_multipliers(team_histories, kickoffs.min())
+        for gameweek, kickoffs in fixtures.groupby("gameweek")["kickoff_time"]
+    }
+    xg_mult = fixtures["gameweek"].map(lambda g: venue_mults[g][0])
+    xga_mult = fixtures["gameweek"].map(lambda g: venue_mults[g][1])
+    fixtures["team_xg_per_90"] = np.where(
+        fixtures["was_home"], fixtures["_team_xg_shrunk"] * xg_mult,
+        fixtures["_team_xg_shrunk"] * (2.0 - xg_mult),
+    )
+    fixtures["team_xga_per_90"] = np.where(
+        fixtures["was_home"], fixtures["_team_xga_shrunk"] * xga_mult,
+        fixtures["_team_xga_shrunk"] * (2.0 - xga_mult),
+    )
+    fixtures = fixtures.drop(
+        columns=[
+            "_team_xg_raw",
+            "_team_xga_raw",
+            "_league_avg_xg_raw",
+            "_league_avg_xga_raw",
+            "_team_xg_shrunk",
+            "_team_xga_shrunk",
+        ]
+    )
     fixtures["league_avg_xga_per_90"] = fixtures.groupby("gameweek")["team_xga_per_90"].transform(
         "mean"
     )
@@ -685,10 +874,19 @@ def engineer_features(
     """Join the vaastav ground truth, the FPL team-id map, Understat team-level rates, and
     Understat player-level rates into one point-in-time ``history`` frame keyed by
     ``(player_id, gameweek)`` — exactly what :func:`backtest.harness.run_walk_forward` and
-    :func:`engine.pipeline.project_gameweek_pool` expect. Outfield only (GK excluded, matching the
-    first real backtest's known limitation — no opponent shots-on-target data source, Tier 3.2).
+    :func:`engine.pipeline.project_gameweek_pool` expect.
+
+    Includes goalkeepers (ENGINE_IMPROVEMENTS_3.md D.1) — Tier 3.2's real blocker (no opponent
+    shots-on-target data source) only affects the saves component's opponent adjustment, which is
+    ~18% of GK scoring; appearance, clean sheets, goals-conceded and bonus (the other ~82%) need
+    nothing new. Saves fall back to a shrunk own-rate EWMA (``own_save_rate_per_90``, see
+    :func:`engine.models.saves.project_saves_from_own_rate`) rather than the real opponent-adjusted
+    model. Goalkeepers essentially never register meaningful Understat npxG/xA (and the crosswalk
+    doesn't attempt to match them at all), so ``npxg_per_90``/``xa_per_90`` default to 0.0 for GK
+    rows specifically rather than the NaN an unmatched *outfield* player correctly gets (which must
+    still be dropped, not defaulted, per ENGINE_IMPROVEMENTS_2.md C.1/C.2).
     """
-    gw = merged_gw[merged_gw["position"].isin([DEF, MID, FWD])].copy()
+    gw = merged_gw[merged_gw["position"].isin([GK, DEF, MID, FWD])].copy()
     gw["kickoff_time"] = pd.to_datetime(gw["kickoff_time"], utc=True)
     gw = gw.rename(columns={"element": "player_id", "GW": "gameweek"})
 
@@ -723,6 +921,10 @@ def engineer_features(
             lambda g, w=window: g["starts"].astype(float).shift(1).rolling(w, min_periods=1).mean(),
         )
     gw["team_rotation_propensity"] = compute_team_rotation_propensity(gw)
+    # ENGINE_IMPROVEMENTS_3.md Phase 3: see engine.models.minutes.FEATURE_COLUMNS' own comment for
+    # why this is a real minutes-model feature (not the structural redundancy BUILD_PLAN 2.1 named
+    # for the *bonus* model) once goalkeepers are in the pool.
+    gw["is_goalkeeper"] = (gw["position"] == GK).astype(float)
 
     # --- Tier B.3: crowd features (ENGINE_IMPROVEMENTS_2.md) --------------------------------------
     # `value`/`selected`/`transfers_out`/`transfers_balance` are all already in the archive and
@@ -746,9 +948,23 @@ def engineer_features(
     gw["transfers_balance_share"] = gw["transfers_balance"].astype(float) / _selected_denom
 
     # --- shared per-90 rates already in the vaastav frame itself --------------------------------
-    gw["dc_per_90"] = _per_player_series(
-        gw, lambda g: ewma_rate_asof(g, "defensive_contribution", minutes_col="minutes")
-    )
+    # Multi-season backtest Phase 2: defensive contribution's raw inputs (and the outcome column
+    # itself) are absent from this archive for 2020/21-2024/25 (a real archive hole, not just a
+    # rule-introduction artifact — verified against the real vaastav data; see
+    # ENGINE_IMPROVEMENTS_3.md's multi-season plan). A season missing "defensive_contribution"
+    # gets a neutral 0.0 placeholder for both the outcome and the rate, so downstream code that
+    # unconditionally expects this column (ground-truth selection, pipeline validation) doesn't
+    # need special-casing — `dc_data_available` (surfaced via `result.attrs` below) is what tells
+    # the multi-season aggregator to exclude these rows from DC-specific calibration rather than
+    # silently scoring a fabricated near-zero rate as if it meant something.
+    dc_data_available = "defensive_contribution" in gw.columns
+    if dc_data_available:
+        gw["dc_per_90"] = _per_player_series(
+            gw, lambda g: ewma_rate_asof(g, "defensive_contribution", minutes_col="minutes")
+        )
+    else:
+        gw["defensive_contribution"] = 0.0
+        gw["dc_per_90"] = 0.0
     gw["yellow_card_rate_per_90"] = _per_player_series(
         gw, lambda g: ewma_rate_asof(g, "yellow_cards", minutes_col="minutes")
     )
@@ -758,6 +974,26 @@ def engineer_features(
     # ENGINE_IMPROVEMENTS_2.md D.6: real but rare, modelled the same way as cards.
     gw["own_goal_rate_per_90"] = _per_player_series(
         gw, lambda g: ewma_rate_asof(g, "own_goals", minutes_col="minutes")
+    )
+    # ENGINE_IMPROVEMENTS_3.md A.3: point-in-time evidence weight behind this player's own card/
+    # own-goal rates above — vaastav's own `minutes` column (not Understat's), since that's what
+    # those rates are themselves computed from. Also doubles as the shrinkage weight for D.1's
+    # goalkeeper own-rate saves fallback below, the same "how much real vaastav-minutes history do
+    # we have" quantity.
+    gw["card_effective_minutes"] = _per_player_series(
+        gw, lambda g: effective_sample_minutes_asof(g, minutes_col="minutes")
+    )
+    # ENGINE_IMPROVEMENTS_3.md D.1: goalkeeper own-rate saves fallback — see engineer_features'
+    # own docstring and engine.models.saves.project_saves_from_own_rate.
+    gw["own_save_rate_per_90"] = _per_player_series(
+        gw, lambda g: ewma_rate_asof(g, "saves", minutes_col="minutes")
+    )
+    # ENGINE_IMPROVEMENTS_3.md D.2: point-in-time BPS-per-90 rate — the input the soft
+    # within-fixture BPS-rank bonus diagnostic (backtest.diagnostics.rank_based_bonus_diagnostics)
+    # needs but the shipped linear BonusModel does not (it regresses on BPS-relevant *component*
+    # inputs, not this raw rate).
+    gw["bps_per_90"] = _per_player_series(
+        gw, lambda g: ewma_rate_asof(g, "bps", minutes_col="minutes")
     )
     gw["opponent_possession_share"] = 0.5  # neutral default; Tier 3.4 data source doesn't exist
 
@@ -774,6 +1010,14 @@ def engineer_features(
         ),
         axis=1,
     )
+    # ENGINE_IMPROVEMENTS_3.md D.1: goalkeepers essentially never register meaningful Understat
+    # npxG/xA and the crosswalk doesn't try to match them, so an unmatched GK's rate here would be
+    # NaN and (correctly, for an outfield player) get the row dropped below. 0.0 is the honest
+    # modelling choice for a GK specifically — NOT for an outfield player, whose NaN must still
+    # signal a real crosswalk miss (ENGINE_IMPROVEMENTS_2.md C.1/C.2).
+    is_gk = gw["position"] == GK
+    gw.loc[is_gk, "npxg_per_90"] = gw.loc[is_gk, "npxg_per_90"].fillna(0.0)
+    gw.loc[is_gk, "xa_per_90"] = gw.loc[is_gk, "xa_per_90"].fillna(0.0)
     # ENGINE_IMPROVEMENTS_2.md B.2: evidence weight behind each row's own npxg_per_90/xa_per_90 —
     # the shrinkage target for players whose real Understat point-in-time rates are thin-sample
     # outliers (up to 35.4 npxG/90 for a sub-90-minute cameo).
@@ -839,6 +1083,16 @@ def engineer_features(
         "opponent_xga_per_90",
         "league_avg_xga_per_90",
         "dc_per_90",
+        # Multi-season Phase 2: these used to be implicitly gated by dc_per_90's own cold-start
+        # NaN (every per-player EWMA rate shares the same "no row before this player's first
+        # gameweek" pattern) — but a season lacking DC's raw archive columns now gives dc_per_90 a
+        # constant 0.0 placeholder rather than a real EWMA, so it's never NaN there any more and
+        # stopped gating anything. Listing these explicitly restores the same cold-start drop
+        # regardless of whether this season happens to have real DC data.
+        "yellow_card_rate_per_90",
+        "red_card_rate_per_90",
+        "own_save_rate_per_90",
+        "own_goal_rate_per_90",
         "clean_sheet_probability_default_rho",
     ]
     n_before_dropna = len(gw)
@@ -848,6 +1102,7 @@ def engineer_features(
     result.attrs["n_dgw_rows_collapsed"] = n_dgw_rows_collapsed
     result.attrs["n_rows_before_dropna"] = n_before_dropna
     result.attrs["n_rows_dropped_for_missing_features"] = n_before_dropna - len(result)
+    result.attrs["dc_data_available"] = dc_data_available
     return result
 
 
@@ -863,6 +1118,33 @@ class FittedEngineState:
     fitted_constants: FittedConstants
 
 
+def _fit_league_avg_rate_by_position(
+    training_history: pd.DataFrame,
+    count_col: str,
+    min_rows: int = 100,
+    positions: tuple[str, ...] = (DEF, MID, FWD),
+) -> dict[str, float]:
+    """Point-in-time (``training_history`` only) per-position league-average per-90 rate of
+    ``count_col`` — the shrinkage prior for the card/own-goal rates (ENGINE_IMPROVEMENTS_3.md
+    A.3) and the goalkeeper own-rate saves fallback (D.1, via ``positions=(GK,)``), refit every
+    gameweek by the walk-forward harness, same discipline as the other Tier 1.2 constants. A plain
+    aggregate (total events / total minutes), not an EWMA — this is the prior the *individual* EWMA
+    rate shrinks toward, so it should reflect the position's whole-window base rate, not its own
+    recency-weighted view. Falls back to ``0.0`` for a too-thin sample (only ever binds before
+    ``min_training_gameweeks`` worth of history has accumulated for a position, which the harness's
+    own skip-gameweeks-with-too-little-history guarantee already keeps rare).
+    """
+    rates: dict[str, float] = {}
+    for position in positions:
+        subset = training_history[training_history["position"] == position]
+        total_minutes = float(subset["minutes"].sum())
+        if len(subset) < min_rows or total_minutes <= 0:
+            rates[position] = 0.0
+            continue
+        rates[position] = float(subset[count_col].sum()) / total_minutes * 90.0
+    return rates
+
+
 def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
     """Real ``fit_fn`` for :func:`backtest.harness.run_walk_forward` — fits the minutes model, the
     bonus regression proxy, and (ENGINE_IMPROVEMENTS.md Tier 1.2) all five previously-unfitted
@@ -874,15 +1156,28 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
         training_history["minutes"].astype(float),
     )
 
+    # ENGINE_IMPROVEMENTS_3.md A.2: bonus's training features must use the same MODELLED expected
+    # minutes the predict path (engine.pipeline._project_one_player) uses, not each row's REALISED
+    # minutes — the prior version's train/serve skew, and the reason nothing in the bonus feature
+    # set previously depended on whether the player was even expected to play (clean_sheet_prob-
+    # ability and defensive_action_rate are team/rate-level; expected_goals/expected_assists were
+    # the only minutes-scaled inputs, and only at fit time).
+    modelled_expected_minutes = pd.Series(
+        [
+            distribution.expected_minutes
+            for distribution in minutes_model.predict(training_history[MINUTES_FEATURE_COLUMNS])
+        ],
+        index=training_history.index,
+    )
     expected_goals = (
         training_history["npxg_per_90"]
         * (training_history["opponent_xga_per_90"] / training_history["league_avg_xga_per_90"])
-        * (training_history["minutes"] / 90.0)
+        * (modelled_expected_minutes / 90.0)
     )
     expected_assists = (
         training_history["xa_per_90"]
         * (training_history["opponent_xga_per_90"] / training_history["league_avg_xga_per_90"])
-        * (training_history["minutes"] / 90.0)
+        * (modelled_expected_minutes / 90.0)
     )
     bonus_features = pd.DataFrame(
         {
@@ -890,6 +1185,7 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
             "expected_assists": expected_assists,
             "clean_sheet_probability": training_history["clean_sheet_probability_default_rho"],
             "defensive_action_rate": training_history["dc_per_90"],
+            "expected_minutes": modelled_expected_minutes,
         },
         index=training_history.index,
     )
@@ -924,6 +1220,17 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
         penalty_attempts
     )
 
+    # ENGINE_IMPROVEMENTS_3.md A.3: per-position league-average card/own-goal rates, the
+    # shrinkage prior for the thin-sample individual rates.
+    league_avg_yellow_card_rate = _fit_league_avg_rate_by_position(training_history, "yellow_cards")
+    league_avg_red_card_rate = _fit_league_avg_rate_by_position(training_history, "red_cards")
+    league_avg_own_goal_rate = _fit_league_avg_rate_by_position(training_history, "own_goals")
+    # ENGINE_IMPROVEMENTS_3.md D.1: league-average GK saves-per-90 rate, the shrinkage prior for
+    # the own-rate saves fallback.
+    league_avg_save_rate = _fit_league_avg_rate_by_position(
+        training_history, "saves", positions=(GK,)
+    ).get(GK, 0.0)
+
     fitted_constants = FittedConstants(
         dixon_coles_rho=rho,
         save_conversion_rate=save_conversion_rate,
@@ -932,6 +1239,14 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
         penalty_conversion_rate_by_player=penalty_rates_by_player,
         league_avg_penalty_conversion_rate=league_avg_penalty_rate,
         shrinkage_k=SHRINKAGE_K,
+        league_avg_yellow_card_rate_by_position=league_avg_yellow_card_rate,
+        league_avg_red_card_rate_by_position=league_avg_red_card_rate,
+        league_avg_own_goal_rate_by_position=league_avg_own_goal_rate,
+        yellow_card_shrinkage_k=YELLOW_CARD_SHRINKAGE_K,
+        red_card_shrinkage_k=RED_CARD_SHRINKAGE_K,
+        own_goal_shrinkage_k=OWN_GOAL_SHRINKAGE_K,
+        league_avg_save_rate_per_90=league_avg_save_rate,
+        save_rate_shrinkage_k=SAVE_RATE_SHRINKAGE_K,
     )
     return FittedEngineState(
         minutes_model=minutes_model, bonus_model=bonus_model, fitted_constants=fitted_constants
@@ -994,6 +1309,20 @@ def _build_team_match_inputs(
             if position in DEFENSIVE_CONTRIBUTION_THRESHOLD
             else 0.0
         )
+        # ENGINE_IMPROVEMENTS_3.md D.1: same own-rate saves fallback as the point-estimate path
+        # (engine.pipeline._project_one_player) — a full-match (90-minute) rate, since
+        # engine.simulate itself scales by each run's own drawn minutes.
+        saves_projection = (
+            project_saves_from_own_rate(
+                own_save_rate_per_90=float(row["own_save_rate_per_90"]),
+                expected_minutes=90.0,
+                individual_weight=float(row.get("card_effective_minutes", 0.0)),
+                league_avg_save_rate_per_90=fitted_state.fitted_constants.league_avg_save_rate_per_90,
+                shrinkage_k=fitted_state.fitted_constants.save_rate_shrinkage_k,
+            )
+            if position == GK
+            else None
+        )
         players.append(
             PlayerMatchInputs(
                 player_id=player_id,
@@ -1011,6 +1340,12 @@ def _build_team_match_inputs(
                 ),
                 yellow_card_rate_per_90=float(row["yellow_card_rate_per_90"]),
                 red_card_rate_per_90=float(row["red_card_rate_per_90"]),
+                expected_saves_full_match=(
+                    saves_projection.expected_saves if saves_projection is not None else 0.0
+                ),
+                penalty_save_rate=(
+                    saves_projection.penalty_save_rate if saves_projection is not None else 0.0
+                ),
             )
         )
     team_expected_penalties = (
@@ -1106,6 +1441,19 @@ def make_simulate_predict_fn(
 
 
 @dataclass(frozen=True)
+class UnmatchedSignificantPlayer:
+    """One outfield player with real playing time (>450 minutes) but no crosswalk match — the
+    concrete "who" behind ``CoverageReport.points_excluded_share`` (crosswalk coverage Phase 1).
+    Previously this share was only ever visible as an aggregate percentage; there was no way to
+    see *which* players were actually missing without a fresh ad hoc script each time."""
+
+    fpl_id: int
+    name: str
+    minutes: float
+    points: float
+
+
+@dataclass(frozen=True)
 class CoverageReport:
     """Sample-coverage accounting for one backtest run (ENGINE_IMPROVEMENTS_2.md A.5) — Correction 3
     found a 19% scored-sample shrinkage across two passes that was invisible in the report; this
@@ -1121,22 +1469,30 @@ class CoverageReport:
     crosswalk_matched_players: int
     crosswalk_match_rate: float
     points_excluded_share: float  # season points held by unmatched players with >450 minutes
+    unmatched_significant_players: tuple[UnmatchedSignificantPlayer, ...] = ()
 
     def summary(self) -> str:
-        return "\n".join(
-            [
-                f"Raw outfield rows: {self.raw_outfield_rows} "
-                f"({self.distinct_player_gameweeks} distinct player-gameweeks, "
-                f"{self.dgw_rows_collapsed} double-gameweek rows collapsed)",
-                f"Engineered rows after dropna: {self.engineered_rows} "
-                f"({self.rows_dropped_for_missing_features} dropped for missing point-in-time "
-                "features)",
-                f"Crosswalk: {self.crosswalk_matched_players}/{self.outfield_players} outfield "
-                f"players matched to Understat ({self.crosswalk_match_rate:.1%})",
-                "Season points held by unmatched players with >450 minutes: "
-                f"{self.points_excluded_share:.1%} of total outfield points",
-            ]
-        )
+        lines = [
+            f"Raw outfield rows: {self.raw_outfield_rows} "
+            f"({self.distinct_player_gameweeks} distinct player-gameweeks, "
+            f"{self.dgw_rows_collapsed} double-gameweek rows collapsed)",
+            f"Engineered rows after dropna: {self.engineered_rows} "
+            f"({self.rows_dropped_for_missing_features} dropped for missing point-in-time "
+            "features)",
+            f"Crosswalk: {self.crosswalk_matched_players}/{self.outfield_players} outfield "
+            f"players matched to Understat ({self.crosswalk_match_rate:.1%})",
+            "Season points held by unmatched players with >450 minutes: "
+            f"{self.points_excluded_share:.1%} of total outfield points",
+        ]
+        if self.unmatched_significant_players:
+            lines.append("Unmatched significant players (crosswalk coverage Phase 1):")
+            lines.extend(
+                f"  {p.name} (fpl_id={p.fpl_id}): {p.minutes:.0f} minutes, {p.points:.0f} points"
+                for p in sorted(
+                    self.unmatched_significant_players, key=lambda p: p.points, reverse=True
+                )
+            )
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -1157,6 +1513,12 @@ class SeasonReport:
     captaincy: metrics.CaptaincyHitRateResult | None = None
     floor_ceiling_coverage: float | None = None
     big_haul_calibration: metrics.CalibrationReport | None = None
+    # ENGINE_IMPROVEMENTS_3.md B.2/B.3 — computed only when ground_truth carries the extra
+    # columns they need ("value" for price tiers; "team"/"was_home"/"team_h_score"/"team_a_score"
+    # for the team-level clean-sheet check), so existing minimal ground_truth frames keep working.
+    bias_by_price_tier: metrics.BiasReport | None = None
+    team_clean_sheet_calibration: metrics.CalibrationReport | None = None
+    brier_reports: dict[str, metrics.BrierComparisonReport] = field(default_factory=dict)
 
     def summary(self) -> str:
         lines = [
@@ -1193,6 +1555,26 @@ class SeasonReport:
             f"{self.minutes_60_plus_calibration.mean_absolute_calibration_error:.4f}",
             f"Defensive-contribution threshold MACE: "
             f"{self.defensive_contribution_calibration.mean_absolute_calibration_error:.4f}",
+        ]
+        if self.team_clean_sheet_calibration is not None:
+            lines.append(
+                "Team-level clean-sheet MACE (ENGINE_IMPROVEMENTS_3.md A.1/B.3 — the quantity "
+                "that actually drives DEF rankings, distinct from the gated player-level number "
+                f"above): {self.team_clean_sheet_calibration.mean_absolute_calibration_error:.4f}"
+            )
+        if self.brier_reports:
+            lines += [
+                "",
+                "Brier vs. predicting the constant base rate (ENGINE_IMPROVEMENTS_3.md B.3 — a "
+                "reliability curve can look reasonable bin-by-bin while still losing to a "
+                "constant in aggregate):",
+                *[
+                    f"  {name}: brier={r.brier:.4f} constant={r.constant_brier:.4f} "
+                    f"beats_constant={r.beats_constant}"
+                    for name, r in self.brier_reports.items()
+                ],
+            ]
+        lines += [
             "",
             "Mean calibration (continuous components, informational — not gated):",
             *[
@@ -1233,6 +1615,14 @@ class SeasonReport:
                     f"  prob_big_haul MACE: "
                     f"{self.big_haul_calibration.mean_absolute_calibration_error:.4f}"
                 )
+        if self.bias_by_price_tier is not None:
+            lines = lines + [
+                "",
+                "Bias by price tier (ENGINE_IMPROVEMENTS_3.md B.2 — absolute-effect-floor only, "
+                "since a relative floor scaled by the tier's own mean actual is backwards for "
+                "the premium tier):",
+                self.bias_by_price_tier.by_group.to_string(index=False),
+            ]
         if self.coverage is not None:
             lines = ["Sample coverage:", self.coverage.summary(), ""] + lines
         return "\n".join(lines)
@@ -1249,11 +1639,18 @@ def build_stand_in_squad_starting_xi(
     restricted to whichever of those players actually started that gameweek — bench players were
     never really in contention for the armband (BUILD_PLAN 3.2) — via ``starts_col``.
 
+    Excludes goalkeepers when a ``position`` column is present (ENGINE_IMPROVEMENTS_3.md D.1):
+    once goalkeepers were brought into the scored pool, they dominated a pure highest-minutes
+    selection (a keeper who's never rotated tends to lead the whole squad in total minutes) —
+    which no real manager captains — so this stays true to this function's own "outfield players"
+    framing rather than silently letting D.1's GK inclusion invert it.
+
     This is the exact caveat ENGINE_IMPROVEMENTS.md 3.1 flags: a stand-in squad, not a real
     manager's history, so the resulting hit-rate is illustrative rather than a claim about any
     specific real team's captaincy record.
     """
-    totals = ground_truth.groupby("player_id")["minutes"].sum().nlargest(squad_size)
+    outfield = ground_truth[ground_truth["position"] != GK] if "position" in ground_truth.columns else ground_truth
+    totals = outfield.groupby("player_id")["minutes"].sum().nlargest(squad_size)
     squad_ids = set(totals.index)
     eligible = ground_truth[
         ground_truth["player_id"].isin(squad_ids) & (ground_truth[starts_col] > 0)
@@ -1311,13 +1708,20 @@ def score_season(
         minutes_rows["p_60_plus"], (minutes_rows["minutes"] >= 60).astype(float)
     )
 
+    dc_join_cols = ["player_id", "gameweek", "defensive_contribution"]
+    if "dc_data_available" in ground_truth.columns:
+        dc_join_cols.append("dc_data_available")
     dc_rows = predictions.merge(
-        ground_truth[["player_id", "gameweek", "defensive_contribution"]].rename(
-            columns={"defensive_contribution": "actual_defensive_contribution"}
-        ),
+        ground_truth[dc_join_cols].rename(columns={"defensive_contribution": "actual_defensive_contribution"}),
         on=["player_id", "gameweek"],
     )
     dc_rows = dc_rows[dc_rows["p_clears_threshold"].notna()]
+    if "dc_data_available" in dc_rows.columns:
+        # Multi-season Phase 2: a season lacking defensive contribution's raw archive columns
+        # (2020/21-2024/25 in this data source) gets a neutral 0.0 placeholder rate/outcome
+        # upstream (engineer_features) so nothing crashes — but that placeholder must never be
+        # scored as if it were real calibration signal.
+        dc_rows = dc_rows[dc_rows["dc_data_available"]]
     dc_threshold = dc_rows["position"].map(DEFENSIVE_CONTRIBUTION_THRESHOLD)
     dc_actual_clears = (dc_rows["actual_defensive_contribution"] >= dc_threshold).astype(float)
     defensive_contribution_calibration = metrics.component_calibration(
@@ -1345,6 +1749,21 @@ def score_season(
         ),
         "bonus": metrics.mean_calibration(mean_rows["expected_bonus"], mean_rows["actual_bonus"]),
     }
+    # Phase 3: saves had no calibration check at all -- every other component (goals, assists,
+    # bonus, clean sheets, DC) has one. `expected_saves` is NaN for outfield players (mirrors
+    # `p_clears_threshold`'s own GK-only split), so filter to GK rows before scoring.
+    if "expected_saves" in predictions.columns and "saves" in ground_truth.columns:
+        saves_rows = predictions.merge(
+            ground_truth[["player_id", "gameweek", "saves"]].rename(
+                columns={"saves": "actual_saves"}
+            ),
+            on=["player_id", "gameweek"],
+        )
+        saves_rows = saves_rows[saves_rows["expected_saves"].notna()]
+        if len(saves_rows) >= 2:
+            mean_calibrations["saves"] = metrics.mean_calibration(
+                saves_rows["expected_saves"], saves_rows["actual_saves"]
+            )
 
     engine_actuals = predictions.merge(
         ground_truth[["player_id", "gameweek", "total_points"]], on=["player_id", "gameweek"]
@@ -1385,15 +1804,81 @@ def score_season(
             engine_err, baseline_err, block_by=joint["gameweek"].to_numpy()
         )
 
+    # --- B.2: price-tier bias, alongside position — BUILD_PLAN 3.2 names both, but only position
+    # was ever wired in. min_relative_effect=0.0 (absolute floor only): a floor that scales with
+    # the tier's own mean actual is backwards for the premium tier, where a large mean actual makes
+    # a large absolute bias easier, not harder, to clear.
+    bias_by_price_tier = None
+    if "value" in ground_truth.columns:
+        price_tier_actuals = ground_truth.copy()
+        price_tier_actuals["price_tier"] = pd.qcut(
+            price_tier_actuals["value"], 5, duplicates="drop"
+        ).astype(str)
+        bias_by_price_tier = metrics.bias_by_group(
+            predictions, price_tier_actuals, group_col="price_tier", min_relative_effect=0.0
+        )
+
+    # --- B.3: team-level clean-sheet calibration — the quantity that actually drives DEF
+    # rankings, distinct from the gated (team_prob * p_60_plus) player-level number above, which
+    # compresses toward zero and can look well-calibrated while the underlying team probability is
+    # not (ENGINE_IMPROVEMENTS_3.md A.1). Reads the real fixture scoreline, not
+    # `max(goals_conceded == 0)` across a team's players — ENGINE_IMPROVEMENTS.md Correction 1's
+    # own warning about exactly that measurement bug.
+    team_clean_sheet_calibration = None
+    team_clean_sheet_brier = None
+    _team_cs_cols = {"team", "was_home", "team_h_score", "team_a_score"}
+    if _team_cs_cols.issubset(ground_truth.columns):
+        team_rows = predictions.merge(
+            ground_truth[["player_id", "gameweek", *_team_cs_cols]], on=["player_id", "gameweek"]
+        ).drop_duplicates(subset=["team", "gameweek"])
+        team_conceded = np.where(
+            team_rows["was_home"], team_rows["team_a_score"], team_rows["team_h_score"]
+        )
+        team_kept_clean_sheet = (team_conceded == 0).astype(float)
+        team_clean_sheet_calibration = metrics.component_calibration(
+            team_rows["clean_sheet_probability"], team_kept_clean_sheet
+        )
+        team_clean_sheet_brier = metrics.brier_vs_constant(
+            team_rows["clean_sheet_probability"], team_kept_clean_sheet
+        )
+
+    # --- B.3: Brier-vs-constant for every probability component — a reliability curve can look
+    # reasonable bin-by-bin while the component is still worse than predicting the base rate, per
+    # the team-level clean-sheet finding above.
+    brier_reports = {
+        "clean_sheet_gated": metrics.brier_vs_constant(
+            calibration_rows["player_clean_sheet_probability"], calibration_rows["gated_clean_sheet"]
+        ),
+        "minutes_played_at_all": metrics.brier_vs_constant(
+            1.0 - minutes_rows["p_zero"], (minutes_rows["minutes"] > 0).astype(float)
+        ),
+        "minutes_60_plus": metrics.brier_vs_constant(
+            minutes_rows["p_60_plus"], (minutes_rows["minutes"] >= 60).astype(float)
+        ),
+        "defensive_contribution": metrics.brier_vs_constant(
+            dc_rows["p_clears_threshold"], dc_actual_clears
+        ),
+    }
+    if team_clean_sheet_brier is not None:
+        brier_reports["team_clean_sheet"] = team_clean_sheet_brier
+
+    calibration_reports_for_gate = {
+        "clean_sheet": clean_sheet_calibration,
+        "minutes_played_at_all": minutes_played_calibration,
+        "minutes_60_plus": minutes_60_plus_calibration,
+        "defensive_contribution": defensive_contribution_calibration,
+    }
+    if team_clean_sheet_calibration is not None:
+        calibration_reports_for_gate["team_clean_sheet"] = team_clean_sheet_calibration
+
+    bias_reports_for_gate = {"position": bias}
+    if bias_by_price_tier is not None:
+        bias_reports_for_gate["price_tier"] = bias_by_price_tier
+
     definition_of_done = gate.evaluate_definition_of_done(
         baseline_results=baseline_results,
-        bias_reports={"position": bias},
-        calibration_reports={
-            "clean_sheet": clean_sheet_calibration,
-            "minutes_played_at_all": minutes_played_calibration,
-            "minutes_60_plus": minutes_60_plus_calibration,
-            "defensive_contribution": defensive_contribution_calibration,
-        },
+        bias_reports=bias_reports_for_gate,
+        calibration_reports=calibration_reports_for_gate,
         predictions_logged=True,
         trusted_by_user=False,
     )
@@ -1442,6 +1927,9 @@ def score_season(
         captaincy=captaincy,
         floor_ceiling_coverage=floor_ceiling_cov,
         big_haul_calibration=big_haul_calibration,
+        bias_by_price_tier=bias_by_price_tier,
+        team_clean_sheet_calibration=team_clean_sheet_calibration,
+        brier_reports=brier_reports,
     )
 
 
@@ -1466,6 +1954,19 @@ def compute_coverage_report(
     points_excluded = float(per_player_points.reindex(unmatched_significant).fillna(0.0).sum())
     points_excluded_share = points_excluded / total_season_points if total_season_points else float("nan")
 
+    # Crosswalk coverage Phase 1: the concrete "who" behind points_excluded_share, not just the
+    # aggregate share — see UnmatchedSignificantPlayer's own docstring.
+    name_by_id = outfield.drop_duplicates("element").set_index("element")["name"]
+    unmatched_significant_players = tuple(
+        UnmatchedSignificantPlayer(
+            fpl_id=int(fpl_id),
+            name=str(name_by_id.get(fpl_id, "<unknown>")),
+            minutes=float(per_player_minutes.loc[fpl_id]),
+            points=float(per_player_points.loc[fpl_id]),
+        )
+        for fpl_id in unmatched_significant
+    )
+
     return CoverageReport(
         raw_outfield_rows=len(outfield),
         distinct_player_gameweeks=outfield.groupby(["element", "GW"]).ngroups,
@@ -1478,10 +1979,27 @@ def compute_coverage_report(
         crosswalk_matched_players=int(matched_mask.sum()),
         crosswalk_match_rate=float(matched_mask.mean()) if len(per_player_minutes) else float("nan"),
         points_excluded_share=points_excluded_share,
+        unmatched_significant_players=unmatched_significant_players,
     )
 
 
-def run_backtest(
+@dataclass(frozen=True)
+class SeasonBacktestData:
+    """Everything one season's walk-forward run produces, before scoring — the shared core
+    :func:`run_backtest` and :func:`run_multi_season_backtest` both need (Phase 2 of the
+    multi-season plan). Split out so the multi-season driver can pool several seasons'
+    ``predictions``/``ground_truth``/``player_rates`` and call :func:`score_season` **once** on the
+    combined frame, rather than duplicating the fetch/engineer/walk-forward logic itself."""
+
+    season_start_year: int
+    predictions: pd.DataFrame
+    ground_truth: pd.DataFrame
+    player_rates: pd.DataFrame
+    coverage: CoverageReport
+    simulation_predictions: pd.DataFrame | None = None
+
+
+def _prepare_season_backtest_data(
     season_start_year: int,
     cache_dir: Path = DEFAULT_CACHE_DIR,
     min_training_gameweeks: int = 3,
@@ -1489,31 +2007,29 @@ def run_backtest(
     min_crosswalk_minutes_share: float | None = 0.85,
     run_simulation: bool = False,
     simulation_n_runs: int = 200,
-) -> tuple[pd.DataFrame, SeasonReport]:
-    """``min_crosswalk_minutes_share``, if given, enforces
-    :func:`engine.data.crosswalk.assert_matched_share` against real season minutes
-    (ENGINE_IMPROVEMENTS_2.md C.1) — a coverage floor independent of ``build_season_crosswalk``'s
-    own non-strict per-player tolerance, which only catches an unmatched Understat player and says
-    nothing about an FPL player who was simply never matched at all. Pass ``None`` to skip the
-    check (e.g. while iterating on a season where coverage is a known, accepted work in progress).
-
-    ``run_simulation``, if True, additionally drives :func:`simulate_gameweek_pool` through its own
-    walk-forward pass (ENGINE_IMPROVEMENTS_2.md D.3) to score floor/ceiling coverage and
-    ``prob_big_haul`` calibration — off by default since it refits the engine a second time and
-    runs a Monte Carlo simulation per fixture per gameweek, meaningfully more expensive than the
-    point-estimate run alone. ``simulation_n_runs`` (default 200, well below
-    :data:`engine.simulate.DEFAULT_N_RUNS`'s 2000) trades simulation precision for tractability
-    across a full season's fixtures.
-    """
+) -> SeasonBacktestData:
+    """Fetch, engineer, and walk-forward one season — everything :func:`run_backtest` needs before
+    handing off to :func:`score_season`. See :func:`run_backtest` for parameter docs."""
     with httpx.Client(timeout=30.0) as http_client, UnderstatClient() as understat:
         merged_gw = fetch_vaastav_merged_gw(season_start_year, cache_dir, http_client, refresh)
         teams = fetch_vaastav_teams(season_start_year, cache_dir, http_client, refresh)
         league_data = fetch_understat_league_data_raw(
             season_start_year, cache_dir, understat, refresh
         )
-        team_histories = build_team_rate_histories(
-            league_data_to_dataframes(league_data)["teams_history"]
+        # A.4: team rates draw on this season plus N_PRIOR_SEASONS_FOR_TEAM_RATES before it — the
+        # crosswalk/player-id lookups below still use `league_data` (this season alone), since the
+        # player pool to project is always this season's own squad.
+        multi_season_league_data = fetch_understat_multi_season_league_data(
+            season_start_year, cache_dir, understat, refresh
         )
+        multi_season_teams_history = pd.concat(
+            [
+                league_data_to_dataframes(data)["teams_history"]
+                for data in multi_season_league_data.values()
+            ],
+            ignore_index=True,
+        )
+        team_histories = build_team_rate_histories(multi_season_teams_history)
         crosswalk = build_season_crosswalk(
             season_start_year, league_data, cache_dir, http_client, refresh
         )
@@ -1550,9 +2066,19 @@ def run_backtest(
             "goals_scored",
             "assists",
             "bonus",
+            "saves",  # Phase 3: saves mean-calibration check
             "starts",
+            "value",  # B.2: price-tier bias
+            "team",  # B.3: team-level clean-sheet calibration
+            "was_home",
+            "team_h_score",
+            "team_a_score",
         ]
-    ]
+    ].copy()
+    # Multi-season Phase 2: whether this season's archive actually carries DC's raw inputs — see
+    # engineer_features' own dc_data_available note. A constant column (not per-row) since this is
+    # a whole-season data-availability fact, not something that varies player to player.
+    ground_truth["dc_data_available"] = bool(engineered.attrs.get("dc_data_available", True))
     player_rates = engineered[
         ["player_id", "position", "gameweek", "npxg_per_90", "xa_per_90", "recent_minutes_ewma"]
     ]
@@ -1569,14 +2095,172 @@ def run_backtest(
         )
         simulation_predictions = sim_result.predictions
 
-    report = score_season(
-        result.predictions,
-        ground_truth,
-        coverage=coverage,
+    return SeasonBacktestData(
+        season_start_year=season_start_year,
+        predictions=result.predictions,
+        ground_truth=ground_truth,
         player_rates=player_rates,
+        coverage=coverage,
         simulation_predictions=simulation_predictions,
     )
-    return result.predictions, report
+
+
+def run_backtest(
+    season_start_year: int,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+    min_training_gameweeks: int = 3,
+    refresh: bool = False,
+    min_crosswalk_minutes_share: float | None = 0.85,
+    run_simulation: bool = False,
+    simulation_n_runs: int = 200,
+) -> tuple[pd.DataFrame, SeasonReport]:
+    """``min_crosswalk_minutes_share``, if given, enforces
+    :func:`engine.data.crosswalk.assert_matched_share` against real season minutes
+    (ENGINE_IMPROVEMENTS_2.md C.1) — a coverage floor independent of ``build_season_crosswalk``'s
+    own non-strict per-player tolerance, which only catches an unmatched Understat player and says
+    nothing about an FPL player who was simply never matched at all. Pass ``None`` to skip the
+    check (e.g. while iterating on a season where coverage is a known, accepted work in progress).
+
+    ``run_simulation``, if True, additionally drives :func:`simulate_gameweek_pool` through its own
+    walk-forward pass (ENGINE_IMPROVEMENTS_2.md D.3) to score floor/ceiling coverage and
+    ``prob_big_haul`` calibration — off by default since it refits the engine a second time and
+    runs a Monte Carlo simulation per fixture per gameweek, meaningfully more expensive than the
+    point-estimate run alone. ``simulation_n_runs`` (default 200, well below
+    :data:`engine.simulate.DEFAULT_N_RUNS`'s 2000) trades simulation precision for tractability
+    across a full season's fixtures.
+
+    See :func:`run_multi_season_backtest` to run and pool this across several seasons at once.
+    """
+    data = _prepare_season_backtest_data(
+        season_start_year,
+        cache_dir,
+        min_training_gameweeks,
+        refresh,
+        min_crosswalk_minutes_share,
+        run_simulation,
+        simulation_n_runs,
+    )
+    report = score_season(
+        data.predictions,
+        data.ground_truth,
+        coverage=data.coverage,
+        player_rates=data.player_rates,
+        simulation_predictions=data.simulation_predictions,
+    )
+    return data.predictions, report
+
+
+# Multiplier applied to a season's own gameweek number to build a globally-unique composite key
+# across pooled seasons (ENGINE_IMPROVEMENTS_3.md multi-season Phase 2) — e.g. season 2024's GW5
+# becomes 202405, season 2025's GW5 becomes 202505, so a plain `groupby("gameweek")` anywhere in
+# `backtest.metrics`/`score_season` never accidentally merges two different seasons' same-numbered
+# gameweek. No season is expected to run anywhere near 100 gameweeks, so this can't collide.
+_SEASON_GAMEWEEK_MULTIPLIER = 100
+
+
+def _composite_gameweek(season_start_year: int, gameweek: pd.Series) -> pd.Series:
+    return season_start_year * _SEASON_GAMEWEEK_MULTIPLIER + gameweek
+
+
+@dataclass(frozen=True)
+class MultiSeasonReport:
+    """Pooled backtest results across several independently-run seasons (ENGINE_IMPROVEMENTS_3.md
+    multi-season Phase 2). ``per_season`` keeps each season's own natural-gameweek-numbered
+    :class:`SeasonReport` (so one bad season doesn't hide inside a pooled average unnoticed);
+    ``pooled`` is a single :class:`SeasonReport` computed by re-keying every season's own gameweek
+    number to a globally-unique composite (see :func:`_composite_gameweek`) and concatenating —
+    every metric ``score_season`` computes (MAE, top-N, calibration, captaincy hit-rate, ...)
+    therefore reuses that same, already-tested scoring code unchanged, just over a larger pooled
+    sample. Defensive-contribution calibration within ``pooled`` still only ever reflects seasons
+    with real DC archive data (see ``dc_data_available`` in :func:`_prepare_season_backtest_data`)
+    — pooling more seasons doesn't manufacture DC history that was never recorded.
+
+    The stand-in captaincy squad (:func:`build_stand_in_squad_starting_xi`) is built **once**, from
+    the pooled ground truth across every season, not freshly per season — the same top-(by total
+    minutes) outfield players it already illustrates real squads with, just now spanning multiple
+    seasons. This is a known simplification: a real manager's squad changes season to season, which
+    this pooled selection doesn't model — consistent with that function's own "illustrative, not a
+    real manager's history" caveat.
+    """
+
+    per_season: dict[int, SeasonReport]
+    pooled: SeasonReport
+
+
+def _pool_season_backtest_data(per_season_data: dict[int, SeasonBacktestData]) -> MultiSeasonReport:
+    """The actual pooling/scoring logic behind :func:`run_multi_season_backtest`, split out as a
+    pure function (no fetching) so it's testable against synthetic per-season data without a real
+    network call — see :func:`run_multi_season_backtest` for the full docstring."""
+    per_season_reports = {
+        season: score_season(
+            data.predictions,
+            data.ground_truth,
+            coverage=data.coverage,
+            player_rates=data.player_rates,
+        )
+        for season, data in per_season_data.items()
+    }
+
+    pooled_predictions = pd.concat(
+        [
+            data.predictions.assign(
+                gameweek=_composite_gameweek(season, data.predictions["gameweek"])
+            )
+            for season, data in per_season_data.items()
+        ],
+        ignore_index=True,
+    )
+    pooled_ground_truth = pd.concat(
+        [
+            data.ground_truth.assign(
+                gameweek=_composite_gameweek(season, data.ground_truth["gameweek"])
+            )
+            for season, data in per_season_data.items()
+        ],
+        ignore_index=True,
+    )
+    pooled_player_rates = pd.concat(
+        [
+            data.player_rates.assign(
+                gameweek=_composite_gameweek(season, data.player_rates["gameweek"])
+            )
+            for season, data in per_season_data.items()
+        ],
+        ignore_index=True,
+    )
+    pooled_report = score_season(
+        pooled_predictions, pooled_ground_truth, player_rates=pooled_player_rates
+    )
+    return MultiSeasonReport(per_season=per_season_reports, pooled=pooled_report)
+
+
+def run_multi_season_backtest(
+    season_start_years: list[int],
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+    min_training_gameweeks: int = 3,
+    refresh: bool = False,
+    min_crosswalk_minutes_share: float | None = 0.85,
+) -> MultiSeasonReport:
+    """Run :func:`run_backtest`'s own walk-forward pipeline independently for each season in
+    ``season_start_years`` (ENGINE_IMPROVEMENTS_3.md multi-season Phase 2 — each season scores its
+    own cold start against its own real prior-season Understat history via
+    :func:`fetch_understat_multi_season_league_data`/:func:`fetch_understat_player_histories`,
+    rather than one continuous timeline spanning season boundaries), then pool every season's
+    predictions/ground_truth/player_rates into one combined :class:`SeasonReport` via a single
+    call to :func:`score_season` (see :func:`_pool_season_backtest_data`) — see
+    :data:`_SEASON_GAMEWEEK_MULTIPLIER` for how gameweek numbers stay disambiguated across seasons
+    in that pooled call.
+
+    Simulation (``run_simulation``) is intentionally not offered here — it's expensive per season
+    already; run it per season via :func:`run_backtest` directly if needed.
+    """
+    per_season_data = {
+        season: _prepare_season_backtest_data(
+            season, cache_dir, min_training_gameweeks, refresh, min_crosswalk_minutes_share
+        )
+        for season in season_start_years
+    }
+    return _pool_season_backtest_data(per_season_data)
 
 
 def main(argv: list[str] | None = None) -> int:

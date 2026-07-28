@@ -65,6 +65,7 @@ def _synthetic_training_data(
     ownership_log = rng.uniform(0, 5, n)
     transfers_out_share = rng.uniform(0, 0.1, n)
     transfers_balance_share = rng.uniform(-0.1, 0.1, n)
+    is_goalkeeper = np.zeros(n)
 
     features = pd.DataFrame(
         {
@@ -83,6 +84,7 @@ def _synthetic_training_data(
             "ownership_log": ownership_log,
             "transfers_out_share": transfers_out_share,
             "transfers_balance_share": transfers_balance_share,
+            "is_goalkeeper": is_goalkeeper,
         }
     )
 
@@ -147,6 +149,7 @@ def test_minutes_model_high_fitness_high_start_rate_favours_60_plus():
                 "ownership_log": 3.0,
                 "transfers_out_share": 0.01,
                 "transfers_balance_share": 0.0,
+                "is_goalkeeper": 0.0,
             }
         ]
     )
@@ -168,6 +171,7 @@ def test_minutes_model_high_fitness_high_start_rate_favours_60_plus():
                 "ownership_log": 0.5,
                 "transfers_out_share": 0.05,
                 "transfers_balance_share": -0.05,
+                "is_goalkeeper": 0.0,
             }
         ]
     )
@@ -201,6 +205,7 @@ def test_minutes_model_zero_minute_streak_suppresses_p_60_plus():
         "ownership_log": 2.0,
         "transfers_out_share": 0.02,
         "transfers_balance_share": 0.0,
+        "is_goalkeeper": 0.0,
     }
     rested_one_match = pd.DataFrame([{**base_row, "zero_minute_streak_length": 1.0}])
     long_streak = pd.DataFrame([{**base_row, "zero_minute_streak_length": 5.0}])
@@ -209,6 +214,67 @@ def test_minutes_model_zero_minute_streak_suppresses_p_60_plus():
     streak_dist = model.predict(long_streak)[0]
 
     assert rested_dist.p_60_plus > streak_dist.p_60_plus
+
+
+def test_minutes_model_is_goalkeeper_feature_captures_distinct_gk_pattern():
+    # Real multi-season evidence (ENGINE_IMPROVEMENTS_3.md Phase 3): goalkeepers have a
+    # qualitatively more binary minutes pattern the other 15 features don't capture on their own --
+    # nailed-on ever-present or entirely out of the squad, with far less of the mid-match
+    # substitution/rotation variance that shapes those features for outfield players. Synthesize
+    # that pattern directly (GK start reliably regardless of recent_start_rate; outfield players'
+    # recent_start_rate is the real signal) and confirm the model actually uses the is_goalkeeper
+    # flag to tell them apart at an identical recent_start_rate, not just ignoring the extra column.
+    rng = np.random.default_rng(42)
+    n = 400
+    is_goalkeeper = rng.choice([0.0, 1.0], n)
+    recent_start_rate = rng.uniform(0.4, 0.6, n)
+    start_propensity = np.where(is_goalkeeper == 1.0, 0.95, recent_start_rate)
+    started = (rng.uniform(0, 1, n) < start_propensity).astype(int)
+    minutes = np.where(started == 1, 90.0, 0.0)
+
+    features = pd.DataFrame(
+        {
+            "recent_start_rate": recent_start_rate,
+            "recent_minutes_ewma": np.full(n, 70.0),
+            "fixture_congestion": np.zeros(n),
+            "chance_of_playing_next_round": np.full(n, 100.0),
+            "status_score": np.ones(n),
+            "days_since_last_appearance": np.full(n, 7.0),
+            "zero_minute_streak_length": np.zeros(n),
+            "start_rate_last_3": recent_start_rate,
+            "start_rate_last_6": recent_start_rate,
+            "start_rate_last_15": recent_start_rate,
+            "team_rotation_propensity": np.full(n, 0.3),
+            "price": np.full(n, 6.0),
+            "ownership_log": np.full(n, 2.0),
+            "transfers_out_share": np.full(n, 0.02),
+            "transfers_balance_share": np.zeros(n),
+            "is_goalkeeper": is_goalkeeper,
+        }
+    )
+    model = MinutesModel().fit(features, pd.Series(started), pd.Series(minutes))
+
+    same_start_rate = {
+        "recent_start_rate": 0.5,
+        "recent_minutes_ewma": 70.0,
+        "fixture_congestion": 0.0,
+        "chance_of_playing_next_round": 100.0,
+        "status_score": 1.0,
+        "days_since_last_appearance": 7.0,
+        "zero_minute_streak_length": 0.0,
+        "start_rate_last_3": 0.5,
+        "start_rate_last_6": 0.5,
+        "start_rate_last_15": 0.5,
+        "team_rotation_propensity": 0.3,
+        "price": 6.0,
+        "ownership_log": 2.0,
+        "transfers_out_share": 0.02,
+        "transfers_balance_share": 0.0,
+    }
+    gk_dist = model.predict(pd.DataFrame([{**same_start_rate, "is_goalkeeper": 1.0}]))[0]
+    outfield_dist = model.predict(pd.DataFrame([{**same_start_rate, "is_goalkeeper": 0.0}]))[0]
+
+    assert gk_dist.p_60_plus > outfield_dist.p_60_plus
 
 
 def test_minutes_model_predict_before_fit_raises():
@@ -238,6 +304,7 @@ def test_minutes_model_handles_single_class_training_data():
             "ownership_log": [2.5] * n,
             "transfers_out_share": [0.01] * n,
             "transfers_balance_share": [0.0] * n,
+            "is_goalkeeper": [0.0] * n,
         }
     )
     started = pd.Series([1] * n)

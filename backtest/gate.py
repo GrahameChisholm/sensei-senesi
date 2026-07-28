@@ -12,11 +12,17 @@ yet — rather than something to special-case around (BUILD_PLAN 3.6).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 from backtest.baselines import PairedBootstrapResult, PermutationTestResult
 from backtest.metrics import BiasReport, CalibrationReport
 
-DEFAULT_MAX_CALIBRATION_ERROR = 0.15
+# ENGINE_IMPROVEMENTS_3.md B.1: the original 0.15 threshold was never derived from anything —
+# every component ever measured has scored between 0.004 and 0.027, six to forty times tighter,
+# so the gate could not fail on calibration even at the pre-B.1 defensive-contribution defect
+# (0.0306, a 34% under-prediction). Set from the measured distribution with headroom for a
+# component that's merely okay rather than excellent, not from a guess.
+DEFAULT_MAX_CALIBRATION_ERROR = 0.05
 
 __all__ = ["DefinitionOfDoneReport", "evaluate_definition_of_done"]
 
@@ -66,6 +72,7 @@ def evaluate_definition_of_done(
     predictions_logged: bool,
     trusted_by_user: bool,
     max_acceptable_calibration_error: float = DEFAULT_MAX_CALIBRATION_ERROR,
+    calibration_error_thresholds: Mapping[str, float] | None = None,
 ) -> DefinitionOfDoneReport:
     """Roll up backtest results into a pass/fail verdict against every BUILD_PLAN 3.6 criterion.
 
@@ -75,6 +82,12 @@ def evaluate_definition_of_done(
     ``calibration_reports`` keys are whatever grouping/component the caller checked (e.g. position,
     price tier, "clean_sheet", "defensive_contribution"). ``trusted_by_user`` is BUILD_PLAN 3.6's
     explicit "honest final check" — the one criterion this module cannot compute for you.
+
+    ``calibration_error_thresholds``, if given, overrides ``max_acceptable_calibration_error`` on a
+    per-component basis (ENGINE_IMPROVEMENTS_3.md B.1 — "make it per-component with each
+    component's own historical value as the reference"), keyed the same way as
+    ``calibration_reports``. A component missing from this mapping falls back to
+    ``max_acceptable_calibration_error``.
     """
     beats_baselines = bool(baseline_results) and all(
         r.beats_baseline for r in baseline_results.values()
@@ -82,9 +95,11 @@ def evaluate_definition_of_done(
     no_severe_bias = bool(bias_reports) and all(
         not report.by_group["severe"].any() for report in bias_reports.values()
     )
+    thresholds = calibration_error_thresholds or {}
     calibration_acceptable = bool(calibration_reports) and all(
-        report.mean_absolute_calibration_error <= max_acceptable_calibration_error
-        for report in calibration_reports.values()
+        report.mean_absolute_calibration_error
+        <= thresholds.get(name, max_acceptable_calibration_error)
+        for name, report in calibration_reports.items()
     )
     return DefinitionOfDoneReport(
         beats_baselines=beats_baselines,

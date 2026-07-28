@@ -115,6 +115,31 @@ def effective_sample_minutes(
     return _ewm_sum(matches[minutes_col], config) if len(matches) else 0.0
 
 
+def effective_sample_minutes_asof(
+    matches: pd.DataFrame,
+    minutes_col: str = "time",
+    config: EwmaRateConfig = DEFAULT_CONFIG,
+) -> pd.Series:
+    """Point-in-time (``shift(1)``-equivalent) version of :func:`effective_sample_minutes` — one
+    value per row of ``matches``, reflecting only strictly-prior rows, mirroring how
+    :func:`ewma_rate_asof` relates to the scalar :func:`latest_ewma_rate`. ``matches`` must already
+    be sorted chronologically (oldest first).
+
+    Used by the card/own-goal rate shrinkage (ENGINE_IMPROVEMENTS_3.md A.3) as the point-in-time
+    evidence weight behind each row's own card rate, the same role
+    :func:`~engine.rates.effective_sample_minutes` already plays for the goals/assists shrinkage
+    (ENGINE_IMPROVEMENTS_2.md B.2) — but computed incrementally here since that shrinkage needs a
+    value *at every gameweek*, not just the latest one.
+    """
+    decay = 0.5 ** (1.0 / config.halflife_matches)
+    running = 0.0
+    values: list[float] = []
+    for value in matches[minutes_col].astype(float):
+        values.append(running)
+        running = value + decay * running
+    return pd.Series(values, index=matches.index, dtype=float)
+
+
 def shrink_toward_prior(
     individual_rate: float,
     individual_weight: float,

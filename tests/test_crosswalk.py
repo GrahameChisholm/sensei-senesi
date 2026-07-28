@@ -228,9 +228,157 @@ def test_build_crosswalk_precise_match_wins_over_an_earlier_heuristic_guess_for_
 
     assert by_understat_id[2].fpl_id == 662
     assert by_understat_id[2].matched_by == "exact"
-    # Yerson's own true id (634) isn't reachable by any pass here (his Understat display name
-    # lacks "Valdelamar"), so he correctly stays unmatched rather than stealing Cristhian's id.
-    assert 1 not in by_understat_id
+    # Yerson's own true id (634) is reachable via the token-prefix pass (crosswalk coverage
+    # Phase 1) -- "Yerson Mosquera" is an exact-order prefix of "Yerson Mosquera Valdelamar" --
+    # and since Cristhian's exact match already claimed a *different* id (662), there's no
+    # conflict: Yerson correctly resolves to his own id rather than either stealing Cristhian's or
+    # staying unmatched.
+    assert by_understat_id[1].fpl_id == 634
+    assert by_understat_id[1].matched_by == "token_prefix"
+
+
+def test_normalize_name_treats_hyphens_as_separators():
+    # Crosswalk coverage Phase 1: "Smith-Rowe" vs "Smith Rowe" was otherwise invisible to every
+    # matching pass.
+    assert normalize_name("Emile Smith-Rowe") == normalize_name("Emile Smith Rowe")
+    assert normalize_name("Rayan Aït-Nouri") == normalize_name("Rayan Ait Nouri")
+
+
+def test_token_prefix_pass_matches_a_dropped_maternal_surname():
+    # Real 2025/26 pattern: FPL's full legal name carries a Spanish/Portuguese maternal surname
+    # Understat's short display name drops.
+    players = [UnderstatPlayer(understat_id=1, name="Marcos Senesi")]
+    fpl_id_by_name = {"Marcos Senesi Barón": 72}
+
+    entries = build_crosswalk(players, fpl_id_by_name, strict=True)
+
+    assert entries[0].matched_by == "token_prefix"
+    assert entries[0].fpl_id == 72
+
+
+def test_token_prefix_pass_matches_when_understat_carries_the_extra_token():
+    # The reverse direction: Understat's own name is the longer one (e.g. "Amad Diallo Traore" vs
+    # FPL's "Amad Diallo").
+    players = [UnderstatPlayer(understat_id=1, name="Amad Diallo Traore")]
+    fpl_id_by_name = {"Amad Diallo": 452}
+
+    entries = build_crosswalk(players, fpl_id_by_name, strict=True)
+
+    assert entries[0].matched_by == "token_prefix"
+    assert entries[0].fpl_id == 452
+
+
+def test_token_prefix_pass_does_not_resolve_ambiguous_prefix():
+    # Two different FPL players both extend the same shorter Understat name -- must not guess.
+    players = [UnderstatPlayer(understat_id=1, name="John Smith")]
+    fpl_id_by_name = {"John Smith Anderson": 9, "John Smith Roberts": 10}
+
+    with pytest.raises(CrosswalkError):
+        build_crosswalk(players, fpl_id_by_name, strict=True)
+
+
+def test_reversed_order_pass_matches_given_name_family_name_swap():
+    # Real 2025/26 pattern: Japanese/Korean given-name-first vs family-name-first convention.
+    players = [UnderstatPlayer(understat_id=1, name="Kaoru Mitoma")]
+    fpl_id_by_name = {"Mitoma Kaoru": 157}
+
+    entries = build_crosswalk(players, fpl_id_by_name, strict=True)
+
+    assert entries[0].matched_by == "reversed_order"
+    assert entries[0].fpl_id == 157
+
+
+def test_reversed_order_pass_handles_a_hyphenated_given_name_block():
+    # "Hee-Chan Hwang" vs "Hwang Hee-chan" -- the hyphenated block must swap as one unit, not get
+    # split into three tokens and reversed token-by-token.
+    players = [UnderstatPlayer(understat_id=1, name="Hee-Chan Hwang")]
+    fpl_id_by_name = {"Hwang Hee-chan": 642}
+
+    entries = build_crosswalk(players, fpl_id_by_name, strict=True)
+
+    assert entries[0].matched_by == "reversed_order"
+    assert entries[0].fpl_id == 642
+
+
+def test_reversed_order_pass_does_not_apply_to_three_token_names():
+    # No single unambiguous swap exists for a three-token name -- must fall through rather than
+    # guess a reversal.
+    players = [UnderstatPlayer(understat_id=1, name="John David Smith")]
+    fpl_id_by_name = {"Smith David John": 9}
+
+    with pytest.raises(CrosswalkError):
+        build_crosswalk(players, fpl_id_by_name, strict=True)
+
+
+def test_manual_overlay_resolves_a_real_2025_26_nickname_and_spelling_variant():
+    # Sanity check on real entries in MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON[2025] (crosswalk
+    # coverage Phase 1) -- confirms the overlay table itself is wired correctly, not just the
+    # mechanism.
+    from engine.data.crosswalk import MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON
+
+    players = [
+        UnderstatPlayer(understat_id=2496, name="Rodri"),
+        UnderstatPlayer(understat_id=9024, name="Yeremi Pino"),
+    ]
+    fpl_id_by_name = {
+        "Rodrigo 'Rodri' Hernandez Cascante": 421,
+        "Yéremy Pino Santos": 712,
+    }
+
+    entries = build_crosswalk(
+        players,
+        fpl_id_by_name,
+        overlay=MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON[2025],
+        strict=True,
+    )
+    by_id = {e.understat_id: e for e in entries}
+
+    assert by_id[2496].fpl_id == 421
+    assert by_id[2496].matched_by == "manual_overlay"
+    assert by_id[9024].fpl_id == 712
+    assert by_id[9024].matched_by == "manual_overlay"
+
+
+def test_manual_overlay_is_season_keyed_not_a_flat_id_map():
+    # ENGINE_IMPROVEMENTS_3.md multi-season Phase 2: fpl_id is only meaningful within the one
+    # season it was hand-verified against -- FPL reassigns element ids every season, so the same
+    # understat_id must resolve differently depending on which season's overlay slice is used.
+    from engine.data.crosswalk import MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON
+
+    assert MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON[2025][2496] == 421  # Rodri, 2025/26
+    assert 2496 not in MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON.get(2022, {})
+
+
+def test_manual_overlay_resolves_a_real_2022_23_cross_player_collision():
+    # Real 2022/23 case: Understat displays both Emerson Palmieri (West Ham) and Emerson Royal
+    # (Tottenham) as the bare string "Emerson" -- FPL's own web_name "Emerson" belongs to only one
+    # of them, so web_name_exact alone would (and, before this fix, did) resolve both to the same
+    # id. The overlay must be checked *before* web_name_exact, not after, to correct this.
+    from engine.data.crosswalk import MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON
+
+    players = [
+        UnderstatPlayer(understat_id=7430, name="Emerson"),  # Royal (Tottenham) -- needs the overlay
+        UnderstatPlayer(understat_id=1245, name="Emerson"),  # Palmieri (West Ham) -- resolves via web_name
+    ]
+    fpl_id_by_name = {
+        "Emerson Leite de Souza Junior": 445,  # Royal
+        "Emerson Palmieri dos Santos": 545,  # Palmieri
+    }
+    fpl_id_by_web_name = {"Emerson Royal": 445, "Emerson": 545}
+
+    entries = build_crosswalk(
+        players,
+        fpl_id_by_name,
+        overlay=MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON[2022],
+        strict=True,
+        fpl_id_by_web_name=fpl_id_by_web_name,
+    )
+    by_id = {e.understat_id: e for e in entries}
+
+    assert by_id[7430].fpl_id == 445
+    assert by_id[7430].matched_by == "manual_overlay"
+    assert by_id[1245].fpl_id == 545
+    assert by_id[1245].matched_by == "web_name_exact"
 
 
 def test_assert_matched_share_passes_when_coverage_meets_threshold():

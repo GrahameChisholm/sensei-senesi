@@ -78,6 +78,7 @@ def test_phase2_pipeline_runs_end_to_end_without_leakage():
             "ownership_log": np.random.default_rng(14).uniform(0, 5, 100),
             "transfers_out_share": np.random.default_rng(15).uniform(0, 0.1, 100),
             "transfers_balance_share": np.random.default_rng(16).uniform(-0.1, 0.1, 100),
+            "is_goalkeeper": np.zeros(100),
         }
     )
     started = pd.Series(np.random.default_rng(4).choice([0, 1], size=100, p=[0.2, 0.8]))
@@ -103,6 +104,7 @@ def test_phase2_pipeline_runs_end_to_end_without_leakage():
                 "ownership_log": 2.0,
                 "transfers_out_share": 0.01,
                 "transfers_balance_share": 0.0,
+                "is_goalkeeper": 0.0,
             }
         ]
     )[FEATURE_COLUMNS]
@@ -156,7 +158,8 @@ def test_phase2_pipeline_runs_end_to_end_without_leakage():
             rng.uniform(0, 1),
             rng.uniform(0, 15),
         )
-        bonus_training_rows.append(build_features(eg, ea, cs, dc, position))
+        em = rng.uniform(0, 90)
+        bonus_training_rows.append(build_features(eg, ea, cs, dc, position, expected_minutes=em))
         bonus_training_targets.append(float(np.clip(1.5 * eg + ea + cs, 0, 3)))
     bonus_model = BonusModel().fit(
         pd.DataFrame(bonus_training_rows), pd.Series(bonus_training_targets)
@@ -169,6 +172,7 @@ def test_phase2_pipeline_runs_end_to_end_without_leakage():
                 clean_sheet_probability=clean_sheet.clean_sheet_probability,
                 defensive_action_rate=player_dc90,
                 position="MID",
+                expected_minutes=minutes_distribution.expected_minutes,
             )
         ]
     )

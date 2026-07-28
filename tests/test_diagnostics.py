@@ -9,10 +9,12 @@ import pytest
 
 from backtest.diagnostics import (
     ComponentRegressionReport,
+    RankBasedBonusReport,
     assists_regression_diagnostics,
     bonus_regression_diagnostics,
     defensive_contribution_regression_diagnostics,
     goals_regression_diagnostics,
+    rank_based_bonus_diagnostics,
     run_all_component_regression_diagnostics,
 )
 
@@ -121,6 +123,7 @@ def test_bonus_regression_diagnostics_computes_features_from_raw_columns():
         "expected_assists",
         "clean_sheet_probability",
         "defensive_action_rate",
+        "expected_minutes",
         "const",
     }
 
@@ -144,3 +147,69 @@ def test_run_all_component_regression_diagnostics_covers_every_component():
     assert set(reports) == {"goals", "assists", "defensive_contribution", "bonus"}
     for report in reports.values():
         assert isinstance(report, ComponentRegressionReport)
+
+
+def _synthetic_fixture_bonus_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Two real fixtures (four teams, one gameweek), each with a standout player whose own
+    BPS-per-90 rate and expected minutes dwarf everyone else's in that same match
+    (ENGINE_IMPROVEMENTS_3.md D.2) — engineered/predictions carry only the columns
+    rank_based_bonus_diagnostics itself needs."""
+    engineered_rows = []
+    predictions_rows = []
+    player_id = 1
+    for fixture_idx, (team_a, team_b) in enumerate([("Team A", "Team B"), ("Team C", "Team D")]):
+        for team, opponent, bps_rates in [
+            (team_a, team_b, [40.0, 10.0, 8.0, 6.0]),
+            (team_b, team_a, [9.0, 7.0, 5.0, 4.0]),
+        ]:
+            for bps in bps_rates:
+                actual_bonus = 3.0 if bps == max(bps_rates) and team == team_a else 0.0
+                engineered_rows.append(
+                    {
+                        "player_id": player_id,
+                        "gameweek": 1,
+                        "team": team,
+                        "opponent_team_name": opponent,
+                        "bps_per_90": bps,
+                        "bonus": actual_bonus,
+                    }
+                )
+                predictions_rows.append(
+                    {
+                        "player_id": player_id,
+                        "gameweek": 1,
+                        "expected_minutes": 90.0,
+                        "expected_bonus": 1.0,
+                    }
+                )
+                player_id += 1
+    return pd.DataFrame(engineered_rows), pd.DataFrame(predictions_rows)
+
+
+def test_rank_based_bonus_diagnostics_returns_a_report_for_every_real_fixture():
+    engineered, predictions = _synthetic_fixture_bonus_data()
+    report = rank_based_bonus_diagnostics(engineered, predictions)
+
+    assert isinstance(report, RankBasedBonusReport)
+    assert report.n_fixtures == 2
+    assert report.n_rows == len(engineered)
+    assert report.mae_rank_based >= 0
+    assert report.mae_shipped >= 0
+    assert -1.0 <= report.corr_rank_based <= 1.0
+
+
+def test_rank_based_bonus_diagnostics_favors_the_standout_player_in_their_own_fixture():
+    engineered, predictions = _synthetic_fixture_bonus_data()
+
+    merged = predictions.merge(engineered, on=["player_id", "gameweek"])
+    merged["expected_bps"] = merged["bps_per_90"] * merged["expected_minutes"] / 90.0
+    standout = merged.loc[merged["expected_bps"].idxmax()]
+    weakest = merged.loc[merged["expected_bps"].idxmin()]
+    assert standout["team"] != weakest["team"] or standout["expected_bps"] > weakest["expected_bps"]
+
+    from engine.models.bonus import expected_bonus_from_fixture_strengths
+
+    fixture = merged[merged["gameweek"] == 1].iloc[:8]  # first fixture's 8 players
+    strengths = fixture["expected_bps"].clip(lower=0.01).to_numpy()
+    expected = expected_bonus_from_fixture_strengths(strengths)
+    assert expected[0] == max(expected)  # the standout (bps=40.0) is listed first

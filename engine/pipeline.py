@@ -35,7 +35,7 @@ from engine.models.minutes import MinutesModel
 from engine.models.saves import (
     DEFAULT_AWAY_SHOT_MULTIPLIER,
     DEFAULT_SAVE_CONVERSION_RATE,
-    project_saves,
+    project_saves_from_own_rate,
 )
 from engine.projections import PlayerGameweekProjection, project_player_gameweek
 from engine.scoring import DEF, FWD, GK, MID
@@ -76,6 +76,22 @@ class FittedConstants:
     league_avg_penalty_conversion_rate: float = DEFAULT_PENALTY_CONVERSION_RATE
     # 0.0 = shrinkage disabled, matching project_goals'/project_assists' own opt-in default.
     shrinkage_k: float = 0.0
+    # ENGINE_IMPROVEMENTS_3.md A.3: per-position league-average card/own-goal rates and their
+    # shrinkage strengths — same opt-in-disabled-by-default shape as `shrinkage_k` above. Red and
+    # own-goal shrinkage strengths are typically much larger than yellow's, since both are rare
+    # enough that a single observation is not a reliable individual rate.
+    league_avg_yellow_card_rate_by_position: Mapping[str, float] = field(default_factory=dict)
+    league_avg_red_card_rate_by_position: Mapping[str, float] = field(default_factory=dict)
+    league_avg_own_goal_rate_by_position: Mapping[str, float] = field(default_factory=dict)
+    yellow_card_shrinkage_k: float = 0.0
+    red_card_shrinkage_k: float = 0.0
+    own_goal_shrinkage_k: float = 0.0
+    # ENGINE_IMPROVEMENTS_3.md D.1: shrinkage prior/strength for the goalkeeper own-rate saves
+    # fallback (`project_saves_from_own_rate`) — `save_conversion_rate`/`away_shot_multiplier`
+    # above remain for `project_saves`'s opponent-adjusted formula, still blocked on real
+    # opponent shots-on-target data and not currently called by this module.
+    league_avg_save_rate_per_90: float = 0.0
+    save_rate_shrinkage_k: float = 0.0
 
 
 # Every column ``project_gameweek_pool`` reads from its ``players`` input, beyond the minutes
@@ -96,7 +112,9 @@ GAMEWEEK_POOL_COLUMNS = [
     # Outfield only (BUILD_PLAN 2.5) — required unless position == GK:
     #   "dc_per_90", "opponent_possession_share"
     # GK only (BUILD_PLAN 2.6) — required when position == GK:
-    #   "opponent_shots_on_target_per_90", "is_home"
+    #   "own_save_rate_per_90" (ENGINE_IMPROVEMENTS_3.md D.1 fallback — see project_saves_from_own_rate;
+    #   the "real" opponent-adjusted project_saves needs "opponent_shots_on_target_per_90"/"is_home",
+    #   still blocked on real shot data and not required here)
 ]
 
 
@@ -113,7 +131,7 @@ _SHARED_REQUIRED_COLUMNS = [
     *MINUTES_FEATURE_COLUMNS,
 ]
 _OUTFIELD_ONLY_REQUIRED_COLUMNS = ["dc_per_90", "opponent_possession_share"]
-_GK_ONLY_REQUIRED_COLUMNS = ["opponent_shots_on_target_per_90", "is_home"]
+_GK_ONLY_REQUIRED_COLUMNS = ["own_save_rate_per_90"]
 
 
 def _validate_no_nan_inputs(players: pd.DataFrame) -> None:
@@ -158,7 +176,16 @@ def _project_one_player(
     # (0.0 by default = disabled, matching each component's own project_*'s pre-B.2 behavior).
     # `understat_effective_minutes` defaults to 0.0 (full shrinkage toward the prior) when the row
     # doesn't carry it — the correct behavior for a player with no prior Understat history at all.
-    understat_effective_minutes = float(row.get("understat_effective_minutes", 0.0))
+    #
+    # ENGINE_IMPROVEMENTS_3.md D.1: goalkeepers never have real Understat history (the crosswalk
+    # doesn't try to match them), so `understat_effective_minutes` is always 0.0 for GK — which
+    # would otherwise mean shrinkage falls back to the team-xG-derived *prior* rate every single
+    # gameweek (an average outfield player's ~12% share of team xG) rather than a keeper's real
+    # near-zero goal/assist involvement. Shrinkage is disabled entirely for GK (`individual_weight
+    # =None`) so `npxg_per_90`/`xa_per_90`'s explicit 0.0 (see `engineer_features`) is used as-is.
+    understat_effective_minutes = (
+        float(row.get("understat_effective_minutes", 0.0)) if position != GK else None
+    )
 
     goals = project_goals(
         player_npxg_per_90=row["npxg_per_90"],
@@ -198,17 +225,39 @@ def _project_one_player(
         p_60_plus=minutes_distribution.p_60_plus,
         minutes_given_60_plus=minutes_distribution.expected_minutes_given_60_plus,
     )
+    # ENGINE_IMPROVEMENTS_3.md A.3: point-in-time evidence weight behind this row's own card/own-
+    # goal rates, the shrinkage target for thin-sample outliers — defaults to 0.0 (full shrinkage
+    # toward the prior) when the row doesn't carry it, same convention as
+    # `understat_effective_minutes` above.
+    card_effective_minutes = float(row.get("card_effective_minutes", 0.0))
     cards = project_cards(
         yellow_card_rate_per_90=row["yellow_card_rate_per_90"],
         red_card_rate_per_90=row["red_card_rate_per_90"],
         expected_minutes=expected_minutes,
+        individual_weight=card_effective_minutes,
+        league_avg_yellow_card_rate_per_90=fitted_constants.league_avg_yellow_card_rate_by_position.get(
+            position
+        ),
+        league_avg_red_card_rate_per_90=fitted_constants.league_avg_red_card_rate_by_position.get(
+            position
+        ),
+        yellow_shrinkage_k=fitted_constants.yellow_card_shrinkage_k,
+        red_shrinkage_k=fitted_constants.red_card_shrinkage_k,
     )
     # ENGINE_IMPROVEMENTS_2.md D.6: optional, like team_expected_penalties/taker_share below —
     # silently omitted (own goals not modelled) when the row doesn't carry this column, rather
     # than requiring every existing caller to supply it.
     own_goal_rate_per_90 = row.get("own_goal_rate_per_90")
     own_goals = (
-        project_own_goals(float(own_goal_rate_per_90), expected_minutes)
+        project_own_goals(
+            float(own_goal_rate_per_90),
+            expected_minutes,
+            individual_weight=card_effective_minutes,
+            league_avg_own_goal_rate_per_90=fitted_constants.league_avg_own_goal_rate_by_position.get(
+                position
+            ),
+            shrinkage_k=fitted_constants.own_goal_shrinkage_k,
+        )
         if own_goal_rate_per_90 is not None
         else None
     )
@@ -216,14 +265,15 @@ def _project_one_player(
     p_clears_threshold = float("nan")  # DC isn't modelled for GK
     if position == GK:
         defensive_contribution = None
-        saves = project_saves(
-            opponent_shots_on_target_per_90=row["opponent_shots_on_target_per_90"],
-            team_xga_per_90=row["team_xga_per_90"],
-            league_avg_xga_per_90=row["league_avg_xga_per_90"],
-            is_home=bool(row["is_home"]),
+        # ENGINE_IMPROVEMENTS_3.md D.1: own-rate fallback, not the opponent-adjusted
+        # `project_saves` (still blocked on real opponent shots-on-target data) — see that
+        # function's own docstring.
+        saves = project_saves_from_own_rate(
+            own_save_rate_per_90=row["own_save_rate_per_90"],
             expected_minutes=expected_minutes,
-            save_conversion_rate=fitted_constants.save_conversion_rate,
-            away_shot_multiplier=fitted_constants.away_shot_multiplier,
+            individual_weight=card_effective_minutes,
+            league_avg_save_rate_per_90=fitted_constants.league_avg_save_rate_per_90,
+            shrinkage_k=fitted_constants.save_rate_shrinkage_k,
         )
         defensive_action_rate_for_bonus = 0.0
     else:
@@ -253,6 +303,7 @@ def _project_one_player(
                 clean_sheet_probability=clean_sheet.clean_sheet_probability,
                 defensive_action_rate=defensive_action_rate_for_bonus,
                 position=position,
+                expected_minutes=expected_minutes,
             )
         ]
     )
@@ -282,6 +333,10 @@ def _project_one_player(
         "expected_goals": goals.expected_goals,
         "expected_assists": assists.expected_assists,
         "expected_bonus": bonus.expected_bonus,
+        # NaN for outfield players (saves isn't modelled for them), mirroring p_clears_threshold's
+        # own GK/outfield split above — Phase 3's saves calibration check needs the raw expected
+        # count, not `breakdown.saves`'s already-floor-divided points.
+        "expected_saves": saves.expected_saves if saves is not None else float("nan"),
     }
     return projection, breakdown, clean_sheet.clean_sheet_probability, raw_components
 
@@ -350,6 +405,7 @@ def project_gameweek_pool(
                 "expected_goals": raw_components["expected_goals"],
                 "expected_assists": raw_components["expected_assists"],
                 "expected_bonus": raw_components["expected_bonus"],
+                "expected_saves": raw_components["expected_saves"],
                 "appearance": breakdown.appearance,
                 "goals": breakdown.goals,
                 "assists": breakdown.assists,

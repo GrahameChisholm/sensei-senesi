@@ -34,7 +34,8 @@ def _fitted_bonus_model() -> BonusModel:
     for _ in range(150):
         position = rng.choice(["GK", "DEF", "MID", "FWD"])
         eg, ea, cs, dc = rng.uniform(0, 1), rng.uniform(0, 1), rng.uniform(0, 1), rng.uniform(0, 15)
-        rows.append(build_features(eg, ea, cs, dc, position))
+        em = rng.uniform(0, 90)
+        rows.append(build_features(eg, ea, cs, dc, position, expected_minutes=em))
         bonus.append(float(np.clip(1.5 * eg + ea + cs, 0, 3)))
     return BonusModel().fit(pd.DataFrame(rows), pd.Series(bonus))
 

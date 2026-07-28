@@ -34,8 +34,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
+from engine.models.bonus import expected_bonus_from_fixture_strengths
 from engine.regression import (
     PerPositionRegression,
     RegressionKind,
@@ -51,6 +53,8 @@ __all__ = [
     "defensive_contribution_regression_diagnostics",
     "bonus_regression_diagnostics",
     "run_all_component_regression_diagnostics",
+    "RankBasedBonusReport",
+    "rank_based_bonus_diagnostics",
 ]
 
 
@@ -142,9 +146,16 @@ def bonus_regression_diagnostics(engineered: pd.DataFrame) -> ComponentRegressio
     data["expected_assists"] = data["xa_per_90"] * fixture_adjustment * minutes_fraction
     data["clean_sheet_probability"] = data["clean_sheet_probability_default_rho"]
     data["defensive_action_rate"] = data["dc_per_90"]
+    data["expected_minutes"] = data["minutes"]
     return _fit_component(
         data,
-        ["expected_goals", "expected_assists", "clean_sheet_probability", "defensive_action_rate"],
+        [
+            "expected_goals",
+            "expected_assists",
+            "clean_sheet_probability",
+            "defensive_action_rate",
+            "expected_minutes",
+        ],
         "bonus",
         "linear",
         "bonus",
@@ -163,3 +174,79 @@ def run_all_component_regression_diagnostics(
         "defensive_contribution": defensive_contribution_regression_diagnostics(engineered),
         "bonus": bonus_regression_diagnostics(engineered),
     }
+
+
+@dataclass(frozen=True)
+class RankBasedBonusReport:
+    """Comparison of the soft within-fixture Plackett-Luce BPS-rank bonus model
+    (ENGINE_IMPROVEMENTS_3.md D.2) against the shipped linear regression proxy
+    (``engine.models.bonus.BonusModel``), on the same real, already-scored population. Recorded as
+    a standalone diagnostic (this module's own convention, per A.6/D.4) rather than wired into
+    ``backtest.run_season.score_season`` — D.2 is explicitly exploratory ("the right shape... not
+    yet fully tested"), not a decided replacement for the production bonus model."""
+
+    n_fixtures: int
+    n_rows: int
+    mae_shipped: float
+    mae_rank_based: float
+    corr_shipped: float
+    corr_rank_based: float
+
+
+def rank_based_bonus_diagnostics(
+    engineered: pd.DataFrame, predictions: pd.DataFrame, strength_floor: float = 0.01
+) -> RankBasedBonusReport:
+    """Group every real fixture's on-pitch players by ``(gameweek, team, opponent_team_name)``,
+    convert each player's own point-in-time ``bps_per_90`` rate and the model's own MODELLED
+    ``expected_minutes`` (not realised minutes — the same train/serve discipline as A.2) into a
+    Plackett-Luce "strength" for that fixture, and compare the resulting expected 3/2/1 bonus
+    against the shipped linear model's own prediction, on the same real ``bonus`` outcome.
+
+    ``strength_floor`` keeps a strength that would otherwise be exactly zero (a player given zero
+    expected minutes, or with no prior BPS history) from breaking the Plackett-Luce normalisation —
+    a player with a floor strength still has a vanishingly small, not literally zero, chance of a
+    top-3 finish, which is the honest answer for "almost certainly won't play".
+    """
+    merged = predictions[["player_id", "gameweek", "expected_minutes", "expected_bonus"]].merge(
+        engineered[
+            ["player_id", "gameweek", "team", "opponent_team_name", "bps_per_90", "bonus"]
+        ],
+        on=["player_id", "gameweek"],
+    )
+    merged["expected_bps"] = (
+        (merged["bps_per_90"] * merged["expected_minutes"] / 90.0).clip(lower=0.0) + strength_floor
+    )
+
+    rank_based_bonus = pd.Series(index=merged.index, dtype=float)
+    n_fixtures = 0
+    processed: set[tuple[int, str]] = set()
+    for (gameweek, team), group in merged.groupby(["gameweek", "team"]):
+        key = (gameweek, team)
+        if key in processed:
+            continue
+        opponent = group["opponent_team_name"].iloc[0]
+        opponent_key = (gameweek, opponent)
+        opponent_group = merged[
+            (merged["gameweek"] == gameweek) & (merged["team"] == opponent)
+        ]
+        if opponent_group.empty:
+            continue
+        processed.add(key)
+        processed.add(opponent_key)
+        n_fixtures += 1
+
+        fixture = pd.concat([group, opponent_group])
+        expected = expected_bonus_from_fixture_strengths(fixture["expected_bps"].to_numpy())
+        rank_based_bonus.loc[fixture.index] = expected
+
+    scored = merged.assign(rank_based_bonus=rank_based_bonus).dropna(subset=["rank_based_bonus"])
+    shipped_err = (scored["expected_bonus"] - scored["bonus"]).abs()
+    rank_err = (scored["rank_based_bonus"] - scored["bonus"]).abs()
+    return RankBasedBonusReport(
+        n_fixtures=n_fixtures,
+        n_rows=len(scored),
+        mae_shipped=float(shipped_err.mean()),
+        mae_rank_based=float(rank_err.mean()),
+        corr_shipped=float(np.corrcoef(scored["expected_bonus"], scored["bonus"])[0, 1]),
+        corr_rank_based=float(np.corrcoef(scored["rank_based_bonus"], scored["bonus"])[0, 1]),
+    )
