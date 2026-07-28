@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
+from sklearn.metrics import roc_auc_score
 
 PLAYER_ID_COL = "player_id"
 POSITION_COL = "position"
@@ -41,6 +42,10 @@ __all__ = [
     "RankCorrelationReport",
     "rank_correlation",
     "floor_ceiling_coverage",
+    "MeanCalibrationReport",
+    "mean_calibration",
+    "MinutesDiagnosticsReport",
+    "minutes_model_diagnostics",
 ]
 
 
@@ -324,16 +329,44 @@ def top_n_mean_actual(
     return TopNReport(by_n=pd.DataFrame(rows))
 
 
+def _spearman_or_nan(a: pd.Series, b: pd.Series) -> float:
+    return float(scipy_stats.spearmanr(a, b).correlation) if len(a) >= 2 else float("nan")
+
+
+def _by_group_spearman(
+    merged: pd.DataFrame, group_col: str, predicted_col: str, actual_col: str
+) -> pd.DataFrame:
+    rows = [
+        {
+            group_col: group,
+            "spearman": _spearman_or_nan(g[predicted_col], g[actual_col]),
+            "n": len(g),
+        }
+        for group, g in merged.groupby(group_col)
+    ]
+    return pd.DataFrame(rows)
+
+
 @dataclass(frozen=True)
 class RankCorrelationReport:
-    """Spearman rank correlation between predicted and actual points — overall, and (optionally)
-    broken out by an arbitrary group column (position, price tier, ...). A single pooled Spearman
-    is dominated by the will-they-play axis (ENGINE_IMPROVEMENTS.md 2.1): pass ``minutes_col`` to
-    restrict to players who actually started, separating "ranks footballers well" from "ranks
-    availability well"."""
+    """Spearman rank correlation between predicted and actual points — pooled (every row) and,
+    when ``minutes_col`` is supplied, separately restricted to players who actually started
+    (ENGINE_IMPROVEMENTS_2.md Correction 5 / A.2). A single pooled Spearman is dominated by the
+    will-they-play axis (ENGINE_IMPROVEMENTS.md 2.1), so the two numbers answer different
+    questions — "ranks footballers well" (starters-only) vs "ranks the whole pool, availability
+    included, well" (pooled) — and collapsing them into one field previously meant the version
+    that got reported (``overall``) was silently the restricted one whenever ``minutes_col`` was
+    passed, which is exactly what happened in the first re-measurement pass.
+
+    ``overall`` is always the pooled (unfiltered) figure. ``overall_starters_only`` and
+    ``by_group_starters_only`` are populated only when ``minutes_col`` is given; otherwise both
+    are ``None``, matching this report's pre-A.2 shape when no restriction was requested at all.
+    """
 
     overall: float
     by_group: pd.DataFrame | None  # columns: <group_col>, spearman, n
+    overall_starters_only: float | None = None
+    by_group_starters_only: pd.DataFrame | None = None
 
 
 def rank_correlation(
@@ -344,40 +377,40 @@ def rank_correlation(
     group_col: str | None = None,
     minutes_col: str | None = None,
 ) -> RankCorrelationReport:
-    """``minutes_col``, if given, filters to rows with minutes > 0 before computing correlation —
-    the "restricted to starters" variant (``minutes_col`` is read from ``actuals``, matching
-    ``captaincy_hit_rate``'s convention). ``group_col``, if given, additionally breaks the
-    correlation out per group (e.g. per position or per price tier)."""
+    """``group_col``, if given, additionally breaks the pooled correlation out per group (e.g. per
+    position or per price tier). ``minutes_col``, if given, filters to rows with minutes > 0 (read
+    from ``actuals``, matching ``captaincy_hit_rate``'s convention) and reports that restricted
+    correlation *separately*, in ``overall_starters_only``/``by_group_starters_only`` — it never
+    replaces the pooled ``overall``/``by_group`` fields (see the report's own docstring)."""
     merged = _merge_predictions_and_actuals(predictions, actuals, predicted_col, actual_col)
+
+    overall = _spearman_or_nan(merged[predicted_col], merged[actual_col])
+    by_group = (
+        _by_group_spearman(merged, group_col, predicted_col, actual_col)
+        if group_col is not None
+        else None
+    )
+
+    overall_starters_only = None
+    by_group_starters_only = None
     if minutes_col is not None:
-        merged = merged.merge(
+        starters = merged.merge(
             actuals[[PLAYER_ID_COL, GAMEWEEK_COL, minutes_col]],
             on=[PLAYER_ID_COL, GAMEWEEK_COL],
         )
-        merged = merged[merged[minutes_col] > 0]
+        starters = starters[starters[minutes_col] > 0]
+        overall_starters_only = _spearman_or_nan(starters[predicted_col], starters[actual_col])
+        if group_col is not None:
+            by_group_starters_only = _by_group_spearman(
+                starters, group_col, predicted_col, actual_col
+            )
 
-    overall = (
-        float(scipy_stats.spearmanr(merged[predicted_col], merged[actual_col]).correlation)
-        if len(merged) >= 2
-        else float("nan")
+    return RankCorrelationReport(
+        overall=overall,
+        by_group=by_group,
+        overall_starters_only=overall_starters_only,
+        by_group_starters_only=by_group_starters_only,
     )
-
-    by_group = None
-    if group_col is not None:
-        rows = [
-            {
-                group_col: group,
-                "spearman": (
-                    float(scipy_stats.spearmanr(g[predicted_col], g[actual_col]).correlation)
-                    if len(g) >= 2
-                    else float("nan")
-                ),
-                "n": len(g),
-            }
-            for group, g in merged.groupby(group_col)
-        ]
-        by_group = pd.DataFrame(rows)
-    return RankCorrelationReport(overall=overall, by_group=by_group)
 
 
 def floor_ceiling_coverage(floor: pd.Series, ceiling: pd.Series, actual: pd.Series) -> float:
@@ -393,3 +426,89 @@ def floor_ceiling_coverage(floor: pd.Series, ceiling: pd.Series, actual: pd.Seri
         raise ValueError("floor, ceiling, and actual must be the same length")
     within = (actual_arr >= floor_arr) & (actual_arr <= ceiling_arr)
     return float(within.mean())
+
+
+@dataclass(frozen=True)
+class MeanCalibrationReport:
+    """Aggregate calibration for a continuous (non-probability) predicted quantity — mean
+    predicted vs mean actual, and the gap between them (ENGINE_IMPROVEMENTS_2.md A.4). Goals,
+    assists, and bonus aren't bounded-[0,1] probabilities the way clean-sheet/DC-threshold outputs
+    are, so :func:`component_calibration`'s binned reliability curve doesn't apply to them (its
+    bins span exactly [0, 1] — a predicted value above 1.0, entirely normal for e.g.
+    ``expected_goals`` on a big-favourite fixture, would silently fall into the top bin's edge or
+    be miscounted rather than raise). This is a coarser, mean-only check — informational, not fed
+    to the Definition-of-Done gate the way :class:`CalibrationReport` is."""
+
+    mean_predicted: float
+    mean_actual: float
+    absolute_gap: float
+    relative_gap: float  # abs gap / |mean_actual|; NaN when mean_actual == 0
+
+
+def mean_calibration(predicted: pd.Series, actual: pd.Series) -> MeanCalibrationReport:
+    if len(predicted) != len(actual):
+        raise ValueError("predicted and actual must be the same length")
+    mean_predicted = float(np.mean(np.asarray(predicted, dtype=float)))
+    mean_actual = float(np.mean(np.asarray(actual, dtype=float)))
+    absolute_gap = abs(mean_predicted - mean_actual)
+    relative_gap = absolute_gap / abs(mean_actual) if mean_actual else float("nan")
+    return MeanCalibrationReport(
+        mean_predicted=mean_predicted,
+        mean_actual=mean_actual,
+        absolute_gap=absolute_gap,
+        relative_gap=relative_gap,
+    )
+
+
+@dataclass(frozen=True)
+class MinutesDiagnosticsReport:
+    """First-class scoring for the minutes model — the engine's dominant component
+    (ENGINE_IMPROVEMENTS.md 1.1 / ENGINE_IMPROVEMENTS_2.md A.3), previously scored only as a
+    downstream contributor to overall MAE with no diagnostic of its own.
+
+    ``predicted_points_mass_per_scored_row`` (not the raw total mass) is the sample-size-invariant
+    number to track across runs — Correction 3 found the raw total wasn't comparable once the
+    scored sample size changed between passes. ``auc_played_at_all`` is computed from ``1 -
+    p_zero`` (the model's own bucket probability), not from ``expected_minutes`` — the latter is a
+    proxy and scores measurably worse.
+    """
+
+    zero_minute_share: float
+    mean_expected_minutes_on_zero_rows: float
+    predicted_points_mass_on_zero_rows: float
+    predicted_points_mass_per_scored_row: float
+    auc_played_at_all: float
+    n_scored_rows: int
+
+
+def minutes_model_diagnostics(
+    predictions: pd.DataFrame,
+    actuals: pd.DataFrame,
+    minutes_col: str = "minutes",
+    p_zero_col: str = "p_zero",
+    expected_minutes_col: str = "expected_minutes",
+    predicted_points_col: str = PREDICTED_COL,
+) -> MinutesDiagnosticsReport:
+    merged = predictions.merge(
+        actuals[[PLAYER_ID_COL, GAMEWEEK_COL, minutes_col]], on=[PLAYER_ID_COL, GAMEWEEK_COL]
+    )
+    n = len(merged)
+    if n == 0:
+        raise ValueError("no overlapping (player_id, gameweek) rows between predictions and actuals")
+
+    zero_rows = merged[merged[minutes_col] == 0]
+    mass_on_zero_rows = float(zero_rows[predicted_points_col].sum())
+    played = (merged[minutes_col] > 0).astype(int)
+    p_played = 1.0 - merged[p_zero_col]
+    auc = float(roc_auc_score(played, p_played)) if played.nunique() > 1 else float("nan")
+
+    return MinutesDiagnosticsReport(
+        zero_minute_share=float(len(zero_rows) / n),
+        mean_expected_minutes_on_zero_rows=(
+            float(zero_rows[expected_minutes_col].mean()) if len(zero_rows) else float("nan")
+        ),
+        predicted_points_mass_on_zero_rows=mass_on_zero_rows,
+        predicted_points_mass_per_scored_row=mass_on_zero_rows / n,
+        auc_played_at_all=auc,
+        n_scored_rows=n,
+    )

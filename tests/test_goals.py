@@ -6,14 +6,17 @@ import pandas as pd
 import pytest
 
 from engine.models.goals import (
+    DEFAULT_NPXG_SHARE_OF_TEAM_XG,
     DEFAULT_PENALTY_CONVERSION_RATE,
     GoalProjection,
     expected_non_penalty_goal_rate,
     expected_team_penalties,
     fit_penalty_conversion_rates,
     penalty_goals_and_misses,
+    prior_npxg_rate_from_team_xg,
     project_goals,
     realized_penalty_goals,
+    shrunk_player_npxg_per_90,
 )
 
 
@@ -47,6 +50,17 @@ def test_expected_non_penalty_goal_rate_rejects_non_positive_league_average():
 def test_expected_non_penalty_goal_rate_rejects_negative_inputs():
     with pytest.raises(ValueError):
         expected_non_penalty_goal_rate(-0.1, 1.4, 1.4, 90.0)
+
+
+def test_expected_non_penalty_goal_rate_rejects_nan_inputs():
+    # ENGINE_IMPROVEMENTS_2.md C.2: a NaN rate (e.g. from an unmatched ID-crosswalk player) must
+    # raise loudly here rather than silently produce a NaN expected_points downstream.
+    with pytest.raises(ValueError):
+        expected_non_penalty_goal_rate(float("nan"), 1.4, 1.4, 90.0)
+    with pytest.raises(ValueError):
+        expected_non_penalty_goal_rate(0.5, float("nan"), 1.4, 90.0)
+    with pytest.raises(ValueError):
+        expected_non_penalty_goal_rate(0.5, 1.4, 1.4, float("nan"))
 
 
 def test_expected_team_penalties_matches_formula():
@@ -127,6 +141,70 @@ def test_project_goals_default_no_penalty_role():
     projection = project_goals(0.5, 1.4, 1.4, 90.0)
     assert projection.expected_penalty_goals == 0.0
     assert projection.expected_penalty_misses == 0.0
+
+
+def test_prior_npxg_rate_from_team_xg_scales_with_share():
+    prior = prior_npxg_rate_from_team_xg(team_xg_per_90=1.5, npxg_share=0.1)
+    assert prior == pytest.approx(0.15)
+
+
+def test_prior_npxg_rate_rejects_bad_inputs():
+    with pytest.raises(ValueError):
+        prior_npxg_rate_from_team_xg(-1.0)
+    with pytest.raises(ValueError):
+        prior_npxg_rate_from_team_xg(1.0, npxg_share=1.5)
+
+
+def test_shrunk_player_npxg_thin_sample_moves_toward_team_prior():
+    shrunk = shrunk_player_npxg_per_90(
+        player_npxg_per_90=2.5,  # a physically-implausible outlier from a single cameo
+        individual_weight=5.0,
+        team_xg_per_90=1.5,
+        shrinkage_k=50.0,
+        npxg_share=DEFAULT_NPXG_SHARE_OF_TEAM_XG,
+    )
+    prior = 1.5 * DEFAULT_NPXG_SHARE_OF_TEAM_XG
+    assert shrunk < 2.5
+    assert shrunk > prior
+
+
+def test_shrunk_player_npxg_thick_sample_stays_near_individual():
+    shrunk = shrunk_player_npxg_per_90(
+        player_npxg_per_90=0.4,
+        individual_weight=5000.0,
+        team_xg_per_90=1.5,
+        shrinkage_k=50.0,
+    )
+    assert shrunk == pytest.approx(0.4, abs=1e-2)
+
+
+def test_project_goals_shrinkage_reduces_an_outlier_rate_when_activated():
+    baseline = project_goals(
+        player_npxg_per_90=3.0, opponent_xga_per_90=1.4, league_avg_xga_per_90=1.4, expected_minutes=20.0
+    )
+    shrunk = project_goals(
+        player_npxg_per_90=3.0,
+        opponent_xga_per_90=1.4,
+        league_avg_xga_per_90=1.4,
+        expected_minutes=20.0,
+        individual_weight=5.0,
+        team_xg_per_90=1.5,
+        shrinkage_k=180.0,
+    )
+    assert shrunk.non_penalty_goal_rate < baseline.non_penalty_goal_rate
+
+
+def test_project_goals_shrinkage_not_applied_without_all_three_arguments():
+    # Omitting any one of individual_weight/team_xg_per_90/shrinkage_k>0 must reproduce the
+    # unmodified (pre-B.2) behavior exactly -- opt-in, not silently always-on.
+    baseline = project_goals(0.5, 1.4, 1.4, 90.0)
+    only_weight = project_goals(0.5, 1.4, 1.4, 90.0, individual_weight=5.0)
+    only_team_xg = project_goals(0.5, 1.4, 1.4, 90.0, team_xg_per_90=1.5)
+    zero_shrinkage_k = project_goals(
+        0.5, 1.4, 1.4, 90.0, individual_weight=5.0, team_xg_per_90=1.5, shrinkage_k=0.0
+    )
+    for variant in (only_weight, only_team_xg, zero_shrinkage_k):
+        assert variant.non_penalty_goal_rate == pytest.approx(baseline.non_penalty_goal_rate)
 
 
 def test_realized_penalty_goals_is_goals_minus_non_penalty_goals():

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from engine.models.assists import AssistProjection
 from engine.models.bonus import BonusProjection
-from engine.models.cards import CardsProjection
+from engine.models.cards import CardsProjection, OwnGoalProjection
 from engine.models.clean_sheets import CleanSheetProjection
 from engine.models.defensive_contribution import DefensiveContributionProjection
 from engine.models.goals import GoalProjection
@@ -57,6 +57,10 @@ class ComponentBreakdown:
     bonus: float
     cards: float
     penalty_misses: float
+    # Defaults to 0.0 (ENGINE_IMPROVEMENTS_2.md D.6) so every existing caller that predates this
+    # line is unaffected; aggregate_gameweek only sets it to a nonzero value when an
+    # OwnGoalProjection is actually supplied.
+    own_goals: float = 0.0
 
     @property
     def total(self) -> float:
@@ -71,6 +75,7 @@ class ComponentBreakdown:
             + self.bonus
             + self.cards
             + self.penalty_misses
+            + self.own_goals
         )
 
 
@@ -84,13 +89,16 @@ def aggregate_gameweek(
     cards: CardsProjection,
     defensive_contribution: DefensiveContributionProjection | None = None,
     saves: SavesProjection | None = None,
+    own_goals: OwnGoalProjection | None = None,
 ) -> ComponentBreakdown:
     """Combine one gameweek's worth of component projections into a single breakdown.
 
     ``defensive_contribution`` is required for every position except GK (not modelled there —
     BUILD_PLAN 2.5) and ``saves`` is required for GK only (BUILD_PLAN 2.6) — passing the wrong one
     for a position is almost always a wiring bug upstream, so this raises rather than silently
-    zeroing it.
+    zeroing it. ``own_goals`` (ENGINE_IMPROVEMENTS_2.md D.6) applies uniformly to every position
+    and defaults to ``None`` (contributing 0.0), unlike the position-gated pair above — omitting it
+    is a legitimate "not modelled yet" rather than a wiring bug, so it's silent by design.
     """
     if position == GK:
         if defensive_contribution is not None:
@@ -128,6 +136,7 @@ def aggregate_gameweek(
         bonus=bonus.expected_points,
         cards=cards.expected_points,
         penalty_misses=penalty_miss_points,
+        own_goals=own_goals.expected_points if own_goals is not None else 0.0,
     )
 
 

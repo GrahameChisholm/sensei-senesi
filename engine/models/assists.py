@@ -16,6 +16,7 @@ to every player as an ongoing input.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from engine.rates import shrink_toward_prior
@@ -42,6 +43,12 @@ def expected_assist_rate(
     """
     if league_avg_xga_per_90 <= 0:
         raise ValueError("league_avg_xga_per_90 must be positive")
+    if any(math.isnan(x) for x in (player_xa_per_90, opponent_xga_per_90, expected_minutes)):
+        raise ValueError(
+            "rates and expected_minutes must not be NaN (a missing upstream value must fail "
+            "loudly here, not propagate to a silent NaN expected_points; ENGINE_IMPROVEMENTS_2.md "
+            "C.2)"
+        )
     if player_xa_per_90 < 0 or opponent_xga_per_90 < 0 or expected_minutes < 0:
         raise ValueError("rates and expected_minutes must be non-negative")
     fixture_adjustment = opponent_xga_per_90 / league_avg_xga_per_90

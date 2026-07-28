@@ -11,7 +11,7 @@ from engine.aggregate import (
 )
 from engine.models.assists import AssistProjection
 from engine.models.bonus import BonusProjection
-from engine.models.cards import CardsProjection
+from engine.models.cards import CardsProjection, OwnGoalProjection
 from engine.models.clean_sheets import CleanSheetProjection
 from engine.models.defensive_contribution import DefensiveContributionProjection
 from engine.models.goals import GoalProjection
@@ -62,6 +62,10 @@ def _defensive_contribution() -> DefensiveContributionProjection:
 
 def _saves() -> SavesProjection:
     return SavesProjection(expected_saves=3.0, expected_penalties_faced=0.05)
+
+
+def _own_goals() -> OwnGoalProjection:
+    return OwnGoalProjection(expected_own_goals=0.01)
 
 
 def test_aggregate_gameweek_def_includes_defensive_contribution_and_goals_conceded():
@@ -210,3 +214,47 @@ def test_aggregate_horizon_rolls_up_multiple_gameweeks():
 def test_aggregate_horizon_rejects_empty_breakdowns():
     with pytest.raises(ValueError):
         aggregate_horizon(101, "MID", {})
+
+
+def test_aggregate_gameweek_own_goals_defaults_to_zero_when_omitted():
+    # ENGINE_IMPROVEMENTS_2.md D.6: omitting own_goals must reproduce the pre-D.6 total exactly.
+    breakdown = aggregate_gameweek(
+        "DEF",
+        _minutes(),
+        _goals(),
+        _assists(),
+        _clean_sheet(),
+        _bonus(),
+        _cards(),
+        defensive_contribution=_defensive_contribution(),
+    )
+    assert breakdown.own_goals == 0.0
+
+
+def test_aggregate_gameweek_includes_own_goals_when_supplied():
+    breakdown = aggregate_gameweek(
+        "DEF",
+        _minutes(),
+        _goals(),
+        _assists(),
+        _clean_sheet(),
+        _bonus(),
+        _cards(),
+        defensive_contribution=_defensive_contribution(),
+        own_goals=_own_goals(),
+    )
+    assert breakdown.own_goals == pytest.approx(_own_goals().expected_points)
+    assert breakdown.own_goals < 0.0
+    assert breakdown.total == pytest.approx(
+        breakdown.appearance
+        + breakdown.goals
+        + breakdown.assists
+        + breakdown.clean_sheet
+        + breakdown.goals_conceded
+        + breakdown.defensive_contribution
+        + breakdown.saves
+        + breakdown.bonus
+        + breakdown.cards
+        + breakdown.penalty_misses
+        + breakdown.own_goals
+    )

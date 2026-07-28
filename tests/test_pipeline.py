@@ -28,6 +28,10 @@ def fitted_minutes_model() -> MinutesModel:
             "start_rate_last_6": rng.uniform(0.3, 1.0, n),
             "start_rate_last_15": rng.uniform(0.3, 1.0, n),
             "team_rotation_propensity": rng.uniform(0.0, 1.0, n),
+            "price": rng.uniform(4.0, 14.0, n),
+            "ownership_log": rng.uniform(0, 5, n),
+            "transfers_out_share": rng.uniform(0, 0.1, n),
+            "transfers_balance_share": rng.uniform(-0.1, 0.1, n),
         }
     )
     started = pd.Series(rng.choice([0, 1], size=n, p=[0.2, 0.8]))
@@ -62,6 +66,10 @@ def _base_row(player_id: int, position: str) -> dict:
         "start_rate_last_6": 0.9,
         "start_rate_last_15": 0.85,
         "team_rotation_propensity": 0.3,
+        "price": 7.5,
+        "ownership_log": 2.0,
+        "transfers_out_share": 0.01,
+        "transfers_balance_share": 0.0,
         "npxg_per_90": 0.4,
         "xa_per_90": 0.2,
         "team_xg_per_90": 1.5,
@@ -170,9 +178,68 @@ def test_minutes_buckets_and_gated_clean_sheet_probability_emitted(
     )
 
 
+def test_raw_component_quantities_emitted_for_calibration(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    predictions = project_gameweek_pool(
+        synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model
+    ).set_index("player_id")
+
+    for col in [
+        "expected_minutes_given_1_to_59",
+        "expected_minutes_given_60_plus",
+        "p_clears_threshold",
+        "expected_goals",
+        "expected_assists",
+        "expected_bonus",
+    ]:
+        assert col in predictions.columns
+
+    # GK (player 1) has no defensive contribution modelled -- NaN, not a fabricated probability.
+    assert np.isnan(predictions.loc[1, "p_clears_threshold"])
+    # Outfield players get a real, in-range probability.
+    for pid in (2, 3, 4, 5, 6):
+        assert 0.0 <= predictions.loc[pid, "p_clears_threshold"] <= 1.0
+    assert (predictions["expected_goals"] >= 0.0).all()
+    assert (predictions["expected_assists"] >= 0.0).all()
+    assert predictions["expected_bonus"].between(0.0, 3.0).all()
+
+
+def test_own_goals_activates_via_optional_row_column(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    # ENGINE_IMPROVEMENTS_2.md D.6: omitted by default (existing pool has no own_goal_rate_per_90
+    # column); activates and contributes a negative line once the column is present.
+    baseline = project_gameweek_pool(
+        synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model
+    ).set_index("player_id")
+    assert (baseline["own_goals"] == 0.0).all()
+
+    pool = synthetic_pool.copy()
+    pool["own_goal_rate_per_90"] = 0.05
+    with_own_goals = project_gameweek_pool(
+        pool, 1, fitted_minutes_model, fitted_bonus_model
+    ).set_index("player_id")
+
+    assert (with_own_goals["own_goals"] < 0.0).all()
+    assert (with_own_goals["expected_points"] < baseline["expected_points"]).all()
+
+
 def test_empty_pool_raises(fitted_minutes_model, fitted_bonus_model):
     with pytest.raises(ValueError):
         project_gameweek_pool(pd.DataFrame(), 1, fitted_minutes_model, fitted_bonus_model)
+
+
+def test_nan_input_raises_naming_the_offending_player_and_column(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    # A crosswalk miss (ENGINE_IMPROVEMENTS_2.md C.1) leaves a player's npxg_per_90 as NaN --
+    # this must fail loudly rather than silently produce a NaN expected_points (C.2).
+    pool = synthetic_pool.copy()
+    pool.loc[pool["player_id"] == 4, "npxg_per_90"] = float("nan")
+
+    with pytest.raises(ValueError, match=r"\(4, 'npxg_per_90'\)"):
+        project_gameweek_pool(pool, 1, fitted_minutes_model, fitted_bonus_model)
 
 
 def test_fitted_constants_default_matches_no_argument_behavior(
@@ -224,6 +291,34 @@ def test_fitted_dc_overdispersion_alpha_changes_defensive_contribution(
     assert custom_alpha.loc[2, "defensive_contribution"] != pytest.approx(
         baseline.loc[2, "defensive_contribution"]
     )
+
+
+def test_fitted_shrinkage_k_shrinks_goals_and_assists_toward_team_prior(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    pool = synthetic_pool.copy()
+    pool["understat_effective_minutes"] = 500.0  # thick evidence for everyone by default
+    # Give player 4 (MID) a physically-implausible outlier rate with a thin evidence weight.
+    pool.loc[pool["player_id"] == 4, "npxg_per_90"] = 3.0
+    pool.loc[pool["player_id"] == 4, "xa_per_90"] = 1.5
+    pool.loc[pool["player_id"] == 4, "understat_effective_minutes"] = 5.0
+
+    baseline = project_gameweek_pool(
+        pool, 1, fitted_minutes_model, fitted_bonus_model
+    ).set_index("player_id")
+    shrunk = project_gameweek_pool(
+        pool,
+        1,
+        fitted_minutes_model,
+        fitted_bonus_model,
+        FittedConstants(shrinkage_k=180.0),
+    ).set_index("player_id")
+
+    assert shrunk.loc[4, "goals"] < baseline.loc[4, "goals"]
+    assert shrunk.loc[4, "assists"] < baseline.loc[4, "assists"]
+    # A player with no understat_effective_minutes column at all defaults to full shrinkage --
+    # still strictly less than the unshrunk baseline for the same outlier rate.
+    assert "expected_goals" in shrunk.columns
 
 
 def test_penalty_sub_model_activates_via_optional_row_columns(

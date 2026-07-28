@@ -18,6 +18,7 @@ Two pieces, kept structurally separate because they're genuinely different proce
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import pandas as pd
@@ -29,6 +30,14 @@ from engine.scoring import GOAL_POINTS, PENALTY_MISS_POINTS, POSITIONS
 # too thin to trust (BUILD_PLAN 2.2 penalty sub-model). Not asserted precise — a reasonable prior
 # pending Phase 3 calibration against real data.
 DEFAULT_PENALTY_CONVERSION_RATE = 0.76
+
+# Rough prior: fraction of a team's own expected goals a generic individual player's own npxG/90
+# rate implies, used only to build a *shrinkage prior* for thin-sample players (ENGINE_IMPROVEMENTS_2.md
+# B.2, symmetric with assists.py's DEFAULT_ASSIST_SHARE_OF_TEAM_XG) — not asserted precise; Phase 3
+# backtesting is what actually calibrates this. Real point-in-time Understat rates showed
+# physically-impossible outliers (npxG/90 up to 35.4) concentrated entirely in sub-90-minutes-of-
+# prior-history players, because unlike xA (2.3) this rate had no shrinkage path wired in at all.
+DEFAULT_NPXG_SHARE_OF_TEAM_XG = 0.12
 
 
 def realized_penalty_goals(
@@ -64,11 +73,50 @@ def expected_non_penalty_goal_rate(
     """
     if league_avg_xga_per_90 <= 0:
         raise ValueError("league_avg_xga_per_90 must be positive")
+    if any(math.isnan(x) for x in (player_npxg_per_90, opponent_xga_per_90, expected_minutes)):
+        raise ValueError(
+            "rates and expected_minutes must not be NaN (a missing upstream value — e.g. an "
+            "unmatched ID-crosswalk player — must fail loudly here, not propagate to a silent "
+            "NaN expected_points that quietly vanishes from every ranking; ENGINE_IMPROVEMENTS_2.md "
+            "C.2)"
+        )
     if player_npxg_per_90 < 0 or opponent_xga_per_90 < 0 or expected_minutes < 0:
         raise ValueError("rates and expected_minutes must be non-negative")
     fixture_adjustment = opponent_xga_per_90 / league_avg_xga_per_90
     minutes_scaling = expected_minutes / 90.0
     return player_npxg_per_90 * fixture_adjustment * minutes_scaling
+
+
+def prior_npxg_rate_from_team_xg(
+    team_xg_per_90: float, npxg_share: float = DEFAULT_NPXG_SHARE_OF_TEAM_XG
+) -> float:
+    """A team-level stand-in for a player's own npxG/90, used only as a shrinkage prior
+    (ENGINE_IMPROVEMENTS_2.md B.2) — symmetric with assists.py's
+    ``prior_assist_rate_from_team_xg``."""
+    if team_xg_per_90 < 0:
+        raise ValueError("team_xg_per_90 must be non-negative")
+    if not 0.0 <= npxg_share <= 1.0:
+        raise ValueError("npxg_share must be in [0, 1]")
+    return team_xg_per_90 * npxg_share
+
+
+def shrunk_player_npxg_per_90(
+    player_npxg_per_90: float,
+    individual_weight: float,
+    team_xg_per_90: float,
+    shrinkage_k: float,
+    npxg_share: float = DEFAULT_NPXG_SHARE_OF_TEAM_XG,
+) -> float:
+    """Blend a thin-sample player's own npxG/90 toward a team-xG-derived prior
+    (ENGINE_IMPROVEMENTS_2.md B.2). ``individual_weight`` should come from
+    :func:`engine.rates.effective_sample_minutes` computed over the player's own prior Understat
+    match history — more accumulated minutes means less shrinkage. Symmetric with assists.py's
+    ``shrunk_player_xa_per_90``, which this model had no equivalent of before: a real point-in-time
+    Understat pull showed npxG/90 outliers up to 35.4 concentrated entirely in players with under
+    90 minutes of prior history, precisely because this rate had no shrinkage path at all.
+    """
+    prior_rate = prior_npxg_rate_from_team_xg(team_xg_per_90, npxg_share)
+    return shrink_toward_prior(player_npxg_per_90, individual_weight, prior_rate, shrinkage_k)
 
 
 def expected_team_penalties(
@@ -183,11 +231,28 @@ def project_goals(
     team_expected_penalties: float = 0.0,
     taker_share: float = 0.0,
     penalty_conversion_rate: float = DEFAULT_PENALTY_CONVERSION_RATE,
+    *,
+    individual_weight: float | None = None,
+    team_xg_per_90: float | None = None,
+    shrinkage_k: float = 0.0,
+    npxg_share_of_team_xg: float = DEFAULT_NPXG_SHARE_OF_TEAM_XG,
 ) -> GoalProjection:
     """Top-level entry point: combine the open-play rate and the penalty sub-model into one
-    :class:`GoalProjection` for a single player in a single gameweek."""
+    :class:`GoalProjection` for a single player in a single gameweek.
+
+    Shrinkage toward the team-xG prior (ENGINE_IMPROVEMENTS_2.md B.2) only kicks in when the
+    caller supplies ``individual_weight``, ``team_xg_per_90``, and a positive ``shrinkage_k`` —
+    omitting them uses the player's own npxG/90 rate unmodified, matching every existing caller
+    and keeping this symmetric with ``engine.models.assists.project_assists``'s own opt-in
+    shrinkage arguments.
+    """
+    effective_npxg_per_90 = player_npxg_per_90
+    if individual_weight is not None and team_xg_per_90 is not None and shrinkage_k > 0:
+        effective_npxg_per_90 = shrunk_player_npxg_per_90(
+            player_npxg_per_90, individual_weight, team_xg_per_90, shrinkage_k, npxg_share_of_team_xg
+        )
     non_penalty_rate = expected_non_penalty_goal_rate(
-        player_npxg_per_90, opponent_xga_per_90, league_avg_xga_per_90, expected_minutes
+        effective_npxg_per_90, opponent_xga_per_90, league_avg_xga_per_90, expected_minutes
     )
     penalty_outcome = penalty_goals_and_misses(
         team_expected_penalties, taker_share, penalty_conversion_rate

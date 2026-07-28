@@ -101,6 +101,12 @@ def test_shrink_toward_prior_rejects_negative_k():
         shrink_toward_prior(0.9, 10.0, 0.2, shrinkage_k=-1.0)
 
 
+def test_shrink_toward_prior_nan_weight_returns_prior():
+    # ENGINE_IMPROVEMENTS_2.md C.2: a NaN weight must fall back to the prior, not silently
+    # NaN-poison the blended result.
+    assert shrink_toward_prior(0.9, float("nan"), 0.2, shrinkage_k=10.0) == 0.2
+
+
 def test_league_average_rate_computes_mean():
     assert league_average_rate({"A": 1.0, "B": 2.0, "C": 3.0}) == pytest.approx(2.0)
 

@@ -61,6 +61,10 @@ def _synthetic_training_data(
     start_rate_last_6 = rng.uniform(0, 1, n)
     start_rate_last_15 = rng.uniform(0, 1, n)
     team_rotation_propensity = rng.uniform(0, 1, n)
+    price = rng.uniform(4.0, 14.0, n)
+    ownership_log = rng.uniform(0, 5, n)
+    transfers_out_share = rng.uniform(0, 0.1, n)
+    transfers_balance_share = rng.uniform(-0.1, 0.1, n)
 
     features = pd.DataFrame(
         {
@@ -75,6 +79,10 @@ def _synthetic_training_data(
             "start_rate_last_6": start_rate_last_6,
             "start_rate_last_15": start_rate_last_15,
             "team_rotation_propensity": team_rotation_propensity,
+            "price": price,
+            "ownership_log": ownership_log,
+            "transfers_out_share": transfers_out_share,
+            "transfers_balance_share": transfers_balance_share,
         }
     )
 
@@ -135,6 +143,10 @@ def test_minutes_model_high_fitness_high_start_rate_favours_60_plus():
                 "start_rate_last_6": 1.0,
                 "start_rate_last_15": 1.0,
                 "team_rotation_propensity": 0.1,
+                "price": 9.0,
+                "ownership_log": 3.0,
+                "transfers_out_share": 0.01,
+                "transfers_balance_share": 0.0,
             }
         ]
     )
@@ -152,6 +164,10 @@ def test_minutes_model_high_fitness_high_start_rate_favours_60_plus():
                 "start_rate_last_6": 0.0,
                 "start_rate_last_15": 0.0,
                 "team_rotation_propensity": 0.9,
+                "price": 4.5,
+                "ownership_log": 0.5,
+                "transfers_out_share": 0.05,
+                "transfers_balance_share": -0.05,
             }
         ]
     )
@@ -181,6 +197,10 @@ def test_minutes_model_zero_minute_streak_suppresses_p_60_plus():
         "start_rate_last_6": 0.6,
         "start_rate_last_15": 0.6,
         "team_rotation_propensity": 0.5,
+        "price": 7.0,
+        "ownership_log": 2.0,
+        "transfers_out_share": 0.02,
+        "transfers_balance_share": 0.0,
     }
     rested_one_match = pd.DataFrame([{**base_row, "zero_minute_streak_length": 1.0}])
     long_streak = pd.DataFrame([{**base_row, "zero_minute_streak_length": 5.0}])
@@ -214,6 +234,10 @@ def test_minutes_model_handles_single_class_training_data():
             "start_rate_last_6": [1.0] * n,
             "start_rate_last_15": [1.0] * n,
             "team_rotation_propensity": [0.2] * n,
+            "price": [8.0] * n,
+            "ownership_log": [2.5] * n,
+            "transfers_out_share": [0.01] * n,
+            "transfers_balance_share": [0.0] * n,
         }
     )
     started = pd.Series([1] * n)

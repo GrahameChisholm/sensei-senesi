@@ -141,6 +141,58 @@ def test_fit_overdispersion_falls_back_for_underdispersed_data():
     assert alpha == DEFAULT_OVERDISPERSION
 
 
+def test_project_defensive_contribution_bucket_weighted_exceeds_point_estimate_for_rotation_risk():
+    # ENGINE_IMPROVEMENTS_2.md B.1: probability_clears_threshold is convex in its mean, so for a
+    # rotation-risk player (most of the mass at p_zero, a modest E[minutes]) the point-estimate
+    # evaluation at E[minutes] understates the properly bucket-weighted expectation.
+    point_estimate = project_defensive_contribution(
+        "DEF", player_actions_per_90=10.0, opponent_possession_share=0.5, expected_minutes=27.0
+    )
+    bucket_weighted = project_defensive_contribution(
+        "DEF",
+        player_actions_per_90=10.0,
+        opponent_possession_share=0.5,
+        expected_minutes=27.0,  # ignored once the bucket args are supplied
+        p_1_to_59=0.2,
+        minutes_given_1_to_59=30.0,
+        p_60_plus=0.1,
+        minutes_given_60_plus=85.0,
+        # (implied p_zero = 0.7; E[minutes] = 0.2*30 + 0.1*85 = 14.5 -- deliberately far from the
+        # scalar expected_minutes above to prove the bucket path is genuinely used, not just
+        # re-deriving the same number)
+    )
+    assert bucket_weighted.p_clears_threshold != pytest.approx(point_estimate.p_clears_threshold)
+
+
+def test_project_defensive_contribution_requires_all_bucket_args_together():
+    with pytest.raises(ValueError):
+        project_defensive_contribution(
+            "DEF", 10.0, opponent_possession_share=0.5, p_1_to_59=0.2, p_60_plus=0.1
+        )
+
+
+def test_project_defensive_contribution_bucket_weighted_matches_manual_expectation():
+    alpha = 0.2
+    p_1, m_1, p_60, m_60 = 0.3, 25.0, 0.2, 80.0
+    mu_1 = expected_defensive_action_rate(9.0, 0.5, expected_minutes=m_1)
+    mu_60 = expected_defensive_action_rate(9.0, 0.5, expected_minutes=m_60)
+    expected = p_1 * probability_clears_threshold(mu_1, 12, alpha) + p_60 * probability_clears_threshold(
+        mu_60, 12, alpha
+    )
+
+    result = project_defensive_contribution(
+        "MID",
+        player_actions_per_90=9.0,
+        opponent_possession_share=0.5,
+        alpha=alpha,
+        p_1_to_59=p_1,
+        minutes_given_1_to_59=m_1,
+        p_60_plus=p_60,
+        minutes_given_60_plus=m_60,
+    )
+    assert result.p_clears_threshold == pytest.approx(expected)
+
+
 def test_fit_overdispersion_recovers_positive_alpha_for_overdispersed_data():
     rng = np.random.default_rng(0)
     n = 2000

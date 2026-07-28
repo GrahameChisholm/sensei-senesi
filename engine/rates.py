@@ -127,11 +127,14 @@ def shrink_toward_prior(
     ``individual_weight`` is a sample-size-like quantity (e.g. :func:`effective_sample_minutes`,
     or a match count) and ``shrinkage_k`` is the weight given to the prior, in the same units —
     a bigger ``shrinkage_k`` means more shrinkage. Returns ``prior_rate`` outright when
-    ``individual_weight`` is zero or ``individual_rate`` is NaN (no individual signal at all).
+    ``individual_weight`` is zero, NaN, or negative, or ``individual_rate`` is NaN (no individual
+    signal at all) — a NaN weight must fall back to the prior rather than silently NaN-poisoning
+    the blended result (ENGINE_IMPROVEMENTS_2.md C.2's "fail loudly or degrade safely, never
+    propagate silently" principle applied to this shared shrinkage helper).
     """
     if shrinkage_k < 0:
         raise ValueError("shrinkage_k must be non-negative")
-    if individual_weight <= 0 or np.isnan(individual_rate):
+    if np.isnan(individual_weight) or individual_weight <= 0 or np.isnan(individual_rate):
         return prior_rate
     return (individual_weight * individual_rate + shrinkage_k * prior_rate) / (
         individual_weight + shrinkage_k

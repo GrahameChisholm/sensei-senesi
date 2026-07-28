@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from engine.models.cards import CardsProjection, project_cards
-from engine.scoring import RED_CARD_POINTS, YELLOW_CARD_POINTS
+from engine.models.cards import (
+    CardsProjection,
+    OwnGoalProjection,
+    project_cards,
+    project_own_goals,
+)
+from engine.scoring import OWN_GOAL_POINTS, RED_CARD_POINTS, YELLOW_CARD_POINTS
 
 
 def test_project_cards_scales_with_minutes():
@@ -40,3 +45,30 @@ def test_cards_projection_rejects_negative_fields():
         CardsProjection(expected_yellow_cards=-0.1, expected_red_cards=0.0)
     with pytest.raises(ValueError):
         CardsProjection(expected_yellow_cards=0.1, expected_red_cards=-0.02)
+
+
+def test_project_own_goals_scales_with_minutes():
+    full = project_own_goals(0.02, expected_minutes=90.0)
+    half = project_own_goals(0.02, expected_minutes=45.0)
+    assert half.expected_own_goals == pytest.approx(full.expected_own_goals / 2)
+
+
+def test_project_own_goals_rejects_negative_rate():
+    with pytest.raises(ValueError):
+        project_own_goals(-0.01)
+
+
+def test_project_own_goals_rejects_negative_minutes():
+    with pytest.raises(ValueError):
+        project_own_goals(0.02, expected_minutes=-1.0)
+
+
+def test_own_goal_projection_expected_points_is_negative():
+    projection = project_own_goals(0.02, expected_minutes=90.0)
+    assert projection.expected_points < 0
+    assert projection.expected_points == pytest.approx(0.02 * OWN_GOAL_POINTS)
+
+
+def test_own_goal_projection_rejects_negative_field():
+    with pytest.raises(ValueError):
+        OwnGoalProjection(expected_own_goals=-0.01)

@@ -191,6 +191,51 @@ def test_project_clean_sheet_weak_opponent_attack_improves_clean_sheet_odds():
     assert weak_opponent.clean_sheet_probability > strong_opponent.clean_sheet_probability
 
 
+def test_expected_goals_conceded_penalty_bucket_weighted_matches_manual_expectation():
+    lam = 1.8
+    p_1, m_1, p_60, m_60 = 0.25, 30.0, 0.15, 80.0
+    expected = p_1 * expected_goals_conceded_penalty(
+        lam, expected_minutes=m_1
+    ) + p_60 * expected_goals_conceded_penalty(lam, expected_minutes=m_60)
+
+    result = expected_goals_conceded_penalty(
+        lam,
+        p_1_to_59=p_1,
+        minutes_given_1_to_59=m_1,
+        p_60_plus=p_60,
+        minutes_given_60_plus=m_60,
+    )
+    assert result == pytest.approx(expected)
+
+
+def test_expected_goals_conceded_penalty_requires_all_bucket_args_together():
+    with pytest.raises(ValueError):
+        expected_goals_conceded_penalty(1.8, p_1_to_59=0.2, p_60_plus=0.1)
+
+
+def test_project_clean_sheet_bucket_weighted_goals_conceded_differs_from_point_estimate():
+    point_estimate = project_clean_sheet(1.5, 1.0, 1.2, 1.4, 1.4, expected_minutes=14.5)
+    bucket_weighted = project_clean_sheet(
+        1.5,
+        1.0,
+        1.2,
+        1.4,
+        1.4,
+        expected_minutes=14.5,
+        p_1_to_59=0.2,
+        minutes_given_1_to_59=30.0,
+        p_60_plus=0.1,
+        minutes_given_60_plus=85.0,
+    )
+    assert bucket_weighted.expected_goals_conceded_penalty != pytest.approx(
+        point_estimate.expected_goals_conceded_penalty
+    )
+    # clean_sheet_probability itself never depends on minutes -- only the goals-conceded line does.
+    assert bucket_weighted.clean_sheet_probability == pytest.approx(
+        point_estimate.clean_sheet_probability
+    )
+
+
 def test_fit_dixon_coles_rho_falls_back_when_too_few_matches():
     rho = fit_dixon_coles_rho(
         home_lambda=pd.Series([1.2, 1.3]),

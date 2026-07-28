@@ -23,7 +23,7 @@ import pandas as pd
 from engine.aggregate import ComponentBreakdown, aggregate_gameweek
 from engine.models.assists import project_assists
 from engine.models.bonus import BonusModel, build_features
-from engine.models.cards import project_cards
+from engine.models.cards import project_cards, project_own_goals
 from engine.models.clean_sheets import DEFAULT_DIXON_COLES_RHO, project_clean_sheet
 from engine.models.defensive_contribution import (
     DEFAULT_OVERDISPERSION,
@@ -48,7 +48,11 @@ class FittedConstants:
     """Per-gameweek-refit values for the five component constants that BUILD_PLAN 2.8's
     regression layer was meant to fit but never did (ENGINE_IMPROVEMENTS.md Tier 1.2) — Dixon-Coles
     ``rho``, the saves model's conversion rate and away-shot multiplier, defensive contribution's
-    Negative Binomial overdispersion (per position), and per-player penalty conversion rates.
+    Negative Binomial overdispersion (per position), and per-player penalty conversion rates. Also
+    carries ``shrinkage_k`` (ENGINE_IMPROVEMENTS_2.md B.2), the goals/assists thin-sample-rate
+    shrinkage strength — unlike the five Tier 1.2 constants, this has no closed-form per-gameweek
+    estimator, so it's an evidence-based fixed hyperparameter selected once via an end-to-end
+    backtest sweep (``backtest/run_season.py``'s ``SHRINKAGE_K``) rather than refit every gameweek.
 
     Every field defaults to the corresponding component's own existing ``DEFAULT_*`` constant, so
     ``project_gameweek_pool(players, gameweek, minutes_model, bonus_model)`` called with no
@@ -70,6 +74,8 @@ class FittedConstants:
     )
     penalty_conversion_rate_by_player: Mapping[int, float] = field(default_factory=dict)
     league_avg_penalty_conversion_rate: float = DEFAULT_PENALTY_CONVERSION_RATE
+    # 0.0 = shrinkage disabled, matching project_goals'/project_assists' own opt-in default.
+    shrinkage_k: float = 0.0
 
 
 # Every column ``project_gameweek_pool`` reads from its ``players`` input, beyond the minutes
@@ -94,6 +100,43 @@ GAMEWEEK_POOL_COLUMNS = [
 ]
 
 
+_SHARED_REQUIRED_COLUMNS = [
+    "npxg_per_90",
+    "xa_per_90",
+    "team_xg_per_90",
+    "team_xga_per_90",
+    "opponent_xg_per_90",
+    "opponent_xga_per_90",
+    "league_avg_xga_per_90",
+    "yellow_card_rate_per_90",
+    "red_card_rate_per_90",
+    *MINUTES_FEATURE_COLUMNS,
+]
+_OUTFIELD_ONLY_REQUIRED_COLUMNS = ["dc_per_90", "opponent_possession_share"]
+_GK_ONLY_REQUIRED_COLUMNS = ["opponent_shots_on_target_per_90", "is_home"]
+
+
+def _validate_no_nan_inputs(players: pd.DataFrame) -> None:
+    """Fail loudly, listing exactly which ``(player_id, column)`` pairs are missing, rather than
+    letting a NaN silently propagate to ``expected_points`` (ENGINE_IMPROVEMENTS_2.md C.2). A
+    crosswalk miss or any other upstream gap otherwise produces a NaN total that sorts out of
+    every ranking with no error anywhere — the backtest's own ``dropna`` masks this entirely, but
+    the live path (this function) has no other guard against it."""
+    offenders: list[tuple[int, str]] = []
+    for _, row in players.iterrows():
+        required = list(_SHARED_REQUIRED_COLUMNS)
+        required += _GK_ONLY_REQUIRED_COLUMNS if row["position"] == GK else _OUTFIELD_ONLY_REQUIRED_COLUMNS
+        for col in required:
+            if col in row.index and pd.isna(row[col]):
+                offenders.append((int(row["player_id"]), col))
+    if offenders:
+        raise ValueError(
+            f"NaN in required projection input(s), player_id/column pairs: {offenders} — check "
+            "upstream feature engineering (e.g. an unmatched ID-crosswalk player) for these "
+            "players rather than letting the prediction silently disappear"
+        )
+
+
 def _project_one_player(
     player_id: int,
     position: str,
@@ -102,11 +145,20 @@ def _project_one_player(
     minutes_distribution,
     bonus_model: BonusModel,
     fitted_constants: FittedConstants,
-) -> tuple[PlayerGameweekProjection, ComponentBreakdown, float]:
-    """Returns (projection, breakdown, clean_sheet_probability) — the probability is surfaced
-    separately since it isn't otherwise recoverable from the breakdown alone (BUILD_PLAN 3.2's
-    calibration check needs the raw probability, not the points it converted to)."""
+) -> tuple[PlayerGameweekProjection, ComponentBreakdown, float, dict[str, float]]:
+    """Returns (projection, breakdown, clean_sheet_probability, raw_components) — the probability
+    and the ``raw_components`` dict (``p_clears_threshold``, ``expected_goals``,
+    ``expected_assists``, ``expected_bonus``) are surfaced separately since they aren't otherwise
+    recoverable from the breakdown alone (BUILD_PLAN 3.2's calibration check needs the raw
+    probability/quantity, not the points it converted to — ENGINE_IMPROVEMENTS_2.md A.4 extends
+    this from clean-sheet-only to every component)."""
     expected_minutes = minutes_distribution.expected_minutes
+
+    # ENGINE_IMPROVEMENTS_2.md B.2: thin-sample rate shrinkage, opt-in via fitted_constants.shrinkage_k
+    # (0.0 by default = disabled, matching each component's own project_*'s pre-B.2 behavior).
+    # `understat_effective_minutes` defaults to 0.0 (full shrinkage toward the prior) when the row
+    # doesn't carry it — the correct behavior for a player with no prior Understat history at all.
+    understat_effective_minutes = float(row.get("understat_effective_minutes", 0.0))
 
     goals = project_goals(
         player_npxg_per_90=row["npxg_per_90"],
@@ -118,12 +170,18 @@ def _project_one_player(
         penalty_conversion_rate=fitted_constants.penalty_conversion_rate_by_player.get(
             player_id, fitted_constants.league_avg_penalty_conversion_rate
         ),
+        individual_weight=understat_effective_minutes,
+        team_xg_per_90=row["team_xg_per_90"],
+        shrinkage_k=fitted_constants.shrinkage_k,
     )
     assists = project_assists(
         player_xa_per_90=row["xa_per_90"],
         opponent_xga_per_90=row["opponent_xga_per_90"],
         league_avg_xga_per_90=row["league_avg_xga_per_90"],
         expected_minutes=expected_minutes,
+        individual_weight=understat_effective_minutes,
+        team_xg_per_90=row["team_xg_per_90"],
+        shrinkage_k=fitted_constants.shrinkage_k,
     )
     clean_sheet = project_clean_sheet(
         team_xg_per_90=row["team_xg_per_90"],
@@ -133,13 +191,29 @@ def _project_one_player(
         league_avg_xga_per_90=row["league_avg_xga_per_90"],
         expected_minutes=expected_minutes,
         rho=fitted_constants.dixon_coles_rho,
+        # Bucket-weighted goals-conceded expectation (ENGINE_IMPROVEMENTS_2.md B.1) rather than the
+        # point-estimate `expected_minutes` above, which understates it via Jensen's inequality.
+        p_1_to_59=minutes_distribution.p_1_to_59,
+        minutes_given_1_to_59=minutes_distribution.expected_minutes_given_1_to_59,
+        p_60_plus=minutes_distribution.p_60_plus,
+        minutes_given_60_plus=minutes_distribution.expected_minutes_given_60_plus,
     )
     cards = project_cards(
         yellow_card_rate_per_90=row["yellow_card_rate_per_90"],
         red_card_rate_per_90=row["red_card_rate_per_90"],
         expected_minutes=expected_minutes,
     )
+    # ENGINE_IMPROVEMENTS_2.md D.6: optional, like team_expected_penalties/taker_share below —
+    # silently omitted (own goals not modelled) when the row doesn't carry this column, rather
+    # than requiring every existing caller to supply it.
+    own_goal_rate_per_90 = row.get("own_goal_rate_per_90")
+    own_goals = (
+        project_own_goals(float(own_goal_rate_per_90), expected_minutes)
+        if own_goal_rate_per_90 is not None
+        else None
+    )
 
+    p_clears_threshold = float("nan")  # DC isn't modelled for GK
     if position == GK:
         defensive_contribution = None
         saves = project_saves(
@@ -159,7 +233,15 @@ def _project_one_player(
             opponent_possession_share=row["opponent_possession_share"],
             expected_minutes=expected_minutes,
             alpha=fitted_constants.dc_overdispersion_alpha.get(position, DEFAULT_OVERDISPERSION),
+            # Bucket-weighted threshold probability (ENGINE_IMPROVEMENTS_2.md B.1) — measured to
+            # understate the true probability by ~34% overall at the point estimate, worst for
+            # rotation-risk players.
+            p_1_to_59=minutes_distribution.p_1_to_59,
+            minutes_given_1_to_59=minutes_distribution.expected_minutes_given_1_to_59,
+            p_60_plus=minutes_distribution.p_60_plus,
+            minutes_given_60_plus=minutes_distribution.expected_minutes_given_60_plus,
         )
+        p_clears_threshold = defensive_contribution.p_clears_threshold
         saves = None
         defensive_action_rate_for_bonus = row["dc_per_90"]
 
@@ -186,6 +268,7 @@ def _project_one_player(
         cards,
         defensive_contribution=defensive_contribution,
         saves=saves,
+        own_goals=own_goals,
     )
     projection = project_player_gameweek(
         player_id=player_id,
@@ -194,7 +277,13 @@ def _project_one_player(
         minutes=minutes_distribution,
         breakdown=breakdown,
     )
-    return projection, breakdown, clean_sheet.clean_sheet_probability
+    raw_components = {
+        "p_clears_threshold": p_clears_threshold,
+        "expected_goals": goals.expected_goals,
+        "expected_assists": assists.expected_assists,
+        "expected_bonus": bonus.expected_bonus,
+    }
+    return projection, breakdown, clean_sheet.clean_sheet_probability, raw_components
 
 
 def project_gameweek_pool(
@@ -228,6 +317,7 @@ def project_gameweek_pool(
     """
     if players.empty:
         raise ValueError("players must not be empty")
+    _validate_no_nan_inputs(players)
     fitted_constants = fitted_constants or FittedConstants()
 
     minutes_distributions = minutes_model.predict(players)
@@ -237,7 +327,7 @@ def project_gameweek_pool(
     ):
         player_id = int(row["player_id"])
         position = row["position"]
-        _projection, breakdown, clean_sheet_probability = _project_one_player(
+        _projection, breakdown, clean_sheet_probability, raw_components = _project_one_player(
             player_id, position, gameweek, row, minutes_distribution, bonus_model, fitted_constants
         )
         rows.append(
@@ -247,6 +337,8 @@ def project_gameweek_pool(
                 "gameweek": gameweek,
                 "expected_points": breakdown.total,
                 "expected_minutes": minutes_distribution.expected_minutes,
+                "expected_minutes_given_1_to_59": minutes_distribution.expected_minutes_given_1_to_59,
+                "expected_minutes_given_60_plus": minutes_distribution.expected_minutes_given_60_plus,
                 "p_zero": minutes_distribution.p_zero,
                 "p_1_to_59": minutes_distribution.p_1_to_59,
                 "p_60_plus": minutes_distribution.p_60_plus,
@@ -254,6 +346,10 @@ def project_gameweek_pool(
                 "player_clean_sheet_probability": (
                     clean_sheet_probability * minutes_distribution.p_60_plus
                 ),
+                "p_clears_threshold": raw_components["p_clears_threshold"],
+                "expected_goals": raw_components["expected_goals"],
+                "expected_assists": raw_components["expected_assists"],
+                "expected_bonus": raw_components["expected_bonus"],
                 "appearance": breakdown.appearance,
                 "goals": breakdown.goals,
                 "assists": breakdown.assists,
@@ -264,6 +360,7 @@ def project_gameweek_pool(
                 "bonus": breakdown.bonus,
                 "cards": breakdown.cards,
                 "penalty_misses": breakdown.penalty_misses,
+                "own_goals": breakdown.own_goals,
             }
         )
     return pd.DataFrame(rows)

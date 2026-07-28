@@ -11,6 +11,8 @@ from backtest.metrics import (
     captaincy_hit_rate,
     component_calibration,
     floor_ceiling_coverage,
+    mean_calibration,
+    minutes_model_diagnostics,
     player_accuracy,
     rank_correlation,
     top_n_mean_actual,
@@ -253,8 +255,83 @@ def test_rank_correlation_overall_and_by_group_and_restricted_to_starters():
     assert by_group.loc["FWD", "spearman"] == pytest.approx(1.0)
 
     restricted = rank_correlation(predictions, actuals, minutes_col="minutes")
-    # Player 2 (0 minutes) is dropped; the remaining 3 rows are still perfectly rank-correlated.
+    # Pooled `overall` is unaffected by minutes_col -- it never gets silently replaced.
     assert restricted.overall == pytest.approx(1.0)
+    # Player 2 (0 minutes) is dropped; the remaining 3 rows are still perfectly rank-correlated.
+    assert restricted.overall_starters_only == pytest.approx(1.0)
+
+
+def test_rank_correlation_pooled_and_starters_only_diverge_when_zero_minute_rows_hurt_pooled():
+    # Players 1, 2, 4 (all starters) are perfectly rank-correlated. Player 3 is predicted highest
+    # of all four (a rotation-risk player the model over-projected) but played 0 minutes and
+    # scored nothing -- that single row wrecks the pooled ranking while starters-only stays clean
+    # (Correction 5 / A.2).
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "position": ["MID", "MID", "FWD", "FWD"],
+            "gameweek": [1, 1, 1, 1],
+            "expected_points": [9.0, 5.0, 20.0, 8.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 1, 1],
+            "total_points": [10.0, 6.0, 0.0, 8.0],
+            "minutes": [90, 90, 0, 90],
+        }
+    )
+
+    report = rank_correlation(predictions, actuals, minutes_col="minutes")
+
+    assert report.overall != pytest.approx(report.overall_starters_only)
+    assert report.overall_starters_only == pytest.approx(1.0)  # 3 starters, perfectly ranked
+
+
+def test_mean_calibration_reports_gap_between_predicted_and_actual_means():
+    predicted = pd.Series([0.5, 0.6, 0.4, 0.5])
+    actual = pd.Series([0.3, 0.3, 0.3, 0.3])
+
+    report = mean_calibration(predicted, actual)
+
+    assert report.mean_predicted == pytest.approx(0.5)
+    assert report.mean_actual == pytest.approx(0.3)
+    assert report.absolute_gap == pytest.approx(0.2)
+    assert report.relative_gap == pytest.approx(0.2 / 0.3)
+
+
+def test_mean_calibration_mismatched_lengths_raises():
+    with pytest.raises(ValueError):
+        mean_calibration(pd.Series([0.1, 0.2]), pd.Series([1.0]))
+
+
+def test_minutes_model_diagnostics_scores_zero_minute_mass_and_auc():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 1, 1],
+            "expected_points": [5.0, 1.0, 0.5, 6.0],
+            "p_zero": [0.05, 0.9, 0.8, 0.02],
+            "expected_minutes": [85.0, 5.0, 8.0, 88.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 1, 1],
+            "minutes": [90, 0, 0, 90],
+        }
+    )
+
+    report = minutes_model_diagnostics(predictions, actuals)
+
+    assert report.n_scored_rows == 4
+    assert report.zero_minute_share == pytest.approx(0.5)
+    assert report.mean_expected_minutes_on_zero_rows == pytest.approx((5.0 + 8.0) / 2)
+    assert report.predicted_points_mass_on_zero_rows == pytest.approx(1.0 + 0.5)
+    assert report.predicted_points_mass_per_scored_row == pytest.approx(1.5 / 4)
+    assert report.auc_played_at_all == pytest.approx(1.0)  # perfectly separates played vs not
 
 
 def test_floor_ceiling_coverage_fraction_within_bounds():

@@ -141,7 +141,16 @@ def paired_bootstrap_test(
     n_bootstrap: int = 10_000,
     confidence: float = 0.95,
     seed: int = 0,
+    block_by: np.ndarray | None = None,
 ) -> PairedBootstrapResult:
+    """``block_by``, if given, is a per-row block key (e.g. fixture id or gameweek) the same
+    length as the error arrays — resampling then draws whole *blocks* with replacement instead of
+    individual rows (ENGINE_IMPROVEMENTS.md "Not a correction" / ENGINE_IMPROVEMENTS_2.md D.2:
+    players in the same match share shocks — a red card, a 5-0 drubbing, a rested squad — so an
+    i.i.d.-by-row bootstrap understates uncertainty; a real 2025/26 check found the conclusion held
+    but the interval widened as expected once blocked by fixture or gameweek). Omitting it
+    reproduces the exact prior i.i.d.-by-row behavior.
+    """
     engine_errors = np.asarray(engine_absolute_errors, dtype=float)
     baseline_errors = np.asarray(baseline_absolute_errors, dtype=float)
     if engine_errors.shape != baseline_errors.shape:
@@ -152,8 +161,24 @@ def paired_bootstrap_test(
     diffs = engine_errors - baseline_errors
     rng = np.random.default_rng(seed)
     n = diffs.shape[0]
-    resample_indices = rng.integers(0, n, size=(n_bootstrap, n))
-    bootstrap_means = diffs[resample_indices].mean(axis=1)
+
+    if block_by is None:
+        resample_indices = rng.integers(0, n, size=(n_bootstrap, n))
+        bootstrap_means = diffs[resample_indices].mean(axis=1)
+    else:
+        block_keys = np.asarray(block_by)
+        if block_keys.shape[0] != n:
+            raise ValueError("block_by must be the same length as the paired error arrays")
+        _, block_index = np.unique(block_keys, return_inverse=True)
+        n_blocks = int(block_index.max()) + 1
+        block_sums = np.zeros(n_blocks)
+        block_counts = np.zeros(n_blocks)
+        np.add.at(block_sums, block_index, diffs)
+        np.add.at(block_counts, block_index, 1)
+        chosen_blocks = rng.integers(0, n_blocks, size=(n_bootstrap, n_blocks))
+        bootstrap_means = block_sums[chosen_blocks].sum(axis=1) / block_counts[chosen_blocks].sum(
+            axis=1
+        )
 
     alpha = 1 - confidence
     ci_low, ci_high = np.quantile(bootstrap_means, [alpha / 2, 1 - alpha / 2])

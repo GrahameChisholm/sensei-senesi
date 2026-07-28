@@ -74,6 +74,10 @@ def test_phase2_pipeline_runs_end_to_end_without_leakage():
             "start_rate_last_6": np.random.default_rng(10).uniform(0.5, 1.0, 100),
             "start_rate_last_15": np.random.default_rng(11).uniform(0.5, 1.0, 100),
             "team_rotation_propensity": np.random.default_rng(12).uniform(0.0, 1.0, 100),
+            "price": np.random.default_rng(13).uniform(4.0, 14.0, 100),
+            "ownership_log": np.random.default_rng(14).uniform(0, 5, 100),
+            "transfers_out_share": np.random.default_rng(15).uniform(0, 0.1, 100),
+            "transfers_balance_share": np.random.default_rng(16).uniform(-0.1, 0.1, 100),
         }
     )
     started = pd.Series(np.random.default_rng(4).choice([0, 1], size=100, p=[0.2, 0.8]))
@@ -95,6 +99,10 @@ def test_phase2_pipeline_runs_end_to_end_without_leakage():
                 "start_rate_last_6": 0.9,
                 "start_rate_last_15": 0.85,
                 "team_rotation_propensity": 0.3,
+                "price": 7.5,
+                "ownership_log": 2.0,
+                "transfers_out_share": 0.01,
+                "transfers_balance_share": 0.0,
             }
         ]
     )[FEATURE_COLUMNS]

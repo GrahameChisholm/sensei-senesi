@@ -34,6 +34,15 @@ def test_expected_assist_rate_rejects_negative_inputs():
         expected_assist_rate(-0.1, 1.4, 1.4, 90.0)
 
 
+def test_expected_assist_rate_rejects_nan_inputs():
+    with pytest.raises(ValueError):
+        expected_assist_rate(float("nan"), 1.4, 1.4, 90.0)
+    with pytest.raises(ValueError):
+        expected_assist_rate(0.3, float("nan"), 1.4, 90.0)
+    with pytest.raises(ValueError):
+        expected_assist_rate(0.3, 1.4, 1.4, float("nan"))
+
+
 def test_prior_assist_rate_from_team_xg_scales_with_share():
     prior = prior_assist_rate_from_team_xg(team_xg_per_90=1.5, assist_share=0.1)
     assert prior == pytest.approx(0.15)

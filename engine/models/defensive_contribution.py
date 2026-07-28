@@ -148,21 +148,64 @@ def project_defensive_contribution(
     league_avg_possession_share: float = LEAGUE_AVERAGE_POSSESSION_SHARE,
     expected_minutes: float = 90.0,
     alpha: float = DEFAULT_OVERDISPERSION,
+    *,
+    p_1_to_59: float | None = None,
+    minutes_given_1_to_59: float | None = None,
+    p_60_plus: float | None = None,
+    minutes_given_60_plus: float | None = None,
 ) -> DefensiveContributionProjection:
     """Top-level entry point: combine the opponent-possession-adjusted rate and the Negative
-    Binomial threshold probability into one projection."""
+    Binomial threshold probability into one projection.
+
+    By default (``expected_minutes`` only) this evaluates ``P(actions >= threshold)`` at a single
+    point-estimate minutes value — correct for a linear quantity, but ``probability_clears_threshold``
+    is convex in its mean, so by Jensen's inequality evaluating it at ``E[minutes]`` *understates*
+    the true expectation whenever minutes are actually uncertain (ENGINE_IMPROVEMENTS_2.md B.1):
+    real walk-forward data showed this understating the DC-threshold probability by ~34% overall,
+    worst for rotation-risk players (a "played 0" and a "played 80" blended into one midpoint minutes
+    figure corresponds to no real match). Passing all four ``p_1_to_59``/``minutes_given_1_to_59``/
+    ``p_60_plus``/``minutes_given_60_plus`` keyword arguments (typically straight from a
+    :class:`engine.models.minutes.MinutesDistribution`) instead computes the properly-weighted
+    expectation over the two non-zero minutes buckets, which is what :mod:`engine.pipeline` does.
+    Omitting them reproduces the exact prior (point-estimate) behavior unchanged, so every existing
+    standalone/backtest-in-isolation caller is unaffected.
+    """
     if position == GK:
         raise ValueError("defensive contribution is not modelled for GK")
     if position not in DEFENSIVE_CONTRIBUTION_THRESHOLD:
         raise ValueError(f"unknown position: {position!r}")
     threshold = DEFENSIVE_CONTRIBUTION_THRESHOLD[position]
-    mu = expected_defensive_action_rate(
-        player_actions_per_90,
-        opponent_possession_share,
-        league_avg_possession_share,
-        expected_minutes,
-    )
-    return DefensiveContributionProjection(
-        p_clears_threshold=probability_clears_threshold(mu, threshold, alpha),
-        threshold=threshold,
-    )
+
+    bucket_args = (p_1_to_59, minutes_given_1_to_59, p_60_plus, minutes_given_60_plus)
+    if any(arg is not None for arg in bucket_args):
+        if any(arg is None for arg in bucket_args):
+            raise ValueError(
+                "p_1_to_59, minutes_given_1_to_59, p_60_plus, and minutes_given_60_plus must be "
+                "given together or not at all"
+            )
+        mu_1_to_59 = expected_defensive_action_rate(
+            player_actions_per_90,
+            opponent_possession_share,
+            league_avg_possession_share,
+            minutes_given_1_to_59,
+        )
+        mu_60_plus = expected_defensive_action_rate(
+            player_actions_per_90,
+            opponent_possession_share,
+            league_avg_possession_share,
+            minutes_given_60_plus,
+        )
+        p_clears_threshold = (
+            p_1_to_59 * probability_clears_threshold(mu_1_to_59, threshold, alpha)
+            + p_60_plus * probability_clears_threshold(mu_60_plus, threshold, alpha)
+        )
+    else:
+        mu = expected_defensive_action_rate(
+            player_actions_per_90,
+            opponent_possession_share,
+            league_avg_possession_share,
+            expected_minutes,
+        )
+        p_clears_threshold = probability_clears_threshold(mu, threshold, alpha)
+
+    return DefensiveContributionProjection(p_clears_threshold=p_clears_threshold, threshold=threshold)

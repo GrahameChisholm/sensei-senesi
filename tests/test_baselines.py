@@ -123,6 +123,40 @@ def test_paired_bootstrap_test_rejects_mismatched_shapes():
         paired_bootstrap_test(np.array([1.0, 2.0]), np.array([1.0]))
 
 
+def test_paired_bootstrap_test_block_by_widens_interval_but_keeps_conclusion():
+    # ENGINE_IMPROVEMENTS_2.md D.2: blocking by a grouping where rows share a per-block shock
+    # should widen the CI relative to the naive i.i.d. version without reversing a real edge.
+    rng = np.random.default_rng(0)
+    n_blocks = 40
+    rows_per_block = 5
+    block_shock = rng.normal(0, 1.5, n_blocks)
+    engine_errors, baseline_errors, block_ids = [], [], []
+    for b in range(n_blocks):
+        for _ in range(rows_per_block):
+            engine_errors.append(abs(1.0 + block_shock[b] + rng.normal(0, 0.1)))
+            baseline_errors.append(abs(3.0 + block_shock[b] + rng.normal(0, 0.1)))
+            block_ids.append(b)
+    engine_errors, baseline_errors, block_ids = map(np.array, (engine_errors, baseline_errors, block_ids))
+
+    iid_result = paired_bootstrap_test(engine_errors, baseline_errors, n_bootstrap=3000, seed=1)
+    blocked_result = paired_bootstrap_test(
+        engine_errors, baseline_errors, n_bootstrap=3000, seed=1, block_by=block_ids
+    )
+
+    assert iid_result.beats_baseline
+    assert blocked_result.beats_baseline  # the real edge survives
+    iid_width = iid_result.ci_high - iid_result.ci_low
+    blocked_width = blocked_result.ci_high - blocked_result.ci_low
+    assert blocked_width > iid_width  # blocking must not understate uncertainty
+
+
+def test_paired_bootstrap_test_block_by_rejects_mismatched_length():
+    with pytest.raises(ValueError):
+        paired_bootstrap_test(
+            np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0, 3.0]), block_by=np.array([1, 2])
+        )
+
+
 def test_permutation_test_hit_rate_detects_genuine_edge():
     rng = np.random.default_rng(0)
     n = 300

@@ -179,26 +179,56 @@ def clean_sheet_probability(
     return float(joint[:, 0].sum())
 
 
-def expected_goals_conceded_penalty(
-    team_against_lambda: float,
-    expected_minutes: float = 90.0,
-    max_goals: int = DEFAULT_MAX_GOALS,
+def _goals_conceded_penalty_at_minutes(
+    team_against_lambda: float, expected_minutes: float, max_goals: int
 ) -> float:
-    """Expected value of the ``-1 per 2 goals conceded`` penalty (GK/DEF only), scaled by this
-    player's own exposure fraction of the match (``expected_minutes / 90``) — a substitute who
-    plays 20 minutes has correspondingly less exposure to concede goals within their own window.
-
-    Uses the full outcome distribution (not ``floor(mean / 2)``) since the conversion is
-    non-linear in goals conceded.
-    """
-    if team_against_lambda < 0:
-        raise ValueError("team_against_lambda must be non-negative")
     if expected_minutes < 0:
         raise ValueError("expected_minutes must be non-negative")
     exposure_fraction = expected_minutes / 90.0
     scaled_lambda = team_against_lambda * exposure_fraction
     expected_units = expected_floor_division(scaled_lambda, GOALS_CONCEDED_PER_PENALTY, max_goals)
     return expected_units * GOALS_CONCEDED_PENALTY
+
+
+def expected_goals_conceded_penalty(
+    team_against_lambda: float,
+    expected_minutes: float = 90.0,
+    max_goals: int = DEFAULT_MAX_GOALS,
+    *,
+    p_1_to_59: float | None = None,
+    minutes_given_1_to_59: float | None = None,
+    p_60_plus: float | None = None,
+    minutes_given_60_plus: float | None = None,
+) -> float:
+    """Expected value of the ``-1 per 2 goals conceded`` penalty (GK/DEF only), scaled by this
+    player's own exposure fraction of the match (``expected_minutes / 90``) — a substitute who
+    plays 20 minutes has correspondingly less exposure to concede goals within their own window.
+
+    Uses the full outcome distribution (not ``floor(mean / 2)``) since the conversion is
+    non-linear in goals conceded — and, for the same reason, non-linear in *minutes* too: evaluating
+    it at a single point-estimate ``expected_minutes`` is a Jensen's-inequality understatement
+    whenever minutes are genuinely uncertain (ENGINE_IMPROVEMENTS_2.md B.1, same defect as
+    :func:`engine.models.defensive_contribution.project_defensive_contribution`). Passing all four
+    ``p_1_to_59``/``minutes_given_1_to_59``/``p_60_plus``/``minutes_given_60_plus`` keyword
+    arguments instead computes the properly bucket-weighted expectation; omitting them reproduces
+    the exact prior point-estimate behavior.
+    """
+    if team_against_lambda < 0:
+        raise ValueError("team_against_lambda must be non-negative")
+
+    bucket_args = (p_1_to_59, minutes_given_1_to_59, p_60_plus, minutes_given_60_plus)
+    if any(arg is not None for arg in bucket_args):
+        if any(arg is None for arg in bucket_args):
+            raise ValueError(
+                "p_1_to_59, minutes_given_1_to_59, p_60_plus, and minutes_given_60_plus must be "
+                "given together or not at all"
+            )
+        return p_1_to_59 * _goals_conceded_penalty_at_minutes(
+            team_against_lambda, minutes_given_1_to_59, max_goals
+        ) + p_60_plus * _goals_conceded_penalty_at_minutes(
+            team_against_lambda, minutes_given_60_plus, max_goals
+        )
+    return _goals_conceded_penalty_at_minutes(team_against_lambda, expected_minutes, max_goals)
 
 
 @dataclass(frozen=True)
@@ -240,10 +270,23 @@ def project_clean_sheet(
     expected_minutes: float = 90.0,
     rho: float = DEFAULT_DIXON_COLES_RHO,
     max_goals: int = DEFAULT_MAX_GOALS,
+    *,
+    p_1_to_59: float | None = None,
+    minutes_given_1_to_59: float | None = None,
+    p_60_plus: float | None = None,
+    minutes_given_60_plus: float | None = None,
 ) -> CleanSheetProjection:
     """Top-level entry point for standalone use/backtesting: derive both lambdas from team-level
     xG/xGA rates. When wired into the full simulation (2.9), build a :class:`CleanSheetProjection`
-    directly from the internal-consistency-adjusted lambdas instead of calling this."""
+    directly from the internal-consistency-adjusted lambdas instead of calling this.
+
+    The optional ``p_1_to_59``/``minutes_given_1_to_59``/``p_60_plus``/``minutes_given_60_plus``
+    keyword arguments, if all given, are forwarded to :func:`expected_goals_conceded_penalty` to
+    compute the bucket-weighted (Jensen's-inequality-correct) goals-conceded expectation rather than
+    the point-estimate one (ENGINE_IMPROVEMENTS_2.md B.1). ``clean_sheet_probability`` itself does
+    not depend on minutes at all (it's gated separately, downstream, by ``p_60_plus`` — see
+    :meth:`CleanSheetProjection.expected_points`), so this only affects the goals-conceded line.
+    """
     team_for_lambda = team_expected_goals_rate(
         team_xg_per_90, opponent_xga_per_90, league_avg_xga_per_90
     )
@@ -255,7 +298,13 @@ def project_clean_sheet(
             team_for_lambda, team_against_lambda, rho, max_goals
         ),
         expected_goals_conceded_penalty=expected_goals_conceded_penalty(
-            team_against_lambda, expected_minutes, max_goals
+            team_against_lambda,
+            expected_minutes,
+            max_goals,
+            p_1_to_59=p_1_to_59,
+            minutes_given_1_to_59=minutes_given_1_to_59,
+            p_60_plus=p_60_plus,
+            minutes_given_60_plus=minutes_given_60_plus,
         ),
         team_for_lambda=team_for_lambda,
         team_against_lambda=team_against_lambda,

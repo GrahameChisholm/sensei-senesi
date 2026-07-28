@@ -10,6 +10,13 @@ appendix so the reasoning can be audited without re-running anything.
 steps 1–5 have since been implemented and re-measured — see "Implementation status /
 re-measurement" immediately below. Tier 3.1–3.4 and Tier 4 remain unimplemented, as scoped.
 
+> **Superseded in part.** `ENGINE_IMPROVEMENTS_2.md` (written after commit `8f6d633`) shows that
+> three numbers in the re-measurement table below are not comparable to the run they are compared
+> against — the scored sample shrank 19%, double gameweeks are no longer collapsed, and the reported
+> Spearman is the starters-restricted variant. See its Corrections 3–5 before quoting the table, and
+> its Tier A for the fixes. Everything else here — including Corrections 1–2 and the Tier 3/4
+> conclusions — stands.
+
 **Headline:** the engine's accuracy is bottlenecked almost entirely by the **minutes model** (2.1),
 exactly as `BUILD_PLAN.md` predicted it would be. Misallocated points on players who never appeared
 cost **0.438 MAE — about 6× the engine's entire current edge over the naive baseline.** Two

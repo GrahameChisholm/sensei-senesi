@@ -31,6 +31,19 @@ MINUTES_60_PLUS_THRESHOLD = 60
 # remain deliberately excluded — see "Considered and cut" in BUILD_PLAN 2.1 (structural redundancy
 # / no clean data source respectively). Every feature below is computed point-in-time-safe by the
 # backtest driver's feature-engineering stage (``backtest/run_season.py``), not by this module.
+#
+# `price`/`ownership_log`/`transfers_out_share`/`transfers_balance_share` (ENGINE_IMPROVEMENTS_2.md
+# B.3) were added after a real walk-forward ablation: the shipped 11-feature set alone scored AUC
+# 0.8655 for "played at all"; adding these four (already sitting unused in the same archive) raised
+# it to 0.8859, clearing the >0.88 target ENGINE_IMPROVEMENTS.md recorded as missed. The single
+# largest contributor was `transfers_out_share` alone (+0.012 AUC) — mass transfers-out is the
+# crowd reacting in real time to *this week's* injury news, making it a retrospectively-available
+# proxy for exactly the two live-only fields (`chance_of_playing_next_round`, `status`) this
+# backtest otherwise cannot reconstruct. Kept in the *same* shared FEATURE_COLUMNS list the live
+# pipeline also uses (not a backtest-only subset) so there is only ever one feature contract for
+# this model; `chance_of_playing_next_round`/`status_score` stay in the list even though they are
+# constant (zero standard deviation) throughout this specific backtest, since they carry real
+# signal on the live path this same module serves.
 FEATURE_COLUMNS = [
     "recent_start_rate",
     "recent_minutes_ewma",
@@ -43,6 +56,10 @@ FEATURE_COLUMNS = [
     "start_rate_last_6",
     "start_rate_last_15",
     "team_rotation_propensity",
+    "price",
+    "ownership_log",
+    "transfers_out_share",
+    "transfers_balance_share",
 ]
 
 # FPL's `status` code -> a coarse numeric availability proxy. `news` free text is deliberately
