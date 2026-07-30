@@ -402,7 +402,8 @@ def test_build_stand_in_squad_starting_xi_picks_highest_minutes_players_who_star
     )
     full = pd.concat([ground_truth, totals], ignore_index=True)
 
-    starting_xi = build_stand_in_squad_starting_xi(full, squad_size=4)
+    # No position column here, so this exercises the flat top-`squad_size` fallback path.
+    starting_xi = build_stand_in_squad_starting_xi(full, squad_size=4, selection_col="minutes")
 
     assert 1 in starting_xi and 2 in starting_xi[1] and 3 in starting_xi[1]
     assert 4 not in starting_xi[1]  # in the squad (top-4 minutes) but didn't start GW1
@@ -422,9 +423,47 @@ def test_build_stand_in_squad_starting_xi_excludes_goalkeepers():
             "starts": [1, 1, 1, 1],
         }
     )
-    starting_xi = build_stand_in_squad_starting_xi(ground_truth, squad_size=3)
+    starting_xi = build_stand_in_squad_starting_xi(
+        ground_truth, squad_size=3, selection_col="minutes", shape={"DEF": 1, "MID": 1, "FWD": 1}
+    )
     assert 1 not in starting_xi.get(1, set())
     assert starting_xi[1] == {2, 3, 4}
+
+
+def test_build_stand_in_squad_starting_xi_respects_positional_shape_and_picks_by_points():
+    # Nine outfield players; defenders play the most minutes but score the fewest points -- the
+    # exact real-data pattern that made a pure minutes sort return a defender-heavy squad no
+    # manager would field. The shape must cap defenders at 1 and take the best scorer per position.
+    rows = []
+    for player_id, position, minutes, points in [
+        (1, "DEF", 90, 2),
+        (2, "DEF", 90, 3),
+        (3, "DEF", 90, 1),
+        (4, "MID", 60, 9),
+        (5, "MID", 60, 4),
+        (6, "MID", 60, 7),
+        (7, "FWD", 45, 12),
+        (8, "FWD", 45, 5),
+        (9, "GK", 90, 20),  # highest scorer overall, but a keeper -- must never be selected
+    ]:
+        rows.append(
+            {
+                "player_id": player_id,
+                "gameweek": 1,
+                "position": position,
+                "minutes": minutes,
+                "total_points": points,
+                "starts": 1,
+            }
+        )
+    ground_truth = pd.DataFrame(rows)
+
+    starting_xi = build_stand_in_squad_starting_xi(
+        ground_truth, shape={"DEF": 1, "MID": 2, "FWD": 1}
+    )
+
+    # Best DEF by points (2), best two MID (4, 6), best FWD (7). No goalkeeper.
+    assert starting_xi[1] == {2, 4, 6, 7}
 
 
 def test_score_season_computes_captaincy_when_starts_column_present():

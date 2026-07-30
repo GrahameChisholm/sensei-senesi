@@ -46,7 +46,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1644,34 +1644,66 @@ class SeasonReport:
         return "\n".join(lines)
 
 
+# Outfield shape of a real FPL squad (the 15 minus its 2 goalkeepers), used to build the stand-in
+# captaincy squad below. Selecting on raw totals with no positional constraint produces a squad no
+# real manager would ever field -- see that function's docstring.
+DEFAULT_STAND_IN_SQUAD_SHAPE = {DEF: 5, MID: 5, FWD: 3}
+
+
 def build_stand_in_squad_starting_xi(
-    ground_truth: pd.DataFrame, squad_size: int = 13, starts_col: str = "starts"
+    ground_truth: pd.DataFrame,
+    squad_size: int = 13,
+    starts_col: str = "starts",
+    selection_col: str = "total_points",
+    shape: Mapping[str, int] | None = None,
 ) -> dict[int, set[int]]:
     """A fixed, model-independent stand-in "my team" for captaincy backtesting
     (ENGINE_IMPROVEMENTS_2.md D.1 / ENGINE_IMPROVEMENTS.md 3.1's own documented workaround — no
-    real historical "my team" exists to backtest against): the ``squad_size`` highest
-    total-season-minutes outfield players, selected **once from ground truth alone**, never from
-    engine predictions, to avoid circularity. Each gameweek's eligible ("starting XI") set is
-    restricted to whichever of those players actually started that gameweek — bench players were
-    never really in contention for the armband (BUILD_PLAN 3.2) — via ``starts_col``.
+    real historical "my team" exists to backtest against): the best outfield players by
+    ``selection_col``, filled to the positional ``shape`` of a real FPL squad, selected **once from
+    ground truth alone**, never from engine predictions, to avoid circularity. Each gameweek's
+    eligible ("starting XI") set is restricted to whichever of those players actually started that
+    gameweek — bench players were never really in contention for the armband (BUILD_PLAN 3.2) — via
+    ``starts_col``.
 
-    Excludes goalkeepers when a ``position`` column is present (ENGINE_IMPROVEMENTS_3.md D.1):
-    once goalkeepers were brought into the scored pool, they dominated a pure highest-minutes
-    selection (a keeper who's never rotated tends to lead the whole squad in total minutes) —
-    which no real manager captains — so this stays true to this function's own "outfield players"
-    framing rather than silently letting D.1's GK inclusion invert it.
+    **Why total points and a positional shape, not raw minutes.** Selecting the highest-minutes
+    players with no positional constraint (this function's original behaviour) yields a squad that
+    is 7 defenders, 4 midfielders and 2 forwards on real 2025/26 data — defenders and holding
+    midfielders are simply the least-rotated players in football, so a pure minutes sort finds them
+    first. No FPL manager fields that squad, and nobody captains it: the resulting "eligible
+    options" are dominated by low-ceiling defenders whose gameweek scores are near-indistinguishable
+    noise, which depresses the measured hit-rate for reasons that have nothing to do with the
+    engine. On the same predictions, the same 35 gameweeks and the same scoring code, the measured
+    raw hit-rate moves 0.171 -> 0.286 purely by changing this selection, and the engine's captain
+    earns 4.83 -> 7.31 mean actual points. Its lift over a random eligible pick is a steady
+    2.2x-3.5x under *every* variant tried, which is the part that actually reflects the engine.
 
-    This is the exact caveat ENGINE_IMPROVEMENTS.md 3.1 flags: a stand-in squad, not a real
-    manager's history, so the resulting hit-rate is illustrative rather than a claim about any
-    specific real team's captaincy record.
+    Both bases are equally hindsight-informed (season-end totals aren't knowable at GW5 either), so
+    this is not a leakage trade — it is the same illustrative device, shaped like a squad someone
+    might really own.
+
+    Excludes goalkeepers when a ``position`` column is present (ENGINE_IMPROVEMENTS_3.md D.1) —
+    no real manager captains their keeper.
+
+    Falls back to a flat top-``squad_size`` selection when no ``position`` column is available (the
+    shape is unenforceable without one). This is the exact caveat ENGINE_IMPROVEMENTS.md 3.1 flags:
+    a stand-in squad, not a real manager's history, so the resulting hit-rate is illustrative rather
+    than a claim about any specific real team's captaincy record.
     """
-    outfield = (
-        ground_truth[ground_truth["position"] != GK]
-        if "position" in ground_truth.columns
-        else ground_truth
-    )
-    totals = outfield.groupby("player_id")["minutes"].sum().nlargest(squad_size)
-    squad_ids = set(totals.index)
+    if "position" not in ground_truth.columns:
+        totals = ground_truth.groupby("player_id")[selection_col].sum()
+        squad_ids = set(totals.nlargest(squad_size).index)
+    else:
+        outfield = ground_truth[ground_truth["position"] != GK]
+        totals = outfield.groupby("player_id").agg(
+            position=("position", "first"), value=(selection_col, "sum")
+        )
+        shape = DEFAULT_STAND_IN_SQUAD_SHAPE if shape is None else shape
+        squad_ids = set()
+        for position, count in shape.items():
+            in_position = totals[totals["position"] == position]
+            squad_ids |= set(in_position.nlargest(count, "value").index)
+
     eligible = ground_truth[
         ground_truth["player_id"].isin(squad_ids) & (ground_truth[starts_col] > 0)
     ]
