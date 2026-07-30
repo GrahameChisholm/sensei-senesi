@@ -11,8 +11,8 @@ yet — rather than something to special-case around (BUILD_PLAN 3.6).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 from backtest.baselines import PairedBootstrapResult, PermutationTestResult
 from backtest.metrics import BiasReport, CalibrationReport

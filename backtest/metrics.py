@@ -232,7 +232,9 @@ class BrierComparisonReport:
     beats_constant: bool
 
 
-def brier_vs_constant(predicted_probability: pd.Series, actual_outcome: pd.Series) -> BrierComparisonReport:
+def brier_vs_constant(
+    predicted_probability: pd.Series, actual_outcome: pd.Series
+) -> BrierComparisonReport:
     """Compare a component's own Brier score against the Brier score of predicting the sample's
     realised base rate (``actual_outcome.mean()``) for every row — the simplest possible baseline
     for any probability forecast."""
@@ -539,7 +541,9 @@ def minutes_model_diagnostics(
     )
     n = len(merged)
     if n == 0:
-        raise ValueError("no overlapping (player_id, gameweek) rows between predictions and actuals")
+        raise ValueError(
+            "no overlapping (player_id, gameweek) rows between predictions and actuals"
+        )
 
     zero_rows = merged[merged[minutes_col] == 0]
     mass_on_zero_rows = float(zero_rows[predicted_points_col].sum())

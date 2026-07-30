@@ -316,9 +316,9 @@ def test_fitted_shrinkage_k_shrinks_goals_and_assists_toward_team_prior(
     pool.loc[pool["player_id"] == 4, "xa_per_90"] = 1.5
     pool.loc[pool["player_id"] == 4, "understat_effective_minutes"] = 5.0
 
-    baseline = project_gameweek_pool(
-        pool, 1, fitted_minutes_model, fitted_bonus_model
-    ).set_index("player_id")
+    baseline = project_gameweek_pool(pool, 1, fitted_minutes_model, fitted_bonus_model).set_index(
+        "player_id"
+    )
     shrunk = project_gameweek_pool(
         pool,
         1,

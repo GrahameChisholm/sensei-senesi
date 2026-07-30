@@ -112,9 +112,10 @@ GAMEWEEK_POOL_COLUMNS = [
     # Outfield only (BUILD_PLAN 2.5) — required unless position == GK:
     #   "dc_per_90", "opponent_possession_share"
     # GK only (BUILD_PLAN 2.6) — required when position == GK:
-    #   "own_save_rate_per_90" (ENGINE_IMPROVEMENTS_3.md D.1 fallback — see project_saves_from_own_rate;
-    #   the "real" opponent-adjusted project_saves needs "opponent_shots_on_target_per_90"/"is_home",
-    #   still blocked on real shot data and not required here)
+    #   "own_save_rate_per_90" (ENGINE_IMPROVEMENTS_3.md D.1 fallback — see
+    #   project_saves_from_own_rate; the "real" opponent-adjusted project_saves needs
+    #   "opponent_shots_on_target_per_90"/"is_home", still blocked on real shot data and not
+    #   required here)
 ]
 
 
@@ -143,7 +144,9 @@ def _validate_no_nan_inputs(players: pd.DataFrame) -> None:
     offenders: list[tuple[int, str]] = []
     for _, row in players.iterrows():
         required = list(_SHARED_REQUIRED_COLUMNS)
-        required += _GK_ONLY_REQUIRED_COLUMNS if row["position"] == GK else _OUTFIELD_ONLY_REQUIRED_COLUMNS
+        required += (
+            _GK_ONLY_REQUIRED_COLUMNS if row["position"] == GK else _OUTFIELD_ONLY_REQUIRED_COLUMNS
+        )
         for col in required:
             if col in row.index and pd.isna(row[col]):
                 offenders.append((int(row["player_id"]), col))
@@ -172,7 +175,8 @@ def _project_one_player(
     this from clean-sheet-only to every component)."""
     expected_minutes = minutes_distribution.expected_minutes
 
-    # ENGINE_IMPROVEMENTS_2.md B.2: thin-sample rate shrinkage, opt-in via fitted_constants.shrinkage_k
+    # ENGINE_IMPROVEMENTS_2.md B.2: thin-sample rate shrinkage, opt-in via
+    # fitted_constants.shrinkage_k
     # (0.0 by default = disabled, matching each component's own project_*'s pre-B.2 behavior).
     # `understat_effective_minutes` defaults to 0.0 (full shrinkage toward the prior) when the row
     # doesn't carry it — the correct behavior for a player with no prior Understat history at all.
@@ -392,8 +396,12 @@ def project_gameweek_pool(
                 "gameweek": gameweek,
                 "expected_points": breakdown.total,
                 "expected_minutes": minutes_distribution.expected_minutes,
-                "expected_minutes_given_1_to_59": minutes_distribution.expected_minutes_given_1_to_59,
-                "expected_minutes_given_60_plus": minutes_distribution.expected_minutes_given_60_plus,
+                "expected_minutes_given_1_to_59": (
+                    minutes_distribution.expected_minutes_given_1_to_59
+                ),
+                "expected_minutes_given_60_plus": (
+                    minutes_distribution.expected_minutes_given_60_plus
+                ),
                 "p_zero": minutes_distribution.p_zero,
                 "p_1_to_59": minutes_distribution.p_1_to_59,
                 "p_60_plus": minutes_distribution.p_60_plus,

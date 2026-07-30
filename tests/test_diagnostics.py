@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from backtest.diagnostics import (
     ComponentRegressionReport,
@@ -157,7 +156,7 @@ def _synthetic_fixture_bonus_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     engineered_rows = []
     predictions_rows = []
     player_id = 1
-    for fixture_idx, (team_a, team_b) in enumerate([("Team A", "Team B"), ("Team C", "Team D")]):
+    for team_a, team_b in [("Team A", "Team B"), ("Team C", "Team D")]:
         for team, opponent, bps_rates in [
             (team_a, team_b, [40.0, 10.0, 8.0, 6.0]),
             (team_b, team_a, [9.0, 7.0, 5.0, 4.0]),

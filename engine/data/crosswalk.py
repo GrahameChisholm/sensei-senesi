@@ -85,13 +85,19 @@ MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON: dict[int, dict[int, int]] = {
     # token-prefix/reversed-order passes and hyphen-as-separator normalization closed the rest of
     # that season's gap — every remaining significant (>450-minute) miss was one of these shapes:
     2025: {
-        # Nickname is FPL's own designated-taker-style short form, not derivable from the legal name:
-        10715: 673,  # Understat "João Palhinha" -> FPL "João Maria Lobo Alves Palhares Costa Palhinha Gonçalves"
+        # Nickname is FPL's own designated-taker-style short form, not derivable from the legal
+        # name:
+        # Understat "João Palhinha" -> FPL "João Maria Lobo Alves Palhares Costa Palhinha
+        # Gonçalves"
+        10715: 673,
         7365: 612,  # Understat "Lucas Paquetá" -> FPL "Lucas Tolentino Coelho de Lima"
-        2496: 421,  # Understat "Rodri" -> FPL "Rodrigo 'Rodri' Hernandez Cascante" (nickname quoted in FPL's own name)
-        11384: 646,  # Understat "João Gomes" -> FPL "João Victor Gomes da Silva" (drops both the middle
-        # given name "Victor" and "da Silva" -- not a strict prefix, since "Victor" breaks the in-order
+        # Understat "Rodri" -> FPL "Rodrigo 'Rodri' Hernandez Cascante" (nickname quoted in FPL's
+        # own name)
+        2496: 421,
+        # Understat "João Gomes" -> FPL "João Victor Gomes da Silva" (drops both the middle given
+        # name "Victor" and "da Silva" -- not a strict prefix, since "Victor" breaks the in-order
         # token match token_prefix requires)
+        11384: 646,
         # Spelling/transliteration variants between the two sources for the same real person:
         9024: 712,  # Understat "Yeremi Pino" -> FPL "Yéremy Pino Santos"
         11772: 129,  # Understat "Yehor Yarmolyuk" -> FPL "Yehor Yarmoliuk"
@@ -106,10 +112,14 @@ MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON: dict[int, dict[int, int]] = {
     # reason for existing). Understat only lists one "Emerson" in 2024/25 (Royal isn't tracked
     # under that bare name that season) and 2025/26 (neither is), so no entry is needed there.
     2022: {
-        7430: 445,  # Understat "Emerson" (Tottenham, understat_id=7430) -> FPL "Emerson Leite de Souza Junior" (Royal)
+        # Understat "Emerson" (Tottenham, understat_id=7430) -> FPL "Emerson Leite de Souza
+        # Junior" (Royal)
+        7430: 445,
     },
     2023: {
-        7430: 497,  # Understat "Emerson" (Tottenham, understat_id=7430) -> FPL "Emerson Leite de Souza Junior" (Royal)
+        # Understat "Emerson" (Tottenham, understat_id=7430) -> FPL "Emerson Leite de Souza
+        # Junior" (Royal)
+        7430: 497,
     },
 }
 
@@ -140,7 +150,9 @@ class CrosswalkAmbiguityError(RuntimeError):
     duplicated name in one of the source lists) worth surfacing immediately rather than silently
     picking one player over the other."""
 
-    def __init__(self, fpl_id: int, matched_by: str, first: UnderstatPlayer, second: UnderstatPlayer):
+    def __init__(
+        self, fpl_id: int, matched_by: str, first: UnderstatPlayer, second: UnderstatPlayer
+    ):
         self.fpl_id = fpl_id
         self.matched_by = matched_by
         self.players = (first, second)
@@ -461,7 +473,9 @@ def build_crosswalk(
             heuristic_candidates.append((reversed_candidate, "reversed_order"))
 
         surname_candidates = [
-            c for c in surname_index.get(_surname_token(normalized) or "", []) if c not in claimed_by
+            c
+            for c in surname_index.get(_surname_token(normalized) or "", [])
+            if c not in claimed_by
         ]
         if len(surname_candidates) == 1:
             heuristic_candidates.append((surname_candidates[0], "surname_token"))

@@ -60,14 +60,16 @@ FEATURE_COLUMNS = [
     "ownership_log",
     "transfers_out_share",
     "transfers_balance_share",
-    # ENGINE_IMPROVEMENTS_3.md Phase 3 (goalkeepers): BUILD_PLAN 2.1's "Considered and cut: Position"
-    # note reasons from the *bonus* model (2.8, which already fits one model per position, so within
-    # a single-position model position carries zero information) — that reasoning doesn't transfer to
+    # ENGINE_IMPROVEMENTS_3.md Phase 3 (goalkeepers): BUILD_PLAN 2.1's "Considered and cut:
+    # Position" note reasons from the *bonus* model (2.8, which already fits one model per position,
+    # so within a single-position model position carries zero information) — that reasoning doesn't
+    # transfer to
     # this model, which is fit once across every position. A real multi-season walk-forward backtest
     # found goalkeepers have a qualitatively more binary minutes pattern (nailed-on ever-present or
     # completely out of the squad, far less mid-match substitution/rotation than outfield players)
-    # that the other 15 features don't capture: without this feature GK P(60+) was under-predicted by
-    # 7.3pp and P(zero) over-predicted by 5.5pp (real 2022/23-2025/26 pooled sample); adding it cut
+    # that the other 15 features don't capture: without this feature GK P(60+) was under-predicted
+    # by 7.3pp and P(zero) over-predicted by 5.5pp (real 2022/23-2025/26 pooled sample); adding it
+    # cut
     # those gaps to 5.1pp/2.7pp with no measurable change to non-GK calibration or AUC (0.8203 both
     # ways). Population is a plain 0.0/1.0 flag callers derive from ``position``, not implicitly
     # derived here, matching every other feature's explicit-column contract.

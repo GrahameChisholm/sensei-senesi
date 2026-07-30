@@ -158,12 +158,13 @@ def project_defensive_contribution(
     Binomial threshold probability into one projection.
 
     By default (``expected_minutes`` only) this evaluates ``P(actions >= threshold)`` at a single
-    point-estimate minutes value — correct for a linear quantity, but ``probability_clears_threshold``
-    is convex in its mean, so by Jensen's inequality evaluating it at ``E[minutes]`` *understates*
-    the true expectation whenever minutes are actually uncertain (ENGINE_IMPROVEMENTS_2.md B.1):
-    real walk-forward data showed this understating the DC-threshold probability by ~34% overall,
-    worst for rotation-risk players (a "played 0" and a "played 80" blended into one midpoint minutes
-    figure corresponds to no real match). Passing all four ``p_1_to_59``/``minutes_given_1_to_59``/
+    point-estimate minutes value — correct for a linear quantity, but
+    ``probability_clears_threshold`` is convex in its mean, so by Jensen's inequality evaluating it
+    at ``E[minutes]`` *understates* the true expectation whenever minutes are actually uncertain
+    (ENGINE_IMPROVEMENTS_2.md B.1): real walk-forward data showed this understating the
+    DC-threshold probability by ~34% overall, worst for rotation-risk players (a "played 0" and a
+    "played 80" blended into one midpoint minutes figure corresponds to no real match). Passing all
+    four ``p_1_to_59``/``minutes_given_1_to_59``/
     ``p_60_plus``/``minutes_given_60_plus`` keyword arguments (typically straight from a
     :class:`engine.models.minutes.MinutesDistribution`) instead computes the properly-weighted
     expectation over the two non-zero minutes buckets, which is what :mod:`engine.pipeline` does.
@@ -195,10 +196,9 @@ def project_defensive_contribution(
             league_avg_possession_share,
             minutes_given_60_plus,
         )
-        p_clears_threshold = (
-            p_1_to_59 * probability_clears_threshold(mu_1_to_59, threshold, alpha)
-            + p_60_plus * probability_clears_threshold(mu_60_plus, threshold, alpha)
-        )
+        p_clears_threshold = p_1_to_59 * probability_clears_threshold(
+            mu_1_to_59, threshold, alpha
+        ) + p_60_plus * probability_clears_threshold(mu_60_plus, threshold, alpha)
     else:
         mu = expected_defensive_action_rate(
             player_actions_per_90,
@@ -208,4 +208,6 @@ def project_defensive_contribution(
         )
         p_clears_threshold = probability_clears_threshold(mu, threshold, alpha)
 
-    return DefensiveContributionProjection(p_clears_threshold=p_clears_threshold, threshold=threshold)
+    return DefensiveContributionProjection(
+        p_clears_threshold=p_clears_threshold, threshold=threshold
+    )

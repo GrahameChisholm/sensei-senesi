@@ -180,7 +180,10 @@ def test_shrunk_player_npxg_thick_sample_stays_near_individual():
 
 def test_project_goals_shrinkage_reduces_an_outlier_rate_when_activated():
     baseline = project_goals(
-        player_npxg_per_90=3.0, opponent_xga_per_90=1.4, league_avg_xga_per_90=1.4, expected_minutes=20.0
+        player_npxg_per_90=3.0,
+        opponent_xga_per_90=1.4,
+        league_avg_xga_per_90=1.4,
+        expected_minutes=20.0,
     )
     shrunk = project_goals(
         player_npxg_per_90=3.0,

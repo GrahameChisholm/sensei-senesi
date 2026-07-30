@@ -168,7 +168,7 @@ def test_initial_surname_pass_matches_unique_first_initial_and_surname():
     assert entries[0].fpl_id == 9
 
 
-def test_build_crosswalk_raises_ambiguity_when_two_understat_players_map_to_same_fpl_id_via_precise_pass():
+def test_build_crosswalk_raises_when_two_understat_players_map_to_one_fpl_id_via_precise_pass():
     # A genuine data anomaly (not a heuristic false-positive): two different Understat players
     # both resolving to the same FPL id via *exact* web_name matches must fail loudly rather than
     # silently collapse two players into one.
@@ -179,9 +179,7 @@ def test_build_crosswalk_raises_ambiguity_when_two_understat_players_map_to_same
     fpl_id_by_web_name = {"Bruno Fernandes": 42, "Bruno Fernandes Junior": 42}
 
     with pytest.raises(CrosswalkAmbiguityError):
-        build_crosswalk(
-            players, {}, strict=True, fpl_id_by_web_name=fpl_id_by_web_name
-        )
+        build_crosswalk(players, {}, strict=True, fpl_id_by_web_name=fpl_id_by_web_name)
 
 
 def test_build_crosswalk_rejects_heuristic_collision_and_falls_through_to_unmatched():
@@ -357,8 +355,12 @@ def test_manual_overlay_resolves_a_real_2022_23_cross_player_collision():
     from engine.data.crosswalk import MANUAL_OVERLAY_UNDERSTAT_TO_FPL_BY_SEASON
 
     players = [
-        UnderstatPlayer(understat_id=7430, name="Emerson"),  # Royal (Tottenham) -- needs the overlay
-        UnderstatPlayer(understat_id=1245, name="Emerson"),  # Palmieri (West Ham) -- resolves via web_name
+        UnderstatPlayer(
+            understat_id=7430, name="Emerson"
+        ),  # Royal (Tottenham) -- needs the overlay
+        UnderstatPlayer(
+            understat_id=1245, name="Emerson"
+        ),  # Palmieri (West Ham) -- resolves via web_name
     ]
     fpl_id_by_name = {
         "Emerson Leite de Souza Junior": 445,  # Royal

@@ -530,7 +530,9 @@ def collapse_double_gameweeks(gw: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     # "player_id" is both a group key and a first_col candidate; drop the redundant agg entry.
     agg.pop("player_id", None)
     collapsed = (
-        g.groupby(["player_id", "gameweek"], as_index=False, sort=False).agg(agg).reset_index(drop=True)
+        g.groupby(["player_id", "gameweek"], as_index=False, sort=False)
+        .agg(agg)
+        .reset_index(drop=True)
     )
     return collapsed, n_before - len(collapsed)
 
@@ -712,11 +714,13 @@ def build_fixture_rate_frame(
     xg_mult = fixtures["gameweek"].map(lambda g: venue_mults[g][0])
     xga_mult = fixtures["gameweek"].map(lambda g: venue_mults[g][1])
     fixtures["team_xg_per_90"] = np.where(
-        fixtures["was_home"], fixtures["_team_xg_shrunk"] * xg_mult,
+        fixtures["was_home"],
+        fixtures["_team_xg_shrunk"] * xg_mult,
         fixtures["_team_xg_shrunk"] * (2.0 - xg_mult),
     )
     fixtures["team_xga_per_90"] = np.where(
-        fixtures["was_home"], fixtures["_team_xga_shrunk"] * xga_mult,
+        fixtures["was_home"],
+        fixtures["_team_xga_shrunk"] * xga_mult,
         fixtures["_team_xga_shrunk"] * (2.0 - xga_mult),
     )
     fixtures = fixtures.drop(
@@ -1370,7 +1374,15 @@ def simulate_gameweek_pool(
     doesn't also appear in this gameweek's pool (a data gap, not expected in practice) is skipped
     rather than guessed at.
     """
-    columns = ["player_id", "gameweek", "sim_mean", "sim_median", "floor", "ceiling", "prob_big_haul"]
+    columns = [
+        "player_id",
+        "gameweek",
+        "sim_mean",
+        "sim_median",
+        "floor",
+        "ceiling",
+        "prob_big_haul",
+    ]
     if players_gw.empty:
         return pd.DataFrame(columns=columns)
 
@@ -1532,10 +1544,12 @@ class SeasonReport:
             self.top_n.by_n.to_string(index=False),
             "",
             f"Pooled Spearman (predicted vs actual, all rows): {self.rank_correlation.overall:.4f}",
-            f"Starters-only Spearman (minutes > 0): "
-            f"{self.rank_correlation.overall_starters_only:.4f}"
-            if self.rank_correlation.overall_starters_only is not None
-            else "Starters-only Spearman: not computed (no minutes_col given)",
+            (
+                f"Starters-only Spearman (minutes > 0): "
+                f"{self.rank_correlation.overall_starters_only:.4f}"
+                if self.rank_correlation.overall_starters_only is not None
+                else "Starters-only Spearman: not computed (no minutes_col given)"
+            ),
             "",
             "Minutes-model diagnostics:",
             f"  zero-minute share: {self.minutes_diagnostics.zero_minute_share:.4f}",
@@ -1595,10 +1609,12 @@ class SeasonReport:
         if self.captaincy is not None:
             lines = lines + [
                 "",
-                "Captaincy hit-rate (stand-in squad, see D.1 docstring — not the gate's own metric):",
+                "Captaincy hit-rate (stand-in squad, see D.1 docstring — not the gate's own "
+                "metric):",
                 f"  raw hit-rate: {self.captaincy.raw_hit_rate:.4f} "
                 f"(n={len(self.captaincy.per_gameweek)})",
-                f"  'played as expected' hit-rate: {self.captaincy.played_as_expected_hit_rate:.4f}",
+                "  'played as expected' hit-rate: "
+                f"{self.captaincy.played_as_expected_hit_rate:.4f}",
             ]
         if self.floor_ceiling_coverage is not None or self.big_haul_calibration is not None:
             lines = lines + [
@@ -1649,7 +1665,11 @@ def build_stand_in_squad_starting_xi(
     manager's history, so the resulting hit-rate is illustrative rather than a claim about any
     specific real team's captaincy record.
     """
-    outfield = ground_truth[ground_truth["position"] != GK] if "position" in ground_truth.columns else ground_truth
+    outfield = (
+        ground_truth[ground_truth["position"] != GK]
+        if "position" in ground_truth.columns
+        else ground_truth
+    )
     totals = outfield.groupby("player_id")["minutes"].sum().nlargest(squad_size)
     squad_ids = set(totals.index)
     eligible = ground_truth[
@@ -1712,7 +1732,9 @@ def score_season(
     if "dc_data_available" in ground_truth.columns:
         dc_join_cols.append("dc_data_available")
     dc_rows = predictions.merge(
-        ground_truth[dc_join_cols].rename(columns={"defensive_contribution": "actual_defensive_contribution"}),
+        ground_truth[dc_join_cols].rename(
+            columns={"defensive_contribution": "actual_defensive_contribution"}
+        ),
         on=["player_id", "gameweek"],
     )
     dc_rows = dc_rows[dc_rows["p_clears_threshold"].notna()]
@@ -1847,7 +1869,8 @@ def score_season(
     # the team-level clean-sheet finding above.
     brier_reports = {
         "clean_sheet_gated": metrics.brier_vs_constant(
-            calibration_rows["player_clean_sheet_probability"], calibration_rows["gated_clean_sheet"]
+            calibration_rows["player_clean_sheet_probability"],
+            calibration_rows["gated_clean_sheet"],
         ),
         "minutes_played_at_all": metrics.brier_vs_constant(
             1.0 - minutes_rows["p_zero"], (minutes_rows["minutes"] > 0).astype(float)
@@ -1949,10 +1972,14 @@ def compute_coverage_report(
     per_player_minutes = outfield.groupby("element")["minutes"].sum()
     per_player_points = outfield.groupby("element")["total_points"].sum()
     total_season_points = float(per_player_points.sum())
-    matched_mask = pd.Series(per_player_minutes.index.isin(matched_ids), index=per_player_minutes.index)
+    matched_mask = pd.Series(
+        per_player_minutes.index.isin(matched_ids), index=per_player_minutes.index
+    )
     unmatched_significant = per_player_minutes[(~matched_mask) & (per_player_minutes > 450)].index
     points_excluded = float(per_player_points.reindex(unmatched_significant).fillna(0.0).sum())
-    points_excluded_share = points_excluded / total_season_points if total_season_points else float("nan")
+    points_excluded_share = (
+        points_excluded / total_season_points if total_season_points else float("nan")
+    )
 
     # Crosswalk coverage Phase 1: the concrete "who" behind points_excluded_share, not just the
     # aggregate share — see UnmatchedSignificantPlayer's own docstring.
@@ -1977,7 +2004,9 @@ def compute_coverage_report(
         ),
         outfield_players=len(per_player_minutes),
         crosswalk_matched_players=int(matched_mask.sum()),
-        crosswalk_match_rate=float(matched_mask.mean()) if len(per_player_minutes) else float("nan"),
+        crosswalk_match_rate=(
+            float(matched_mask.mean()) if len(per_player_minutes) else float("nan")
+        ),
         points_excluded_share=points_excluded_share,
         unmatched_significant_players=unmatched_significant_players,
     )
@@ -2045,7 +2074,10 @@ def _prepare_season_backtest_data(
         per_player_minutes = outfield.groupby("element")["minutes"].sum().to_dict()
         matched_ids = {entry.fpl_id for entry in crosswalk}
         assert_matched_share(
-            per_player_minutes, matched_ids, min_share=min_crosswalk_minutes_share, label="season minutes"
+            per_player_minutes,
+            matched_ids,
+            min_share=min_crosswalk_minutes_share,
+            label="season minutes",
         )
 
     gameweeks = sorted(engineered["gameweek"].unique())

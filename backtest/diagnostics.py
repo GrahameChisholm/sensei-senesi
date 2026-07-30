@@ -113,7 +113,9 @@ def assists_regression_diagnostics(engineered: pd.DataFrame) -> ComponentRegress
     )
 
 
-def defensive_contribution_regression_diagnostics(engineered: pd.DataFrame) -> ComponentRegressionReport:
+def defensive_contribution_regression_diagnostics(
+    engineered: pd.DataFrame,
+) -> ComponentRegressionReport:
     """Logistic fit of "cleared the position's own action threshold" against the player's own
     per-90 rate and the opponent-possession adjustment (BUILD_PLAN 2.5) — the component the plan
     calls "your edge", and the strongest rate-to-outcome relationship of any component measured
@@ -208,14 +210,12 @@ def rank_based_bonus_diagnostics(
     top-3 finish, which is the honest answer for "almost certainly won't play".
     """
     merged = predictions[["player_id", "gameweek", "expected_minutes", "expected_bonus"]].merge(
-        engineered[
-            ["player_id", "gameweek", "team", "opponent_team_name", "bps_per_90", "bonus"]
-        ],
+        engineered[["player_id", "gameweek", "team", "opponent_team_name", "bps_per_90", "bonus"]],
         on=["player_id", "gameweek"],
     )
-    merged["expected_bps"] = (
-        (merged["bps_per_90"] * merged["expected_minutes"] / 90.0).clip(lower=0.0) + strength_floor
-    )
+    merged["expected_bps"] = (merged["bps_per_90"] * merged["expected_minutes"] / 90.0).clip(
+        lower=0.0
+    ) + strength_floor
 
     rank_based_bonus = pd.Series(index=merged.index, dtype=float)
     n_fixtures = 0
@@ -226,9 +226,7 @@ def rank_based_bonus_diagnostics(
             continue
         opponent = group["opponent_team_name"].iloc[0]
         opponent_key = (gameweek, opponent)
-        opponent_group = merged[
-            (merged["gameweek"] == gameweek) & (merged["team"] == opponent)
-        ]
+        opponent_group = merged[(merged["gameweek"] == gameweek) & (merged["team"] == opponent)]
         if opponent_group.empty:
             continue
         processed.add(key)

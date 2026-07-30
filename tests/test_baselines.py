@@ -136,7 +136,9 @@ def test_paired_bootstrap_test_block_by_widens_interval_but_keeps_conclusion():
             engine_errors.append(abs(1.0 + block_shock[b] + rng.normal(0, 0.1)))
             baseline_errors.append(abs(3.0 + block_shock[b] + rng.normal(0, 0.1)))
             block_ids.append(b)
-    engine_errors, baseline_errors, block_ids = map(np.array, (engine_errors, baseline_errors, block_ids))
+    engine_errors, baseline_errors, block_ids = map(
+        np.array, (engine_errors, baseline_errors, block_ids)
+    )
 
     iid_result = paired_bootstrap_test(engine_errors, baseline_errors, n_bootstrap=3000, seed=1)
     blocked_result = paired_bootstrap_test(

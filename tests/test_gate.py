@@ -143,7 +143,9 @@ def test_gate_uses_per_component_calibration_threshold_when_given():
     # against a one-size-fits-all number.
     calibration_reports = {
         "clean_sheet": CalibrationReport(
-            by_bin=pd.DataFrame({"bin": ["a"], "predicted_mean": [0.4], "actual_rate": [0.47], "n": [100]}),
+            by_bin=pd.DataFrame(
+                {"bin": ["a"], "predicted_mean": [0.4], "actual_rate": [0.47], "n": [100]}
+            ),
             mean_absolute_calibration_error=0.07,
         )
     }

@@ -244,7 +244,11 @@ def test_fetch_understat_player_histories_keeps_prior_seasons_drops_future_ones(
         }
     ).to_parquet(cache_path, index=False)
 
-    crosswalk = [CrosswalkEntry(fpl_id=1, understat_id=42, fpl_name="X", understat_name="X", matched_by="exact")]
+    crosswalk = [
+        CrosswalkEntry(
+            fpl_id=1, understat_id=42, fpl_name="X", understat_name="X", matched_by="exact"
+        )
+    ]
 
     histories = fetch_understat_player_histories(crosswalk, 2025, tmp_path, understat=None)
 
@@ -315,12 +319,28 @@ def test_team_rate_asof_shrunk_returns_nan_when_no_prior_history():
 def test_league_venue_multipliers_reflects_a_real_home_advantage():
     # Every team scores 2.0 at home and 1.0 away -- a real, sizeable, league-wide venue effect.
     rows = []
-    for team_id in range(20):
-        for match in range(5):
-            rows.append({"date": pd.Timestamp("2025-08-01", tz="UTC"), "xG": 2.0, "xGA": 1.0, "is_home": True})
-            rows.append({"date": pd.Timestamp("2025-08-01", tz="UTC"), "xG": 1.0, "xGA": 2.0, "is_home": False})
+    for _team_id in range(20):
+        for _match in range(5):
+            rows.append(
+                {
+                    "date": pd.Timestamp("2025-08-01", tz="UTC"),
+                    "xG": 2.0,
+                    "xGA": 1.0,
+                    "is_home": True,
+                }
+            )
+            rows.append(
+                {
+                    "date": pd.Timestamp("2025-08-01", tz="UTC"),
+                    "xG": 1.0,
+                    "xGA": 2.0,
+                    "is_home": False,
+                }
+            )
     team_histories = {str(i): pd.DataFrame(rows) for i in range(20)}
-    xg_mult, xga_mult = _league_venue_multipliers(team_histories, pd.Timestamp("2025-09-01", tz="UTC"))
+    xg_mult, xga_mult = _league_venue_multipliers(
+        team_histories, pd.Timestamp("2025-09-01", tz="UTC")
+    )
     assert xg_mult == pytest.approx(2.0 / 1.5)
     assert xga_mult == pytest.approx(1.0 / 1.5)
 
@@ -328,7 +348,9 @@ def test_league_venue_multipliers_reflects_a_real_home_advantage():
 def test_league_venue_multipliers_neutral_below_the_minimum_match_count():
     rows = [{"date": pd.Timestamp("2025-08-01", tz="UTC"), "xG": 2.0, "xGA": 1.0, "is_home": True}]
     team_histories = {"1": pd.DataFrame(rows)}
-    xg_mult, xga_mult = _league_venue_multipliers(team_histories, pd.Timestamp("2025-08-15", tz="UTC"))
+    xg_mult, xga_mult = _league_venue_multipliers(
+        team_histories, pd.Timestamp("2025-08-15", tz="UTC")
+    )
     assert (xg_mult, xga_mult) == (1.0, 1.0)
 
 
@@ -493,7 +515,9 @@ def test_score_season_scores_floor_ceiling_and_big_haul_when_simulation_predicti
     predict_fn = make_predict_fn(engineered)
     result = run_walk_forward(gameweeks, engineered, fit_fn, predict_fn, min_training_gameweeks=1)
     simulate_fn = make_simulate_predict_fn(engineered, n_runs=50, seed=0)
-    sim_result = run_walk_forward(gameweeks, engineered, fit_fn, simulate_fn, min_training_gameweeks=1)
+    sim_result = run_walk_forward(
+        gameweeks, engineered, fit_fn, simulate_fn, min_training_gameweeks=1
+    )
 
     ground_truth = engineered[
         [
@@ -690,7 +714,11 @@ def test_compute_coverage_report_surfaces_unmatched_significant_players():
     merged_gw.loc[merged_gw["GW"] == 1, "minutes"] = 120
     engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
     # Player 1 (>450 minutes) matched; players 2-4 unmatched.
-    crosswalk = [CrosswalkEntry(fpl_id=1, understat_id=101, fpl_name="P1", understat_name="P1", matched_by="exact")]
+    crosswalk = [
+        CrosswalkEntry(
+            fpl_id=1, understat_id=101, fpl_name="P1", understat_name="P1", matched_by="exact"
+        )
+    ]
 
     report = compute_coverage_report(merged_gw, crosswalk, engineered)
 
@@ -889,7 +917,9 @@ def test_composite_gameweek_disambiguates_seasons():
     assert list(_composite_gameweek(2025, gws)) == [202501, 202505, 202538]
 
 
-def _synthetic_season_backtest_data(season_start_year: int, dc_data_available: bool = True) -> SeasonBacktestData:
+def _synthetic_season_backtest_data(
+    season_start_year: int, dc_data_available: bool = True
+) -> SeasonBacktestData:
     """A minimal, network-free SeasonBacktestData for one synthetic season (multi-season Phase 2
     pooling tests) -- reuses the same synthetic fixture and real fit/predict pipeline every other
     engineer_features/score_season test in this module does."""
@@ -949,7 +979,9 @@ def test_pool_season_backtest_data_keeps_per_season_and_pools_across_seasons():
     for season_report in report.per_season.values():
         assert isinstance(season_report.accuracy.overall_mae, float)
     # pooled sample is the concatenation of both seasons -- twice the single-season row count.
-    single_season_n = sum(g["n"] for g in report.per_season[2024].accuracy.by_position.to_dict("records"))
+    single_season_n = sum(
+        g["n"] for g in report.per_season[2024].accuracy.by_position.to_dict("records")
+    )
     pooled_n = sum(g["n"] for g in report.pooled.accuracy.by_position.to_dict("records"))
     assert pooled_n == 2 * single_season_n
     assert isinstance(report.pooled.accuracy.overall_mae, float)

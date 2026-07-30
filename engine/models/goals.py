@@ -32,7 +32,8 @@ from engine.scoring import GOAL_POINTS, PENALTY_MISS_POINTS, POSITIONS
 DEFAULT_PENALTY_CONVERSION_RATE = 0.76
 
 # Rough prior: fraction of a team's own expected goals a generic individual player's own npxG/90
-# rate implies, used only to build a *shrinkage prior* for thin-sample players (ENGINE_IMPROVEMENTS_2.md
+# rate implies, used only to build a *shrinkage prior* for thin-sample players
+# (ENGINE_IMPROVEMENTS_2.md
 # B.2, symmetric with assists.py's DEFAULT_ASSIST_SHARE_OF_TEAM_XG) — not asserted precise; Phase 3
 # backtesting is what actually calibrates this. Real point-in-time Understat rates showed
 # physically-impossible outliers (npxG/90 up to 35.4) concentrated entirely in sub-90-minutes-of-
@@ -77,8 +78,8 @@ def expected_non_penalty_goal_rate(
         raise ValueError(
             "rates and expected_minutes must not be NaN (a missing upstream value — e.g. an "
             "unmatched ID-crosswalk player — must fail loudly here, not propagate to a silent "
-            "NaN expected_points that quietly vanishes from every ranking; ENGINE_IMPROVEMENTS_2.md "
-            "C.2)"
+            "NaN expected_points that quietly vanishes from every ranking; "
+            "ENGINE_IMPROVEMENTS_2.md C.2)"
         )
     if player_npxg_per_90 < 0 or opponent_xga_per_90 < 0 or expected_minutes < 0:
         raise ValueError("rates and expected_minutes must be non-negative")
@@ -249,7 +250,11 @@ def project_goals(
     effective_npxg_per_90 = player_npxg_per_90
     if individual_weight is not None and team_xg_per_90 is not None and shrinkage_k > 0:
         effective_npxg_per_90 = shrunk_player_npxg_per_90(
-            player_npxg_per_90, individual_weight, team_xg_per_90, shrinkage_k, npxg_share_of_team_xg
+            player_npxg_per_90,
+            individual_weight,
+            team_xg_per_90,
+            shrinkage_k,
+            npxg_share_of_team_xg,
         )
     non_penalty_rate = expected_non_penalty_goal_rate(
         effective_npxg_per_90, opponent_xga_per_90, league_avg_xga_per_90, expected_minutes

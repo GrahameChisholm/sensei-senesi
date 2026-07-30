@@ -90,7 +90,10 @@ def project_cards(
         and red_shrinkage_k > 0
     ):
         effective_red_rate = shrink_toward_prior(
-            red_card_rate_per_90, individual_weight, league_avg_red_card_rate_per_90, red_shrinkage_k
+            red_card_rate_per_90,
+            individual_weight,
+            league_avg_red_card_rate_per_90,
+            red_shrinkage_k,
         )
     minutes_scaling = expected_minutes / 90.0
     return CardsProjection(

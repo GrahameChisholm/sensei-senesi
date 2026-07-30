@@ -112,8 +112,7 @@ def test_bonus_model_near_zero_minutes_predicts_near_zero_bonus():
     barely_plays = pd.DataFrame([build_features(0.9, 0.5, 0.8, 12.0, "MID", expected_minutes=2.0)])
 
     assert (
-        model.predict(barely_plays)[0].expected_bonus
-        < model.predict(full_match)[0].expected_bonus
+        model.predict(barely_plays)[0].expected_bonus < model.predict(full_match)[0].expected_bonus
     )
 
 
@@ -135,7 +134,7 @@ def _brute_force_rank_probabilities(strengths, max_rank):
     for perm in itertools.permutations(range(n)):
         remaining = float(w.sum())
         p = 1.0
-        for rank, item in enumerate(perm):
+        for item in perm:
             p *= w[item] / remaining
             remaining -= w[item]
         for rank, item in enumerate(perm[:max_rank]):

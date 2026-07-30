@@ -176,9 +176,9 @@ def test_project_defensive_contribution_bucket_weighted_matches_manual_expectati
     p_1, m_1, p_60, m_60 = 0.3, 25.0, 0.2, 80.0
     mu_1 = expected_defensive_action_rate(9.0, 0.5, expected_minutes=m_1)
     mu_60 = expected_defensive_action_rate(9.0, 0.5, expected_minutes=m_60)
-    expected = p_1 * probability_clears_threshold(mu_1, 12, alpha) + p_60 * probability_clears_threshold(
-        mu_60, 12, alpha
-    )
+    expected = p_1 * probability_clears_threshold(
+        mu_1, 12, alpha
+    ) + p_60 * probability_clears_threshold(mu_60, 12, alpha)
 
     result = project_defensive_contribution(
         "MID",
