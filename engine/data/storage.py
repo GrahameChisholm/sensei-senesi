@@ -132,6 +132,32 @@ class AppSettings(Base):
     planning_horizon_gameweeks: Mapped[int] = mapped_column(Integer, default=5)
 
 
+class SavedSquad(Base):
+    """The team-selection page's persisted squad (D17/G6): a single row (``id`` is always 1 —
+    this is a single-user local tool) holding both the real, confirmed
+    ``features.squad_draft.CommittedSquad`` and any unconfirmed ``PendingDraft`` (so an in-progress
+    edit survives a refresh or closed tab, per D17), each serialised to JSON. A single JSON column
+    per concept rather than a normalised schema: both objects are always read and written whole,
+    and their shape is still evolving alongside the rest of the team-selection page.
+    """
+
+    __tablename__ = "saved_squads"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    season: Mapped[str] = mapped_column(String, nullable=False)
+    committed_gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
+    committed_state_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    chip_usage_json: Mapped[str] = mapped_column(String, nullable=False)
+    active_chip: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_chip_gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    free_hit_snapshot_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    free_hit_snapshot_gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pending_draft_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
     return create_engine(f"sqlite:///{db_path}")
 

@@ -1,0 +1,540 @@
+"""The batch job (team-page plan Phase 1.3 / D7): live FPL + Understat snapshot -> cross-season-
+augmented feature inputs -> fitted horizon projections -> cold-start baselines for every remaining
+live player -> one JSON cache file the API only ever reads.
+
+Reference for the snapshot/logging wiring style: ``git show d51af0e^:scripts/weekly_refresh.py``
+(deleted in the web-app-removal commit). This job differs from it in three ways that module's own
+docstring already named as out of scope: it closes the true GW1 cold start
+(``engine.data.cross_season``/``engine.data.live_horizon.augment_feature_inputs_with_prior_season``),
+it gives every remaining live player a flagged baseline rather than dropping them
+(``engine.data.cold_start``), and it builds a real multi-gameweek horizon in one pass
+(``engine.data.live_horizon.build_live_horizon_from_feature_inputs``) rather than one gameweek at
+a time.
+
+Deliberately split into pure, disk/network-free assembly functions
+(:func:`merge_cold_start_projections`, :func:`assemble_projection_cache`,
+:func:`build_fixture_list`, :func:`write_projection_cache`) and a thin orchestrating
+:func:`build_projections` — the same split ``engine/data/live_horizon.py``
+already uses between its disk-free core and its disk-touching wrapper, for the same reason: the
+logic that actually needs checking carefully (does every live player end up projected exactly
+once, does the cache validate) is testable without a real network pull.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+import pandas as pd
+
+from backtest.prediction_log import current_model_version, log_predictions
+from backtest.run_season import (
+    DEFAULT_CACHE_DIR,
+    build_season_crosswalk,
+    fetch_understat_league_data_raw,
+    fetch_understat_player_histories,
+    fetch_vaastav_merged_gw,
+    fetch_vaastav_teams,
+)
+from engine.data.cold_start import ColdStartPriors, baseline_projection, fit_cold_start_priors
+from engine.data.cross_season import (
+    fetch_vaastav_players_raw,
+    player_code_map,
+    prior_season_merged_gw,
+    remap_player_histories,
+    synthetic_team_rows,
+    team_id_map,
+)
+from engine.data.fpl_client import FPLClient
+from engine.data.ingest import capture_current_gameweek
+from engine.data.live_adapter import DEFAULT_TOTAL_MANAGERS, snapshot_to_feature_inputs
+from engine.data.live_horizon import (
+    augment_feature_inputs_with_prior_season,
+    build_live_horizon_from_feature_inputs,
+)
+from engine.data.snapshots import DEFAULT_BASE_DIR, load_snapshot_tables
+from engine.data.understat_client import UnderstatClient
+from engine.projections import (
+    PlayerGameweekProjection,
+    PlayerHorizonProjection,
+    project_player_horizon,
+)
+from engine.scoring import ELEMENT_TYPE_TO_POSITION
+
+__all__ = [
+    "DEFAULT_HORIZON",
+    "DEFAULT_OUTPUT_DIR",
+    "build_fixture_list",
+    "merge_cold_start_projections",
+    "assemble_projection_cache",
+    "write_projection_cache",
+    "build_projections",
+    "main",
+]
+
+# Current gameweek + next 2 -- matches engine.data.live_horizon.DEFAULT_HORIZON_LENGTH and the
+# team-page plan's D11 (the pitch's own "Next 3 GWs" view never needs more than this).
+DEFAULT_HORIZON = 3
+DEFAULT_OUTPUT_DIR = Path("data_store/projections")
+
+
+# =================================================================================================
+# Pure assembly -- no network, no disk beyond the final atomic write
+# =================================================================================================
+
+
+def build_fixture_list(fixtures: pd.DataFrame) -> list[dict]:
+    """One row per team-perspective fixture (both the home and away sides of every match) --
+    exactly the cache's own ``fixtures`` shape (§6.1 of the team-page plan): ``team_id``,
+    ``opponent_id``, ``gameweek``, ``is_home``, ``kickoff_time``. A fixture with no assigned
+    gameweek yet (``event`` is null -- not yet scheduled) is skipped, matching how a real blank
+    gameweek already has no fixture row for the affected teams."""
+    rows: list[dict] = []
+    for row in fixtures.itertuples():
+        event = getattr(row, "event", None)
+        if event is None or pd.isna(event):
+            continue
+        gameweek = int(event)
+        kickoff = row.kickoff_time
+        rows.append(
+            {
+                "team_id": int(row.team_h),
+                "opponent_id": int(row.team_a),
+                "gameweek": gameweek,
+                "is_home": True,
+                "kickoff_time": kickoff,
+            }
+        )
+        rows.append(
+            {
+                "team_id": int(row.team_a),
+                "opponent_id": int(row.team_h),
+                "gameweek": gameweek,
+                "is_home": False,
+                "kickoff_time": kickoff,
+            }
+        )
+    return rows
+
+
+def merge_cold_start_projections(
+    live_elements: pd.DataFrame,
+    engine_projections: dict[int, PlayerHorizonProjection],
+    priors: ColdStartPriors,
+    team_id_by_player: dict[int, int],
+    team_gameweeks_with_fixture: set[tuple[int, int]],
+    target_gameweeks: Sequence[int],
+) -> tuple[dict[int, PlayerHorizonProjection], set[int]]:
+    """Every live element ends up projected exactly once -- the real engine output if one exists,
+    a flagged :func:`~engine.data.cold_start.baseline_projection` otherwise (D5) -- rather than the
+    engine's own dropna silently vanishing the ~107 historyless players from the page entirely.
+
+    A cold-start player still only gets a projection for a gameweek their own team actually has a
+    fixture in (``team_gameweeks_with_fixture``), matching the "blank gameweek gets no entry, not
+    a zero" rule every other projection already follows; a player whose team has no fixture at all
+    across the whole horizon is left out entirely (nothing to show).
+
+    Returns ``(full_projections, cold_start_player_ids)`` -- the id set drives both the cache's own
+    ``low_confidence``/``source`` fields and the build summary's own reporting.
+    """
+    result = dict(engine_projections)
+    cold_start_ids: set[int] = set()
+    for row in live_elements.itertuples():
+        player_id = int(row.id)
+        if player_id in result:
+            continue
+        position = ELEMENT_TYPE_TO_POSITION[int(row.element_type)]
+        price = int(row.now_cost)
+        team_id = team_id_by_player.get(player_id)
+        gameweeks: dict[int, PlayerGameweekProjection] = {}
+        for gameweek in target_gameweeks:
+            if team_id is None or (team_id, gameweek) not in team_gameweeks_with_fixture:
+                continue
+            gameweeks[gameweek] = baseline_projection(player_id, position, price, gameweek, priors)
+        if not gameweeks:
+            continue
+        result[player_id] = project_player_horizon(player_id, position, gameweeks)
+        cold_start_ids.add(player_id)
+    return result, cold_start_ids
+
+
+def _serialize_breakdown(breakdown) -> dict:
+    return {
+        "appearance": breakdown.appearance,
+        "goals": breakdown.goals,
+        "assists": breakdown.assists,
+        "clean_sheet": breakdown.clean_sheet,
+        "goals_conceded": breakdown.goals_conceded,
+        "defensive_contribution": breakdown.defensive_contribution,
+        "saves": breakdown.saves,
+        "bonus": breakdown.bonus,
+        "cards": breakdown.cards,
+        "penalty_misses": breakdown.penalty_misses,
+        "own_goals": breakdown.own_goals,
+    }
+
+
+def _serialize_minutes(minutes) -> dict:
+    return {
+        "p_zero": minutes.p_zero,
+        "p_1_to_59": minutes.p_1_to_59,
+        "p_60_plus": minutes.p_60_plus,
+        "expected_minutes_given_1_to_59": minutes.expected_minutes_given_1_to_59,
+        "expected_minutes_given_60_plus": minutes.expected_minutes_given_60_plus,
+    }
+
+
+def _serialize_simulation(simulation) -> dict | None:
+    if simulation is None:
+        return None
+    return {
+        "mean": simulation.mean,
+        "median": simulation.median,
+        "floor": simulation.floor,
+        "ceiling": simulation.ceiling,
+        "prob_big_haul": simulation.prob_big_haul,
+    }
+
+
+def _serialize_gameweek_projection(projection: PlayerGameweekProjection) -> dict:
+    return {
+        "gameweek": projection.gameweek,
+        "breakdown": _serialize_breakdown(projection.breakdown),
+        "minutes": _serialize_minutes(projection.minutes),
+        "simulation": _serialize_simulation(projection.simulation),
+    }
+
+
+def _serialize_horizon_projection(horizon: PlayerHorizonProjection) -> dict:
+    return {
+        "position": horizon.position,
+        "gameweeks": [
+            _serialize_gameweek_projection(horizon.gameweeks[gw])
+            for gw in sorted(horizon.gameweeks)
+        ],
+    }
+
+
+def _isoformat(value) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return pd.Timestamp(value).isoformat()
+
+
+def assemble_projection_cache(
+    season: str,
+    gameweek: int,
+    horizon_gameweeks: Sequence[int],
+    projections: dict[int, PlayerHorizonProjection],
+    cold_start_ids: set[int],
+    live_elements: pd.DataFrame,
+    live_teams: pd.DataFrame,
+    fixture_rows: list[dict],
+    generated_at: datetime,
+    deadline_time: datetime,
+    deadline_passed: bool,
+    model_version: str,
+    diagnostics: dict,
+) -> dict:
+    """Build the exact JSON-serialisable cache dict §6.1 of the team-page plan specifies -- pure
+    assembly from already-computed pieces, no I/O of its own."""
+    team_name_by_id = {int(row.id): row.name for row in live_teams.itertuples()}
+    team_short_name_by_id = {int(row.id): row.short_name for row in live_teams.itertuples()}
+
+    players: dict[str, dict] = {}
+    for row in live_elements.itertuples():
+        player_id = int(row.id)
+        chance = getattr(row, "chance_of_playing_next_round", None)
+        players[str(player_id)] = {
+            "web_name": row.web_name,
+            "full_name": f"{row.first_name} {row.second_name}",
+            "team_id": int(row.team),
+            "position": ELEMENT_TYPE_TO_POSITION[int(row.element_type)],
+            "price": int(row.now_cost),
+            "status": row.status,
+            "chance_of_playing_next_round": float(chance) if pd.notna(chance) else 100.0,
+            "low_confidence": player_id in cold_start_ids,
+            "source": "cold_start" if player_id in cold_start_ids else "engine",
+        }
+
+    teams = {
+        str(team_id): {
+            "name": team_name_by_id[team_id],
+            "short_name": team_short_name_by_id[team_id],
+        }
+        for team_id in team_name_by_id
+    }
+
+    fixtures_out = [
+        {
+            "team_id": row["team_id"],
+            "opponent_id": row["opponent_id"],
+            "gameweek": row["gameweek"],
+            "is_home": row["is_home"],
+            "kickoff_time": _isoformat(row["kickoff_time"]),
+        }
+        for row in fixture_rows
+    ]
+
+    return {
+        "season": season,
+        "gameweek": gameweek,
+        "horizon_gameweeks": list(horizon_gameweeks),
+        "deadline_passed": deadline_passed,
+        "generated_at": _isoformat(generated_at),
+        "deadline_time": _isoformat(deadline_time),
+        "model_version": model_version,
+        "projections": {
+            str(player_id): _serialize_horizon_projection(horizon)
+            for player_id, horizon in projections.items()
+        },
+        "players": players,
+        "teams": teams,
+        "fixtures": fixtures_out,
+        "diagnostics": diagnostics,
+    }
+
+
+def write_projection_cache(cache: dict, output_dir: Path, season: str, gameweek: int) -> Path:
+    """Atomic write (temp file + rename) so a crash mid-write never leaves a partial cache file for
+    the API to read."""
+    target_dir = output_dir / season
+    target_dir.mkdir(parents=True, exist_ok=True)
+    final_path = target_dir / f"gw{gameweek:02d}.json"
+    tmp_path = final_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(cache, indent=2))
+    tmp_path.replace(final_path)
+    return final_path
+
+
+def _deadline_time_for_gameweek(events: pd.DataFrame, gameweek: int) -> datetime:
+    matches = events[events["id"] == gameweek]
+    if matches.empty:
+        raise ValueError(f"no event found for gameweek {gameweek}")
+    return pd.to_datetime(matches.iloc[0]["deadline_time"], utc=True).to_pydatetime()
+
+
+# =================================================================================================
+# Orchestration -- real network/disk I/O
+# =================================================================================================
+
+
+def build_projections(
+    season: str,
+    gameweek: int,
+    understat_season_start_year: int,
+    prior_season_start_year: int,
+    horizon: int = DEFAULT_HORIZON,
+    base_dir: Path = DEFAULT_BASE_DIR,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+    n_simulation_runs: int = 200,
+    seed: int | None = None,
+    total_managers: float = DEFAULT_TOTAL_MANAGERS,
+    reuse_snapshot: datetime | None = None,
+    n_prior_seasons_for_team_rates: int = 3,
+) -> Path:
+    """The real end-to-end build: capture (or reuse) a live snapshot, close the GW1 cold start with
+    cross-season history, fit once and project ``horizon`` gameweeks, fill every remaining live
+    player with a flagged baseline, log predictions immutably, and write the cache atomically.
+
+    Raises whatever :func:`~engine.data.live_horizon.build_live_horizon_from_feature_inputs` raises
+    if even the cross-season-augmented training history is too thin -- a real, loud failure rather
+    than a silent bad cache, exactly as that function's own docstring intends.
+    """
+    target_gameweeks = list(range(gameweek, gameweek + horizon))
+
+    with (
+        httpx.Client(timeout=30.0) as http_client,
+        FPLClient() as fpl_client,
+        UnderstatClient() as understat_client,
+    ):
+        if reuse_snapshot is not None:
+            captured_at = reuse_snapshot
+        else:
+            manifest = capture_current_gameweek(
+                fpl_client,
+                understat_client,
+                season,
+                understat_season_start_year,
+                gameweek,
+                base_dir,
+            )
+            captured_at = manifest.captured_at
+
+        fpl_tables = load_snapshot_tables(base_dir, season, gameweek, captured_at, "fpl")
+        live_elements = fpl_tables["elements"]
+        live_teams = fpl_tables["teams"]
+        events = fpl_tables["events"]
+        fixtures_df = fpl_tables["fixtures"]
+
+        # --- cross-season history (engine.data.cross_season) --------------------------------
+        prior_teams = fetch_vaastav_teams(prior_season_start_year, cache_dir, http_client)
+        prior_players_raw = fetch_vaastav_players_raw(
+            prior_season_start_year, cache_dir, http_client
+        )
+        prior_merged_gw_raw = fetch_vaastav_merged_gw(
+            prior_season_start_year, cache_dir, http_client
+        )
+
+        code_map = player_code_map(prior_players_raw, live_elements)
+        team_map = team_id_map(prior_teams, live_teams)
+        synthetic_teams = synthetic_team_rows(prior_teams, live_teams)
+        relegated_team_ids = dict(
+            zip(
+                prior_teams.loc[~prior_teams["code"].isin(live_teams["code"]), "id"],
+                synthetic_teams["id"],
+                strict=True,
+            )
+        )
+        prior_merged_gw = prior_season_merged_gw(
+            prior_merged_gw_raw, code_map, team_map, relegated_team_ids
+        )
+
+        prior_league_data = fetch_understat_league_data_raw(
+            prior_season_start_year, cache_dir, understat_client
+        )
+        prior_crosswalk = build_season_crosswalk(
+            prior_season_start_year, prior_league_data, cache_dir, http_client
+        )
+        prior_player_histories_by_prior_id = fetch_understat_player_histories(
+            prior_crosswalk, prior_season_start_year, cache_dir, understat_client
+        )
+        prior_player_histories = remap_player_histories(
+            prior_player_histories_by_prior_id, code_map
+        )
+
+        # --- live feature inputs (team-rate prior-season pooling already built in) -----------
+        feature_inputs = snapshot_to_feature_inputs(
+            season,
+            gameweek,
+            captured_at,
+            understat_season_start_year,
+            base_dir,
+            total_managers,
+            understat_client,
+            cache_dir / "understat_prior_seasons",
+            n_prior_seasons_for_team_rates,
+            target_gameweeks=target_gameweeks,
+        )
+        augmented = augment_feature_inputs_with_prior_season(
+            feature_inputs, prior_merged_gw, synthetic_teams, prior_player_histories
+        )
+
+        # --- fit once, project every horizon gameweek ----------------------------------------
+        horizon_result = build_live_horizon_from_feature_inputs(
+            augmented, gameweek, target_gameweeks, n_simulation_runs=n_simulation_runs, seed=seed
+        )
+
+        # --- cold-start fallback for every player the engine still couldn't cover -----------
+        priors = fit_cold_start_priors(prior_merged_gw_raw)
+        team_id_by_player = {int(row.id): int(row.team) for row in live_elements.itertuples()}
+        fixture_rows = build_fixture_list(fixtures_df)
+        team_gameweeks_with_fixture = {(row["team_id"], row["gameweek"]) for row in fixture_rows}
+        full_projections, cold_start_ids = merge_cold_start_projections(
+            live_elements,
+            horizon_result.projections,
+            priors,
+            team_id_by_player,
+            team_gameweeks_with_fixture,
+            target_gameweeks,
+        )
+
+        # --- immutable prediction log (best-effort re-run guard, matching the deleted job) --
+        model_version = current_model_version()
+        try:
+            log_predictions(
+                horizon_result.predictions, gameweek, model_version, logged_at=captured_at
+            )
+        except FileExistsError:
+            pass
+
+        deadline_time = _deadline_time_for_gameweek(events, gameweek)
+        deadline_passed = captured_at >= deadline_time
+
+        diagnostics = {
+            "training_rows": int(len(augmented.merged_gw)),
+            "engine_projected_players": len(horizon_result.projections),
+            "cold_start_players": len(cold_start_ids),
+            "used_prior_season_history": True,
+            "used_cold_start_pooling": True,
+        }
+
+        cache = assemble_projection_cache(
+            season,
+            gameweek,
+            target_gameweeks,
+            full_projections,
+            cold_start_ids,
+            live_elements,
+            live_teams,
+            fixture_rows,
+            captured_at,
+            deadline_time,
+            deadline_passed,
+            model_version,
+            diagnostics,
+        )
+        path = write_projection_cache(cache, output_dir, season, gameweek)
+        _print_summary(cache, diagnostics, path)
+        return path
+
+
+def _print_summary(cache: dict, diagnostics: dict, path: Path) -> None:
+    total_players = len(cache["players"])
+    print(f"Wrote {path}")
+    print(
+        f"  players: {total_players} total, {diagnostics['engine_projected_players']} engine, "
+        f"{diagnostics['cold_start_players']} cold-start"
+    )
+    print(f"  training rows: {diagnostics['training_rows']}")
+    print(f"  deadline_passed: {cache['deadline_passed']}")
+    significant_dropped = [
+        p for pid, p in cache["players"].items() if p["source"] == "cold_start" and p["price"] >= 60
+    ]
+    if significant_dropped:
+        names = ", ".join(f"{p['web_name']} (£{p['price']/10:.1f}m)" for p in significant_dropped)
+        print(f"  significant cold-start players (>= £6.0m): {names}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Build the team-selection page's projection cache from live data."
+    )
+    parser.add_argument("--season", required=True, help='e.g. "2026-27"')
+    parser.add_argument("--gameweek", type=int, required=True)
+    parser.add_argument("--understat-season-start-year", type=int, required=True, help="e.g. 2026")
+    parser.add_argument("--prior-season-start-year", type=int, required=True, help="e.g. 2025")
+    parser.add_argument("--horizon", type=int, default=DEFAULT_HORIZON)
+    parser.add_argument("--n-simulation-runs", type=int, default=200)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--reuse-snapshot",
+        type=str,
+        default=None,
+        help="ISO timestamp of an already-captured snapshot to reuse instead of pulling live",
+    )
+    args = parser.parse_args(argv)
+
+    reuse_snapshot = (
+        datetime.fromisoformat(args.reuse_snapshot).astimezone(UTC) if args.reuse_snapshot else None
+    )
+
+    build_projections(
+        season=args.season,
+        gameweek=args.gameweek,
+        understat_season_start_year=args.understat_season_start_year,
+        prior_season_start_year=args.prior_season_start_year,
+        horizon=args.horizon,
+        n_simulation_runs=args.n_simulation_runs,
+        seed=args.seed,
+        reuse_snapshot=reuse_snapshot,
+    )
+
+
+if __name__ == "__main__":
+    main()

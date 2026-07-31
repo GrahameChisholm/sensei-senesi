@@ -55,6 +55,7 @@ larger follow-up work, not attempted here.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -68,6 +69,7 @@ from engine.scoring import ELEMENT_TYPE_TO_POSITION
 
 __all__ = [
     "DEFAULT_TOTAL_MANAGERS",
+    "MERGED_GW_COLUMNS",
     "FeatureInputs",
     "build_merged_gw",
     "build_player_histories_from_live_snapshot",
@@ -107,7 +109,7 @@ _UNKNOWN_OUTCOME_COLUMNS = [
 # vaastav/element-summary-history column name -> engineer_features' expected name.
 _HISTORY_RENAME = {"element": "player_id", "round": "GW"}
 
-_MERGED_GW_COLUMNS = [
+MERGED_GW_COLUMNS = [
     "player_id",
     "GW",
     "position",
@@ -166,12 +168,12 @@ def _played_rows_from_element_summaries(
     docstring on point-in-time discipline.
     """
     if histories.empty:
-        return pd.DataFrame(columns=_MERGED_GW_COLUMNS)
+        return pd.DataFrame(columns=MERGED_GW_COLUMNS)
 
     played = histories.rename(columns=_HISTORY_RENAME).copy()
     played = played[played["GW"] < gameweek]
     if played.empty:
-        return pd.DataFrame(columns=_MERGED_GW_COLUMNS)
+        return pd.DataFrame(columns=MERGED_GW_COLUMNS)
 
     played["position"] = played["player_id"].map(position_by_element)
     played["team"] = played["player_id"].map(own_team_name_by_element)
@@ -181,13 +183,13 @@ def _played_rows_from_element_summaries(
     for col in ("value", "selected", "transfers_out", "transfers_balance"):
         if col not in played.columns:
             played[col] = 0
-    missing = [c for c in _MERGED_GW_COLUMNS if c not in played.columns]
+    missing = [c for c in MERGED_GW_COLUMNS if c not in played.columns]
     if missing:
         raise ValueError(
             f"fpl_element_summaries history rows are missing expected column(s): {missing} — "
             "check the real FPL element-summary payload shape against this adapter's assumptions"
         )
-    return played[_MERGED_GW_COLUMNS]
+    return played[MERGED_GW_COLUMNS]
 
 
 def _target_gameweek_rows(
@@ -207,7 +209,7 @@ def _target_gameweek_rows(
     """
     gw_fixtures = fixtures[fixtures["event"] == gameweek]
     if gw_fixtures.empty:
-        return pd.DataFrame(columns=_MERGED_GW_COLUMNS)
+        return pd.DataFrame(columns=MERGED_GW_COLUMNS)
 
     team_id_by_element = dict(zip(elements["id"], elements["team"], strict=True))
     rows: list[dict] = []
@@ -245,8 +247,8 @@ def _target_gameweek_rows(
                 )
             )
     if not rows:
-        return pd.DataFrame(columns=_MERGED_GW_COLUMNS)
-    return pd.DataFrame(rows)[_MERGED_GW_COLUMNS]
+        return pd.DataFrame(columns=MERGED_GW_COLUMNS)
+    return pd.DataFrame(rows)[MERGED_GW_COLUMNS]
 
 
 def _target_row(
@@ -290,10 +292,20 @@ def build_merged_gw(
     element_summary_histories: pd.DataFrame,
     gameweek: int,
     total_managers: float = DEFAULT_TOTAL_MANAGERS,
+    target_gameweeks: Sequence[int] | None = None,
 ) -> pd.DataFrame:
-    """Every played gameweek's real history plus the target gameweek's synthesized row(s) — the
+    """Every played gameweek's real history plus the target gameweek(s)' synthesized row(s) — the
     ``merged_gw`` argument :func:`backtest.run_season.engineer_features` expects, built entirely
     from one live snapshot's ``fpl``/``fpl_element_summaries`` sources.
+
+    ``gameweek`` is the real "now" — the played/not-yet-played split point (``GW < gameweek`` is
+    played history) — regardless of which gameweek(s) get a synthesized row. ``target_gameweeks``
+    lists which not-yet-played gameweek(s) to synthesize target rows for, e.g. ``[gameweek,
+    gameweek + 1, gameweek + 2]`` for a live 3-gameweek planning horizon; defaults to
+    ``[gameweek]``, reproducing this function's original single-target-gameweek behavior exactly.
+    A requested gameweek with no fixtures (past the end of the season, or a blank gameweek for
+    every team) simply contributes no target rows — the same "no fixtures this gameweek" case
+    already handled per-team below.
     """
     position_by_element = _position_by_element(elements)
     team_name_by_id = _team_name_by_id(teams)
@@ -302,17 +314,20 @@ def build_merged_gw(
     played = _played_rows_from_element_summaries(
         element_summary_histories, position_by_element, own_team_name_by_element, gameweek
     )
-    target = _target_gameweek_rows(
-        elements,
-        teams,
-        fixtures,
-        gameweek,
-        position_by_element,
-        own_team_name_by_element,
-        team_name_by_id,
-        total_managers,
-    )
-    merged = pd.concat([played, target], ignore_index=True)
+    targets = [
+        _target_gameweek_rows(
+            elements,
+            teams,
+            fixtures,
+            target_gameweek,
+            position_by_element,
+            own_team_name_by_element,
+            team_name_by_id,
+            total_managers,
+        )
+        for target_gameweek in (target_gameweeks if target_gameweeks is not None else [gameweek])
+    ]
+    merged = pd.concat([played, *targets], ignore_index=True)
     merged["kickoff_time"] = pd.to_datetime(merged["kickoff_time"], utc=True)
     return merged
 
@@ -351,9 +366,13 @@ def snapshot_to_feature_inputs(
     understat_client: UnderstatClient | None = None,
     prior_season_cache_dir: Path | None = None,
     n_prior_seasons: int | None = None,
+    target_gameweeks: Sequence[int] | None = None,
 ) -> FeatureInputs:
     """Load one live snapshot's four sources and assemble them into
     :func:`backtest.run_season.engineer_features`'s expected input shape.
+
+    ``target_gameweeks``, if given, is passed straight through to :func:`build_merged_gw` — see
+    that function's own docstring. Defaults to ``[gameweek]``.
 
     Deliberately does not import ``backtest.run_season`` at module scope — reused via a local
     import inside this function, since ``engine/`` modules otherwise never depend on ``backtest/``
@@ -393,6 +412,7 @@ def snapshot_to_feature_inputs(
         element_summaries.get("histories", pd.DataFrame()),
         gameweek,
         total_managers,
+        target_gameweeks=target_gameweeks,
     )
 
     teams_history_frames = [understat["teams_history"]]

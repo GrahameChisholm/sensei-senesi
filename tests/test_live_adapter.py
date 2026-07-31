@@ -217,6 +217,63 @@ def test_build_merged_gw_double_gameweek_produces_two_target_rows():
     assert len(target[target["player_id"] == 2]) == 2
 
 
+def test_build_merged_gw_target_gameweeks_synthesizes_rows_for_each_requested_gameweek():
+    fixtures = pd.concat(
+        [_fixtures(gameweek=3), _fixtures(gameweek=4), _fixtures(gameweek=5)], ignore_index=True
+    )
+    merged = build_merged_gw(
+        _elements(),
+        _teams(),
+        fixtures,
+        _element_summary_histories(),
+        gameweek=3,
+        target_gameweeks=[3, 4, 5],
+    )
+
+    for gw in (3, 4, 5):
+        assert set(merged[merged["GW"] == gw]["player_id"]) == {1, 2}
+    # The played/target split stays at `gameweek` (3), never at an individual target gameweek --
+    # only the two real history rounds count as played, regardless of how many future gameweeks
+    # were requested target rows for.
+    played = merged[merged["GW"] < 3]
+    assert len(played) == 4
+    assert set(played["player_id"]) == {1, 2}
+    # 4 played rows + 3 target gameweeks x 2 players each, no duplication or mixing between them.
+    assert len(merged) == 4 + 3 * 2
+
+
+def test_build_merged_gw_target_gameweeks_defaults_to_a_single_target_gameweek():
+    with_default = build_merged_gw(
+        _elements(), _teams(), _fixtures(gameweek=3), _element_summary_histories(), gameweek=3
+    )
+    with_explicit = build_merged_gw(
+        _elements(),
+        _teams(),
+        _fixtures(gameweek=3),
+        _element_summary_histories(),
+        gameweek=3,
+        target_gameweeks=[3],
+    )
+
+    pd.testing.assert_frame_equal(with_default, with_explicit)
+
+
+def test_build_merged_gw_target_gameweeks_past_the_fixture_list_synthesizes_no_rows():
+    # A requested horizon gameweek with no fixtures at all (e.g. past the end of the season)
+    # simply contributes nothing -- same as the existing per-team blank-gameweek case.
+    merged = build_merged_gw(
+        _elements(),
+        _teams(),
+        _fixtures(gameweek=3),
+        _element_summary_histories(),
+        gameweek=3,
+        target_gameweeks=[3, 999],
+    )
+
+    assert merged[merged["GW"] == 999].empty
+    assert set(merged[merged["GW"] == 3]["player_id"]) == {1, 2}
+
+
 def test_build_player_histories_from_live_snapshot_groups_and_sorts_by_fpl_id():
     histories = build_player_histories_from_live_snapshot(
         _understat_player_histories(), season_start_year=2025
