@@ -1,7 +1,7 @@
 [project]
 name = "fpl-assistant"
 version = "0.0.1"
-description = "FPL decision engine: stats-only prediction engine, backtested, plus a web app presentation layer."
+description = "FPL decision engine: stats-only prediction engine, backtested and validated."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
@@ -26,17 +26,13 @@ dev = [
 notebooks = [
     "jupyterlab>=4.2",
 ]
-web = [
-    "fastapi>=0.115",
-    "uvicorn>=0.30",
-]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["engine", "features", "market_overlay", "backtest", "api", "scripts"]
+packages = ["engine", "features", "market_overlay", "backtest", "simulator"]
 
 [tool.ruff]
 line-length = 100
@@ -44,12 +40,6 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-
-[tool.ruff.lint.per-file-ignores]
-# FastAPI's dependency-injection pattern requires `Depends(...)` as an argument default -- this
-# is the framework's documented, idiomatic usage, not the mutable-default-argument bug B008 warns
-# about elsewhere.
-"api/main.py" = ["B008"]
 
 [tool.black]
 line-length = 100

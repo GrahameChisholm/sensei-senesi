@@ -35,10 +35,6 @@ backtest/reports/
 notebooks/.ipynb_checkpoints/
 .ipynb_checkpoints/
 
-# Web (Phase 5)
-web/node_modules/
-web/dist/
-
 # OS / editor
 .DS_Store
 .idea/
