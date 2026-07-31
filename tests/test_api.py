@@ -27,6 +27,16 @@ def test_health():
     assert response.json() == {"status": "ok"}
 
 
+def test_cors_allows_the_vite_dev_origin(client):
+    # Regression test for a real bug: with no CORSMiddleware, a browser tab serving the web app
+    # from Vite (http://localhost:5173) silently fails every fetch to this API (different origin,
+    # port 8000) with "Failed to fetch" -- discovered via a live browser smoke test, not a unit
+    # test, since TestClient itself doesn't enforce CORS.
+    response = client.get("/data-status", headers={"Origin": "http://localhost:5173"})
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
 def test_get_team_returns_full_squad_and_sorted_chips(client):
     response = client.get("/team")
     assert response.status_code == 200
@@ -113,3 +123,75 @@ def test_get_wildcard_returns_a_verdict(client):
     assert body["recommendation"] in {"play_now", "hold"}
     assert body["squad_uplift"] >= 0.0
     assert body["upgradeable_slots"] >= 0
+
+
+def test_get_players_returns_every_player_ranked_by_expected_points(client):
+    response = client.get("/players")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 40  # demo_data's squad (15) + pool (25)
+    expected_points = [p["expected_points"] for p in body]
+    assert expected_points == sorted(expected_points, reverse=True)
+
+
+def test_get_players_filters_by_search(client):
+    response = client.get("/players", params={"search": "Player 1"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body  # demo_data names every player "Player {id}"
+    assert all("player 1" in p["name"].lower() for p in body)
+
+
+def test_get_players_filters_by_position(client):
+    response = client.get("/players", params={"position": "GK"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body
+    assert all(p["position"] == "GK" for p in body)
+
+
+def test_get_players_filters_by_max_price(client):
+    response = client.get("/players", params={"max_price": 45})
+    assert response.status_code == 200
+    body = response.json()
+    assert all(p["price"] is not None and p["price"] <= 45 for p in body)
+
+
+def test_get_player_returns_full_breakdown(client):
+    response = client.get("/players/1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["player_id"] == 1
+    assert "breakdown" in body
+    assert "appearance" in body["breakdown"]
+
+
+def test_get_player_404s_for_unknown_player(client):
+    response = client.get("/players/999999")
+    assert response.status_code == 404
+
+
+def test_get_data_status_reports_demo_data(client):
+    response = client.get("/data-status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generated_at"] is None
+    assert body["is_demo_data"] is True
+
+
+def test_get_data_status_reports_real_generated_at(monkeypatch):
+    from datetime import UTC, datetime
+
+    state = load_demo_state()
+    state.generated_at = datetime(2026, 8, 20, 18, 0, tzinfo=UTC)
+    app.dependency_overrides[get_state] = lambda: state
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.get("/data-status")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generated_at"] == "2026-08-20T18:00:00+00:00"
+    assert body["is_demo_data"] is False

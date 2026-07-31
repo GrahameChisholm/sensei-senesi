@@ -7,18 +7,30 @@ caller-input problems, not server faults.
 
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+import os
 
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import Engine
+
+from api.model_performance import ModelPerformanceData, get_default_model_performance
 from api.schemas import (
     CaptaincyRecommendationOut,
     ChipEvaluationOut,
+    DataStatusOut,
     FixtureDifficultyOut,
+    ModelPerformanceOut,
     MyTeamStateOut,
+    PlayerDetailOut,
+    PlayerSummaryOut,
+    SettingsIn,
+    SettingsOut,
     SquadPlayerOut,
     TransferPlanOut,
     WildcardEvaluationOut,
 )
+from api.settings import AppSettingsData, get_db_engine, get_settings, save_settings
 from api.state import AppState, get_state
 from features.captaincy import rank_captaincy_pool
 from features.chips import (
@@ -28,9 +40,22 @@ from features.chips import (
     evaluate_wildcard,
 )
 from features.fixtures import project_fixture_difficulties
+from features.players import get_player_detail, search_players
 from features.transfers import find_transfer_candidates
 
 app = FastAPI(title="FPL Assistant API", version="0.1.0")
+
+# The web app (web/) is served from Vite on a different origin (port 5173) than this API (port
+# 8000), so without CORS the browser blocks every request outright -- this is a single-user local
+# tool with no cookie-based auth, so a fixed allowlist of local dev origins (overridable via env
+# for e.g. a LAN-hosted setup) is sufficient; there's no session to leak cross-site.
+_DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("FPL_API_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS).split(","),
+    allow_methods=["GET", "PUT"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(ValueError)
@@ -41,6 +66,18 @@ def _value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/data-status", response_model=DataStatusOut)
+def get_data_status(state: AppState = Depends(get_state)) -> DataStatusOut:
+    """The "data as of" freshness indicator (A6/BUILD_PLAN Phase 6) -- `generated_at` is `None`
+    for `api.demo_data`'s synthetic state (there is no real "as of" time for numbers that were
+    never actually computed from live data), real for anything built via
+    `scripts.weekly_refresh.build_app_state_from_predictions`."""
+    return DataStatusOut(
+        generated_at=state.generated_at.isoformat() if state.generated_at else None,
+        is_demo_data=state.generated_at is None,
+    )
 
 
 @app.get("/team", response_model=MyTeamStateOut)
@@ -134,3 +171,66 @@ def get_wildcard(state: AppState = Depends(get_state)) -> WildcardEvaluationOut:
     current, pool = _split_owned(state)
     result = evaluate_wildcard(state.my_team, current, pool, state.buy_prices)
     return WildcardEvaluationOut.model_validate(result)
+
+
+@app.get("/settings", response_model=SettingsOut)
+def get_app_settings(db_engine: Engine = Depends(get_db_engine)) -> SettingsOut:
+    """FPL team ID, mini-league IDs, and planning-horizon default (BUILD_PLAN 5.2's Settings
+    screen) — persisted independently of `AppState`, so they survive a weekly refresh/restart."""
+    return SettingsOut.model_validate(get_settings(db_engine))
+
+
+@app.put("/settings", response_model=SettingsOut)
+def put_app_settings(
+    payload: SettingsIn, db_engine: Engine = Depends(get_db_engine)
+) -> SettingsOut:
+    data = AppSettingsData(
+        fpl_team_id=payload.fpl_team_id,
+        mini_league_ids=tuple(payload.mini_league_ids),
+        planning_horizon_gameweeks=payload.planning_horizon_gameweeks,
+    )
+    save_settings(db_engine, data)
+    return SettingsOut.model_validate(data)
+
+
+@app.get("/players", response_model=list[PlayerSummaryOut])
+def get_players(
+    search: str | None = None,
+    position: str | None = None,
+    max_price: int | None = None,
+    gameweek: int | None = None,
+    state: AppState = Depends(get_state),
+) -> list[PlayerSummaryOut]:
+    results = search_players(
+        state.projections,
+        state.player_names,
+        state.buy_prices,
+        search=search,
+        position=position,
+        max_price=max_price,
+        gameweek=gameweek,
+    )
+    return [PlayerSummaryOut.model_validate(r) for r in results]
+
+
+@app.get("/players/{player_id}", response_model=PlayerDetailOut)
+def get_player(
+    player_id: int, gameweek: int | None = None, state: AppState = Depends(get_state)
+) -> PlayerDetailOut:
+    try:
+        detail = get_player_detail(
+            player_id, state.projections, state.player_names, state.buy_prices, gameweek=gameweek
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PlayerDetailOut.model_validate(detail)
+
+
+@app.get("/model-performance", response_model=ModelPerformanceOut)
+def get_model_performance(
+    report: ModelPerformanceData = Depends(get_default_model_performance),
+) -> ModelPerformanceOut:
+    """The stored season-backtest headline report (BUILD_PLAN 5.2's Model Performance screen) --
+    `headline` is `null` if no backtest has ever been run and stored, which is itself a real,
+    honest state to show rather than an error."""
+    return ModelPerformanceOut.model_validate(report)

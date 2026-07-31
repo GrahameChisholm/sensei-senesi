@@ -180,4 +180,5 @@ def load_demo_state() -> AppState:
         league_avg_xg_per_90=league_average_rate(team_xg_overall),
         league_avg_xga_per_90=league_average_rate(team_xga_overall),
         horizon_gameweeks=list(HORIZON_GAMEWEEKS),
+        player_names={player_id: f"Player {player_id}" for player_id in projections},
     )

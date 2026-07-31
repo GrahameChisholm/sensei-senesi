@@ -117,3 +117,73 @@ class MyTeamStateOut(BaseModel):
     free_transfers: int
     chips_remaining: list[str]
     total_sell_value: int
+
+
+class SettingsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    fpl_team_id: int | None
+    mini_league_ids: list[int]
+    planning_horizon_gameweeks: int
+
+
+class SettingsIn(BaseModel):
+    fpl_team_id: int | None = None
+    mini_league_ids: list[int] = []
+    planning_horizon_gameweeks: int = 5
+
+
+class DataStatusOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    generated_at: str | None
+    is_demo_data: bool
+
+
+class ModelPerformanceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    headline: dict | None
+    has_live_accuracy: bool
+
+
+class ComponentBreakdownOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    appearance: float
+    goals: float
+    assists: float
+    clean_sheet: float
+    goals_conceded: float
+    defensive_contribution: float
+    saves: float
+    bonus: float
+    cards: float
+    penalty_misses: float
+    own_goals: float
+
+
+class PlayerSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    player_id: int
+    name: str
+    position: str
+    price: int | None
+    gameweek: int
+    expected_points: float
+
+
+class PlayerDetailOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    player_id: int
+    name: str
+    position: str
+    price: int | None
+    gameweek: int
+    expected_points: float
+    breakdown: ComponentBreakdownOut
+    floor: float | None
+    ceiling: float | None
+    prob_big_haul: float | None
