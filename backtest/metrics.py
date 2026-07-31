@@ -10,6 +10,7 @@ a bad pick and a good pick undone by an in-game injury don't collapse into one n
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -526,6 +527,38 @@ class MinutesDiagnosticsReport:
     predicted_points_mass_per_scored_row: float
     auc_played_at_all: float
     n_scored_rows: int
+    # B2: which components the zero-minute mass is actually made of. The aggregate number says
+    # how much leaks; only this says *where from*, and therefore which component to gate. The
+    # minutes model itself is well calibrated (ENGINE_IMPROVEMENTS_3.md C.1), so a mass above
+    # target is by elimination a downstream component not fully gated by availability -- but
+    # which one has only ever been established by an ad hoc script, never by the report.
+    zero_minute_mass_by_component: pd.DataFrame | None = None
+    # B2: the mass a *perfectly calibrated* model would still carry at this level of
+    # discrimination. A model that predicts 30% play probability for a group of whom 30% really do
+    # play is correct, and still assigns points to the 70% who didn't — so the raw mass is not a
+    # defect measure, and driving it to zero would require an under-confident model, not a better
+    # one. Only `zero_minute_mass_excess` (observed minus floor) is attributable to
+    # miscalibration; the floor itself falls only by improving discrimination.
+    calibrated_floor_mass_per_scored_row: float = float("nan")
+
+    @property
+    def zero_minute_mass_excess(self) -> float:
+        return self.predicted_points_mass_per_scored_row - self.calibrated_floor_mass_per_scored_row
+
+
+COMPONENT_POINT_COLUMNS = (
+    "appearance",
+    "goals",
+    "assists",
+    "clean_sheet",
+    "goals_conceded",
+    "defensive_contribution",
+    "saves",
+    "bonus",
+    "cards",
+    "penalty_misses",
+    "own_goals",
+)
 
 
 def minutes_model_diagnostics(
@@ -535,6 +568,7 @@ def minutes_model_diagnostics(
     p_zero_col: str = "p_zero",
     expected_minutes_col: str = "expected_minutes",
     predicted_points_col: str = PREDICTED_COL,
+    component_columns: Sequence[str] = COMPONENT_POINT_COLUMNS,
 ) -> MinutesDiagnosticsReport:
     merged = predictions.merge(
         actuals[[PLAYER_ID_COL, GAMEWEEK_COL, minutes_col]], on=[PLAYER_ID_COL, GAMEWEEK_COL]
@@ -560,4 +594,70 @@ def minutes_model_diagnostics(
         predicted_points_mass_per_scored_row=mass_on_zero_rows / n,
         auc_played_at_all=auc,
         n_scored_rows=n,
+        zero_minute_mass_by_component=_zero_minute_mass_by_component(
+            zero_rows, component_columns, n
+        ),
+        calibrated_floor_mass_per_scored_row=_calibrated_floor_mass(
+            merged, minutes_col, p_zero_col, predicted_points_col
+        ),
     )
+
+
+def _calibrated_floor_mass(
+    merged: pd.DataFrame,
+    minutes_col: str,
+    p_zero_col: str,
+    predicted_points_col: str,
+    n_bins: int = 10,
+) -> float:
+    """The zero-minute predicted-points mass a perfectly calibrated model would still carry.
+
+    Within each play-probability bin, rescale the predictions by the ratio of the bin's *realised*
+    play rate to its *predicted* one — i.e. ask what the mass would have been had the model been
+    exactly right about how often this kind of player appears, holding its ability to tell the
+    bins apart fixed. What remains is irreducible: the price of correctly expressing uncertainty.
+    """
+    played = merged[minutes_col] > 0
+    p_played = 1.0 - merged[p_zero_col]
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bins = np.clip(np.digitize(p_played, edges[1:-1]), 0, n_bins - 1)
+
+    floor = 0.0
+    for b in range(n_bins):
+        in_bin = bins == b
+        if not in_bin.any():
+            continue
+        predicted = float(p_played[in_bin].mean())
+        if predicted <= 0:
+            continue
+        scale = float(played[in_bin].mean()) / predicted
+        floor += float(merged.loc[in_bin & ~played, predicted_points_col].sum()) * scale
+    return floor / len(merged)
+
+
+def _zero_minute_mass_by_component(
+    zero_rows: pd.DataFrame, component_columns: Sequence[str], n_scored_rows: int
+) -> pd.DataFrame | None:
+    """Split the zero-minute predicted-points mass across the components that produced it.
+
+    Reported per scored row (the sample-size-invariant unit the aggregate figure already uses) and
+    as a share of the mass, largest first, so the component to gate is the top line rather than
+    something to be inferred. Returns ``None`` when the predictions frame carries no component
+    columns at all — several callers (baselines, the simulation frame) legitimately don't.
+    """
+    present = [column for column in component_columns if column in zero_rows.columns]
+    if not present or zero_rows.empty:
+        return None
+    totals = zero_rows[present].sum()
+    total_mass = float(totals.sum())
+    frame = pd.DataFrame(
+        {
+            "component": totals.index,
+            "mass": totals.to_numpy(dtype=float),
+            "per_scored_row": totals.to_numpy(dtype=float) / n_scored_rows,
+            "share_of_zero_minute_mass": (
+                totals.to_numpy(dtype=float) / total_mass if total_mass else np.nan
+            ),
+        }
+    )
+    return frame.sort_values("mass", ascending=False).reset_index(drop=True)

@@ -7,6 +7,8 @@ feature-engineering and fit/predict function is tested against small synthetic d
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import numpy as np
 import pandas as pd
@@ -22,6 +24,7 @@ from backtest.run_season import (
     _team_prior_match_count,
     _team_rate_asof,
     _team_rate_asof_shrunk,
+    _team_venue_multipliers,
     build_penalty_attempts_frame,
     build_stand_in_squad_starting_xi,
     collapse_double_gameweeks,
@@ -41,6 +44,7 @@ from backtest.run_season import (
     simulate_gameweek_pool,
 )
 from engine.data.crosswalk import CrosswalkEntry
+from engine.models.minutes import encode_status
 
 
 def test_season_label_formats_start_year():
@@ -357,6 +361,63 @@ def test_league_venue_multipliers_neutral_below_the_minimum_match_count():
 def test_league_venue_multipliers_neutral_when_no_team_histories():
     xg_mult, xga_mult = _league_venue_multipliers({}, pd.Timestamp("2025-08-15", tz="UTC"))
     assert (xg_mult, xga_mult) == (1.0, 1.0)
+
+
+def _venue_history(n_home: int, home_xg: float, away_xg: float) -> pd.DataFrame:
+    rows = []
+    for _match in range(n_home):
+        rows.append(
+            {
+                "date": pd.Timestamp("2025-08-01", tz="UTC"),
+                "xG": home_xg,
+                "xGA": 1.0,
+                "is_home": True,
+            }
+        )
+        rows.append(
+            {
+                "date": pd.Timestamp("2025-08-01", tz="UTC"),
+                "xG": away_xg,
+                "xGA": 1.0,
+                "is_home": False,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def test_team_venue_multipliers_pulls_a_thin_sample_toward_the_league_multiplier():
+    # B1: a team with only 2 home matches showing an extreme home advantage should end up much
+    # closer to the league-wide multiplier than to its own noisy estimate.
+    history = _venue_history(n_home=2, home_xg=3.0, away_xg=1.0)  # own raw xg_mult = 3.0/2.0 = 1.5
+    before = pd.Timestamp("2025-09-01", tz="UTC")
+
+    xg_mult, _ = _team_venue_multipliers(history, before, (1.1, 0.9), shrinkage_k=10.0)
+
+    # n=2 against k=10 -> (2*1.5 + 10*1.1) / 12 = 1.1667, i.e. a sixth of the way toward its own.
+    assert xg_mult == pytest.approx((2 * 1.5 + 10 * 1.1) / 12)
+    assert abs(xg_mult - 1.1) < abs(xg_mult - 1.5)
+
+
+def test_team_venue_multipliers_trusts_a_deep_sample():
+    history = _venue_history(n_home=40, home_xg=3.0, away_xg=1.0)
+    before = pd.Timestamp("2025-09-01", tz="UTC")
+
+    xg_mult, _ = _team_venue_multipliers(history, before, (1.1, 0.9), shrinkage_k=10.0)
+
+    assert xg_mult == pytest.approx((40 * 1.5 + 10 * 1.1) / 50)
+    assert abs(xg_mult - 1.5) < abs(xg_mult - 1.1)
+
+
+def test_team_venue_multipliers_falls_back_to_the_league_pair_without_both_venues():
+    before = pd.Timestamp("2025-09-01", tz="UTC")
+    league = (1.1, 0.9)
+
+    assert _team_venue_multipliers(pd.DataFrame(), before, league) == league
+    home_only = pd.DataFrame(
+        [{"date": pd.Timestamp("2025-08-01", tz="UTC"), "xG": 2.0, "xGA": 1.0, "is_home": True}]
+    )
+    # Every prior match at home -- no away baseline to form a ratio against.
+    assert _team_venue_multipliers(home_only, before, league) == league
 
 
 def test_fit_league_avg_rate_by_position_computes_per_90_rate():
@@ -770,6 +831,58 @@ def test_compute_coverage_report_surfaces_unmatched_significant_players():
     assert "Unmatched significant players" in report.summary()
 
 
+def test_drop_reasons_partition_the_dropped_rows_and_name_the_cold_start():
+    # B4: the dropna removes ~46% of raw rows in the real backtest, and the total alone can't
+    # distinguish "harmless structural cold start" from "quietly filtered toward established
+    # players". Reasons must partition the dropped rows exactly (no row counted twice, none
+    # unaccounted for) or the decomposition can't be reasoned about.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+
+    reasons = pd.DataFrame(engineered.attrs["drop_reasons"])
+    n_dropped = engineered.attrs["n_rows_dropped_for_missing_features"]
+
+    assert int(reasons["n_rows"].sum()) == n_dropped
+    # Everyone's gameweek 1 is a first appearance, so that reason must be non-empty and must
+    # account for those rows rather than being mislabelled as an unmatched crosswalk (whose
+    # Understat columns are equally NaN on a first appearance -- hence the precedence).
+    first_appearance = reasons[reasons["reason"] == "first_appearance"].iloc[0]
+    n_players = merged_gw["element"].nunique()
+    assert int(first_appearance["n_rows"]) == n_players
+    assert 0.0 < float(first_appearance["points_share"]) < 1.0
+
+
+def test_drop_reasons_separates_an_unmatched_player_from_the_cold_start():
+    # A player with no Understat history is dropped for every gameweek, not just their first --
+    # the later rows are what "unmatched_crosswalk" must isolate.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    unmatched_id = 2
+    player_histories = {k: v for k, v in player_histories.items() if k != unmatched_id}
+
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    reasons = pd.DataFrame(engineered.attrs["drop_reasons"])
+
+    assert int(reasons["n_rows"].sum()) == engineered.attrs["n_rows_dropped_for_missing_features"]
+    unmatched = reasons[reasons["reason"] == "unmatched_crosswalk"].iloc[0]
+    # Every gameweek after the player's first, all of which would otherwise have survived.
+    n_gws = merged_gw[merged_gw["element"] == unmatched_id]["GW"].nunique()
+    assert int(unmatched["n_rows"]) == n_gws - 1
+    assert unmatched_id not in set(engineered["player_id"])
+
+
+def test_coverage_report_summary_includes_the_drop_reason_breakdown():
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+
+    report = compute_coverage_report(merged_gw, [], engineered)
+
+    assert report.drop_reasons is not None
+    summary = report.summary()
+    assert "Why rows were dropped" in summary
+    assert "first_appearance" in summary
+    assert "points_share" in summary
+
+
 def test_engineer_features_includes_goalkeepers_with_zeroed_npxg_xa():
     # ENGINE_IMPROVEMENTS_3.md D.1: goalkeepers are no longer excluded entirely; their npxG/xA
     # default to 0.0 (never meaningfully register in Understat, and the crosswalk doesn't try to
@@ -790,6 +903,58 @@ def test_engineer_features_includes_goalkeepers_with_zeroed_npxg_xa():
     assert (gk["xa_per_90"] == 0.0).all()
     assert gk["own_save_rate_per_90"].notna().all()
     assert (gk["own_save_rate_per_90"] > 0).any()  # picked up the real saves history
+
+
+def test_engineer_features_live_availability_overrides_only_the_target_gameweek():
+    # A1: chance_of_playing_next_round/status are real, live-only fields -- overriding them for
+    # the current gameweek only (never a historical row, which must stay exactly as point-in-time
+    # as the backtest's own default) is the whole point of the live_availability parameter.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    live_availability = pd.DataFrame(
+        [{"player_id": 1, "chance_of_playing_next_round": 25.0, "status": "d"}]
+    )
+
+    engineered = engineer_features(
+        merged_gw, teams, team_histories, player_histories, live_availability=live_availability
+    )
+
+    target_gameweek = engineered["gameweek"].max()
+    player_1 = engineered[engineered["player_id"] == 1].set_index("gameweek")
+
+    assert player_1.loc[target_gameweek, "chance_of_playing_next_round"] == pytest.approx(25.0)
+    assert player_1.loc[target_gameweek, "status_score"] == encode_status("d")
+    earlier_gameweeks = player_1.index[player_1.index != target_gameweek]
+    assert (player_1.loc[earlier_gameweeks, "chance_of_playing_next_round"] == 100.0).all()
+    assert (player_1.loc[earlier_gameweeks, "status_score"] == encode_status("a")).all()
+
+
+def test_engineer_features_live_availability_leaves_unlisted_players_at_the_default():
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    live_availability = pd.DataFrame(
+        [{"player_id": 1, "chance_of_playing_next_round": 0.0, "status": "i"}]
+    )
+
+    engineered = engineer_features(
+        merged_gw, teams, team_histories, player_histories, live_availability=live_availability
+    )
+
+    target_gameweek = engineered["gameweek"].max()
+    others = engineered[
+        (engineered["gameweek"] == target_gameweek) & (engineered["player_id"] != 1)
+    ]
+    assert (others["chance_of_playing_next_round"] == 100.0).all()
+    assert (others["status_score"] == encode_status("a")).all()
+
+
+def test_engineer_features_without_live_availability_is_unchanged():
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+
+    with_none = engineer_features(merged_gw, teams, team_histories, player_histories)
+    explicit_none = engineer_features(
+        merged_gw, teams, team_histories, player_histories, live_availability=None
+    )
+
+    pd.testing.assert_frame_equal(with_none, explicit_none)
 
 
 def test_fit_fn_and_predict_fn_wire_together_via_walk_forward():
@@ -837,6 +1002,100 @@ def test_score_season_produces_a_summary_without_crashing():
     assert "goals" in report.mean_calibrations
     assert "assists" in report.mean_calibrations
     assert "bonus" in report.mean_calibrations
+    # B3: the played-only figures the gate actually reads must also be present, and separately
+    # from the all-rows ones -- ground_truth here carries "minutes".
+    assert "goals" in report.mean_calibrations_played
+    assert "played rows only" in summary
+
+
+def test_season_report_headline_summary_is_json_serializable_and_complete():
+    # A4: the Model Performance screen's actual data source -- must round-trip through json.dumps
+    # cleanly (no DataFrames/numpy scalars leaking through) and carry every field the screen needs.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    gameweeks = sorted(engineered["gameweek"].unique())
+    predict_fn = make_predict_fn(engineered)
+    result = run_walk_forward(gameweeks, engineered, fit_fn, predict_fn, min_training_gameweeks=1)
+
+    ground_truth = engineered[
+        [
+            "player_id",
+            "gameweek",
+            "position",
+            "total_points",
+            "minutes",
+            "clean_sheets",
+            "defensive_contribution",
+            "goals_scored",
+            "assists",
+            "bonus",
+            "starts",
+        ]
+    ]
+    report = score_season(result.predictions, ground_truth)
+
+    headline = report.headline_summary()
+    reloaded = json.loads(json.dumps(headline))  # raises on anything non-JSON-serializable
+
+    assert isinstance(reloaded["overall_mae"], float)
+    assert isinstance(reloaded["overall_rmse"], float)
+    assert isinstance(reloaded["pooled_spearman"], float)
+    assert set(reloaded["top_n_mean_actual"]) == {"1", "5", "10", "20"}  # JSON keys are strings
+    assert "goals" in reloaded["mean_calibrations_played"]
+    assert reloaded["mean_calibrations_played"]["goals"].keys() == {
+        "predicted",
+        "actual",
+        "relative_gap",
+    }
+    assert reloaded["captaincy_hit_rate"] is not None
+    assert set(reloaded["gate"]) == {
+        "beats_baselines",
+        "no_severe_bias",
+        "calibration_acceptable",
+        "predictions_logged",
+        "trusted_by_user",
+        "passed",
+    }
+
+
+def test_score_season_played_only_mean_calibration_differs_from_all_rows_and_feeds_the_gate():
+    # B3: on a synthetic pool with real zero-minute rows, the all-rows and played-only goals
+    # calibration must differ -- if they're identical the played-row filter isn't doing anything.
+    # This also confirms the gate's mean_calibration_reports actually receives the played variant.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    gameweeks = sorted(engineered["gameweek"].unique())
+    predict_fn = make_predict_fn(engineered)
+    result = run_walk_forward(gameweeks, engineered, fit_fn, predict_fn, min_training_gameweeks=1)
+
+    ground_truth = engineered[
+        [
+            "player_id",
+            "gameweek",
+            "position",
+            "total_points",
+            "minutes",
+            "clean_sheets",
+            "defensive_contribution",
+            "goals_scored",
+            "assists",
+            "bonus",
+        ]
+    ].copy()
+    # Everyone scores exactly one goal when they play, and (as in the real archive) zero minutes
+    # means zero goals -- the predicted-side gap this creates for the all-rows figure comes purely
+    # from the minutes model assigning some nonzero expected_goals to rows that then score zero,
+    # which is exactly the effect the played-only filter is meant to strip out.
+    ground_truth["goals_scored"] = 1
+    zero_minute = ground_truth.index[::2]
+    ground_truth.loc[zero_minute, "minutes"] = 0
+    ground_truth.loc[zero_minute, "goals_scored"] = 0
+
+    report = score_season(result.predictions, ground_truth)
+
+    assert report.mean_calibrations["goals"].mean_actual < 1.0  # diluted by the zero-minute rows
+    assert report.mean_calibrations_played["goals"].mean_actual == pytest.approx(1.0)
+    assert report.definition_of_done.mean_calibration_reports == report.mean_calibrations_played
 
 
 def test_score_season_computes_saves_mean_calibration_for_goalkeepers():

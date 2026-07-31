@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pandas as pd
 import pytest
 
 from engine.data.crosswalk import (
@@ -22,6 +23,8 @@ from engine.data.crosswalk import (
     build_crosswalk,
     fetch_fpl_id_list,
     fetch_fpl_web_names,
+    fpl_id_by_name_from_elements,
+    fpl_web_name_by_id_from_elements,
     normalize_name,
     season_to_vaastav_label,
     understat_players_from_league_data,
@@ -431,3 +434,25 @@ def test_crosswalk_builder_end_to_end_with_injected_client():
     with CrosswalkBuilder(client=httpx.Client(transport=httpx.MockTransport(handler))) as builder:
         entries = builder.build_for_season(2023, LEAGUE_DATA, strict=False)
     assert len(entries) > 0
+
+
+def _elements_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"id": 4, "first_name": "Kai", "second_name": "Havertz", "web_name": "Havertz"},
+            {"id": 99, "first_name": "Bruno", "second_name": "Fernandes", "web_name": "Bruno"},
+        ]
+    )
+
+
+def test_fpl_id_by_name_from_elements_matches_fetch_fpl_id_list_shape():
+    # A1: the live equivalent of fetch_fpl_id_list must produce the identical
+    # "{first_name} {second_name}" -> id mapping shape build_crosswalk expects, sourced from the
+    # bootstrap elements table instead of vaastav's CSV.
+    mapping = fpl_id_by_name_from_elements(_elements_frame())
+    assert mapping == {"Kai Havertz": 4, "Bruno Fernandes": 99}
+
+
+def test_fpl_web_name_by_id_from_elements_matches_fetch_fpl_web_names_shape():
+    mapping = fpl_web_name_by_id_from_elements(_elements_frame())
+    assert mapping == {"Havertz": 4, "Bruno": 99}

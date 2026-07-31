@@ -115,6 +115,23 @@ class DataFreshness(Base):
     last_attempt_ok: Mapped[bool] = mapped_column(default=True)
 
 
+class AppSettings(Base):
+    """User-configurable app settings (BUILD_PLAN 5.2's Settings screen: "FPL team ID, mini-league
+    ID, planning horizon default") — a singleton row (``id`` is always 1), separate from
+    :class:`~api.state.AppState` since settings persist across restarts and weekly refreshes while
+    ``AppState`` is rebuilt from scratch every refresh. ``mini_league_ids`` is stored as a
+    comma-separated string (SQLite has no native array column) — see ``api.settings`` for the
+    parsed dataclass this table backs.
+    """
+
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    fpl_team_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mini_league_ids: Mapped[str] = mapped_column(String, default="")
+    planning_horizon_gameweeks: Mapped[int] = mapped_column(Integer, default=5)
+
+
 def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
     return create_engine(f"sqlite:///{db_path}")
 

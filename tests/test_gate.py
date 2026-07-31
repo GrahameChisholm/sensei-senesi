@@ -6,7 +6,7 @@ import pandas as pd
 
 from backtest.baselines import PairedBootstrapResult, PermutationTestResult
 from backtest.gate import evaluate_definition_of_done
-from backtest.metrics import BiasReport, CalibrationReport
+from backtest.metrics import BiasReport, CalibrationReport, MeanCalibrationReport
 
 
 def _passing_baseline_results() -> dict:
@@ -168,6 +168,92 @@ def test_gate_uses_per_component_calibration_threshold_when_given():
         calibration_error_thresholds={"clean_sheet": 0.1},
     )
     assert per_component_report.calibration_acceptable
+
+
+def test_gate_omits_mean_calibration_check_when_not_supplied():
+    # B3: a caller that doesn't compute the played-only mean-calibration reports (e.g. no minutes
+    # column available) must not have the gate retroactively fail on their absence.
+    report = evaluate_definition_of_done(
+        baseline_results=_passing_baseline_results(),
+        bias_reports=_unbiased_reports(),
+        calibration_reports=_well_calibrated_reports(),
+        predictions_logged=True,
+        trusted_by_user=True,
+    )
+
+    assert report.mean_calibration_acceptable
+    assert report.passed
+
+
+def test_gate_fails_on_poor_mean_calibration():
+    # B3: goals over-predicting by 24.9% is the all-rows figure dominated by the minutes model;
+    # a played-only relative_gap this large is a real component defect and must fail the gate.
+    mean_calibration_reports = {
+        "goals": MeanCalibrationReport(
+            mean_predicted=0.10, mean_actual=0.08, absolute_gap=0.02, relative_gap=0.25
+        )
+    }
+
+    report = evaluate_definition_of_done(
+        baseline_results=_passing_baseline_results(),
+        bias_reports=_unbiased_reports(),
+        calibration_reports=_well_calibrated_reports(),
+        predictions_logged=True,
+        trusted_by_user=True,
+        mean_calibration_reports=mean_calibration_reports,
+    )
+
+    assert not report.passed
+    assert not report.mean_calibration_acceptable
+
+
+def test_gate_uses_per_component_mean_calibration_threshold_when_given():
+    mean_calibration_reports = {
+        "bonus": MeanCalibrationReport(
+            mean_predicted=0.11, mean_actual=0.10, absolute_gap=0.01, relative_gap=0.08
+        )
+    }
+
+    default_report = evaluate_definition_of_done(
+        baseline_results=_passing_baseline_results(),
+        bias_reports=_unbiased_reports(),
+        calibration_reports=_well_calibrated_reports(),
+        predictions_logged=True,
+        trusted_by_user=True,
+        mean_calibration_reports=mean_calibration_reports,
+    )
+    assert not default_report.mean_calibration_acceptable  # 0.08 > the 0.05 default
+
+    per_component_report = evaluate_definition_of_done(
+        baseline_results=_passing_baseline_results(),
+        bias_reports=_unbiased_reports(),
+        calibration_reports=_well_calibrated_reports(),
+        predictions_logged=True,
+        trusted_by_user=True,
+        mean_calibration_reports=mean_calibration_reports,
+        mean_calibration_relative_gap_thresholds={"bonus": 0.1},
+    )
+    assert per_component_report.mean_calibration_acceptable
+
+
+def test_gate_ignores_a_nan_relative_gap_rather_than_failing_unjudgeably():
+    # mean_actual == 0 makes relative_gap NaN -- not a defect, just an unjudgeable ratio.
+    mean_calibration_reports = {
+        "goals": MeanCalibrationReport(
+            mean_predicted=0.05, mean_actual=0.0, absolute_gap=0.05, relative_gap=float("nan")
+        )
+    }
+
+    report = evaluate_definition_of_done(
+        baseline_results=_passing_baseline_results(),
+        bias_reports=_unbiased_reports(),
+        calibration_reports=_well_calibrated_reports(),
+        predictions_logged=True,
+        trusted_by_user=True,
+        mean_calibration_reports=mean_calibration_reports,
+    )
+
+    assert report.mean_calibration_acceptable
 
 
 def test_gate_fails_on_empty_inputs_rather_than_vacuously_passing():

@@ -19,7 +19,14 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+# Cross-validation folds for the isotonic calibration layer (see :func:`_make_classifier`). Fit
+# entirely within the training fold, so this stays point-in-time safe.
+CALIBRATION_FOLDS = 5
 
 MINUTES_60_PLUS_THRESHOLD = 60
 
@@ -131,6 +138,40 @@ class MinutesDistribution:
         return self.p_60_plus
 
 
+def _make_base_classifier() -> Pipeline:
+    """Standardize, then fit L2-penalized logistic regression.
+
+    The scaler is not cosmetic. :data:`FEATURE_COLUMNS` mixes 0-1 rates with
+    ``days_since_last_appearance`` (0-60), ``price`` (~40-150) and ``ownership_log`` (0-16) — four
+    orders of magnitude. Unscaled, L-BFGS did not converge within ``max_iter`` on the real
+    2025/26 sample (sklearn emitted a convergence warning on every one of the 35 walk-forward
+    refits), so the shipped coefficients were wherever the optimizer happened to stop. Worse, a
+    single L2 penalty applied across features on such different scales penalizes the small-valued
+    rate features far more heavily than the large-valued crowd features, which is not a modelling
+    choice anyone made — it is an artifact of the units the columns happen to be in.
+    """
+    return Pipeline([("scale", StandardScaler()), ("logit", LogisticRegression(max_iter=1000))])
+
+
+def _make_classifier() -> CalibratedClassifierCV:
+    """The scaled logistic model wrapped in an isotonic calibration layer.
+
+    B2: the shipped model's play probabilities are well calibrated in aggregate (MACE 0.0262) but
+    not conditionally — measured on the real 2025/26 walk-forward, the 0.2-0.4 band predicted
+    0.301 against a realised 0.219, and the 0.4-0.6 band predicted 0.510 against 0.417, while the
+    two top bands were near-exact. That mid-band over-confidence is precisely the population that
+    generates predicted points for players who then do not appear, so it shows up downstream as
+    the zero-minute predicted-points mass rather than as a headline calibration failure.
+
+    Isotonic (not Platt) because the error is not a monotone squeeze of the whole curve — the
+    lowest band is *under*-predicted (0.060 against 0.097) while the middle is over-predicted, an
+    S-shape a single sigmoid cannot express. ``cv`` folds are drawn from the training fold only, so
+    no future information enters; :class:`_SafeBinaryClassifier` drops back to the bare pipeline
+    when a class is too thin to cross-validate.
+    """
+    return CalibratedClassifierCV(_make_base_classifier(), method="isotonic", cv=CALIBRATION_FOLDS)
+
+
 @dataclass
 class _SafeBinaryClassifier:
     """Wraps a :class:`LogisticRegression`, tolerating a single-class training sample — which
@@ -139,9 +180,7 @@ class _SafeBinaryClassifier:
     class with certainty" rather than crashing.
     """
 
-    classifier: LogisticRegression = field(
-        default_factory=lambda: LogisticRegression(max_iter=1000)
-    )
+    classifier: CalibratedClassifierCV = field(default_factory=_make_classifier)
     _only_class: int | None = field(default=None, init=False, repr=False)
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> _SafeBinaryClassifier:
@@ -154,6 +193,12 @@ class _SafeBinaryClassifier:
             self._only_class = int(unique[0])
         else:
             self._only_class = None
+            # Isotonic calibration needs enough of the minority class to cross-validate. A thin or
+            # early-season sample can't support it, so fall back to the uncalibrated pipeline
+            # rather than raising — the same "degrade, don't crash" contract as the single-class
+            # path above.
+            if np.bincount(y.astype(int)).min() < CALIBRATION_FOLDS:
+                self.classifier = _make_base_classifier()
             self.classifier.fit(X, y)
         return self
 

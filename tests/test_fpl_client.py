@@ -100,6 +100,62 @@ def test_iter_element_summaries_fetches_one_request_per_player():
     ]
 
 
+def test_get_entry_hits_correct_path():
+    entry = {"id": 123, "name": "Test Team", "last_deadline_bank": 5, "last_deadline_value": 1000}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/entry/123/"
+        return httpx.Response(200, json=entry)
+
+    client = _client(handler)
+    assert client.get_entry(123) == entry
+
+
+def test_get_entry_picks_hits_correct_path():
+    picks = {
+        "active_chip": None,
+        "entry_history": {"event": 5, "points": 60, "bank": 5, "value": 1000},
+        "picks": [{"element": 1, "position": 1, "multiplier": 2, "is_captain": True}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/entry/123/event/5/picks/"
+        return httpx.Response(200, json=picks)
+
+    client = _client(handler)
+    assert client.get_entry_picks(123, 5) == picks
+
+
+def test_get_entry_transfers_hits_correct_path():
+    transfers = [
+        {
+            "element_in": 2,
+            "element_in_cost": 55,
+            "element_out": 1,
+            "element_out_cost": 50,
+            "event": 3,
+        }
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/entry/123/transfers/"
+        return httpx.Response(200, json=transfers)
+
+    client = _client(handler)
+    assert client.get_entry_transfers(123) == transfers
+
+
+def test_get_entry_history_hits_correct_path():
+    history = {"current": [{"event": 1, "points": 60}], "past": [], "chips": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/entry/123/history/"
+        return httpx.Response(200, json=history)
+
+    client = _client(handler)
+    assert client.get_entry_history(123) == history
+
+
 def test_bootstrap_to_dataframes_shapes():
     tables = bootstrap_to_dataframes(BOOTSTRAP)
     assert set(tables) == {"elements", "teams", "element_types", "events"}

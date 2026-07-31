@@ -19,6 +19,7 @@ both trigger the same fallback path.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -245,3 +246,28 @@ def get_predeadline_snapshot(
         ts for ts in list_snapshot_timestamps(base_dir, season, gameweek) if ts < deadline
     ]
     return candidates[-1] if candidates else None
+
+
+def prune_snapshot_history(
+    base_dir: Path, season: str, gameweek: int, keep_latest_n: int = 5
+) -> list[datetime]:
+    """Delete all but the ``keep_latest_n`` most recent captures for one ``(season, gameweek)`` —
+    the retention side of this module's own "capture daily, not just once per deadline" cadence
+    (A6): daily captures accumulate forever otherwise, and once a gameweek's deadline has passed
+    there is no operational reason to keep every day's capture, only enough of the tail to audit
+    what was known in the days immediately before and after a decision.
+
+    Returns the timestamps actually deleted, oldest first, so a caller can log what was pruned.
+    Never deletes the ``keep_latest_n`` most recent captures regardless of age — this is a count-
+    based retention policy, not a time-based one, so it never empties a gameweek that has only
+    ever been captured a handful of times (e.g. a future gameweek captured once so far). Safe to
+    call after every ``capture_snapshot`` — a ``keep_latest_n`` at or above the current capture
+    count deletes nothing.
+    """
+    timestamps = list_snapshot_timestamps(base_dir, season, gameweek)
+    if keep_latest_n < 0:
+        raise ValueError("keep_latest_n must be non-negative")
+    to_delete = timestamps[:-keep_latest_n] if keep_latest_n else timestamps
+    for captured_at in to_delete:
+        shutil.rmtree(_snapshot_dir(base_dir, season, gameweek, captured_at))
+    return to_delete

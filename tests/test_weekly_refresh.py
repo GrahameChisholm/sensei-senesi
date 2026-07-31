@@ -76,7 +76,7 @@ def test_run_weekly_refresh_happy_path(monkeypatch):
         understat_season_start_year=2026,
         gameweek=1,
         build_pool_projections=lambda snapshot, gameweek: FAKE_PREDICTIONS,
-        build_app_state=lambda predictions: app_state,
+        build_app_state=lambda predictions, generated_at: app_state,
     )
 
     assert result.snapshot is FAKE_SNAPSHOT
@@ -102,7 +102,7 @@ def test_run_weekly_refresh_survives_odds_failure(monkeypatch):
         understat_season_start_year=2026,
         gameweek=1,
         build_pool_projections=lambda snapshot, gameweek: FAKE_PREDICTIONS,
-        build_app_state=lambda predictions: _fake_app_state(),
+        build_app_state=lambda predictions, generated_at: _fake_app_state(),
     )
 
     assert result.odds_pulled is False
@@ -129,7 +129,7 @@ def test_run_weekly_refresh_passes_snapshot_and_gameweek_to_pool_builder(monkeyp
         understat_season_start_year=2026,
         gameweek=7,
         build_pool_projections=build_pool_projections,
-        build_app_state=lambda predictions: _fake_app_state(),
+        build_app_state=lambda predictions, generated_at: _fake_app_state(),
     )
 
     assert received["snapshot"] is FAKE_SNAPSHOT

@@ -84,6 +84,37 @@ class FPLClient:
         """
         return {player_id: self.get_element_summary(player_id) for player_id in player_ids}
 
+    # --- Manager (entry) endpoints (A3 / SEASON_SIMULATOR.md) -----------------------------------
+    # Public data, no auth required, but each needs the caller's own FPL entry/team id.
+
+    def get_entry(self, entry_id: int) -> dict[str, Any]:
+        """Manager profile: name, and — critically — ``last_deadline_bank``/``last_deadline_value``
+        (both tenths of a million, matching :func:`features.team_state.compute_sell_price`'s own
+        convention), the bank/squad-value snapshot as of the most recent deadline."""
+        return self._get(f"/entry/{entry_id}/")
+
+    def get_entry_picks(self, entry_id: int, gameweek: int) -> dict[str, Any]:
+        """This manager's squad for one gameweek: ``picks`` (15 entries, each carrying ``element``,
+        ``position`` — 1-11 is the starting XI in formation-slot order, 12-15 the bench, **not** a
+        real football position — ``multiplier``, ``is_captain``, ``is_vice_captain``),
+        ``active_chip``, and ``entry_history`` (that gameweek's bank/value/points snapshot)."""
+        return self._get(f"/entry/{entry_id}/event/{gameweek}/picks/")
+
+    def get_entry_transfers(self, entry_id: int) -> list[dict[str, Any]]:
+        """Every transfer this manager has made this season, each carrying
+        ``element_in``/``element_in_cost``/``element_out``/``element_out_cost`` (tenths of a
+        million) and the ``event`` it happened in. **Does not cover the initial pre-GW1 squad** —
+        FPL tracks that as a separate "team pick" action, not a transfer, so a player who has been
+        in the squad since GW1 and never been transferred has no record here at all (see
+        ``engine.data.team_state_builder``'s own docstring for how that gap is handled)."""
+        return self._get(f"/entry/{entry_id}/transfers/")
+
+    def get_entry_history(self, entry_id: int) -> dict[str, Any]:
+        """This manager's full season history: ``current`` (one row per gameweek — points, rank,
+        bank, value, transfers made and their cost), ``past`` (previous seasons' final totals), and
+        ``chips`` (name + event of every chip already played this season)."""
+        return self._get(f"/entry/{entry_id}/history/")
+
 
 def _drop_nested_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Drop any column holding raw dicts/lists (e.g. events' ``overrides``/``chip_plays``,

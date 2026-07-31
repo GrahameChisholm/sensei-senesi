@@ -421,6 +421,117 @@ def test_minutes_model_diagnostics_scores_zero_minute_mass_and_auc():
     assert report.auc_played_at_all == pytest.approx(1.0)  # perfectly separates played vs not
 
 
+def test_minutes_diagnostics_splits_zero_minute_mass_across_components():
+    # B2: the aggregate mass says how much leaks; only the split says which component to gate.
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2],
+            "gameweek": [1, 1],
+            "expected_points": [1.0, 3.0],
+            "p_zero": [0.9, 0.1],
+            "expected_minutes": [5.0, 85.0],
+            "appearance": [0.6, 1.8],
+            "goals": [0.3, 1.0],
+            "cards": [-0.1, -0.2],
+        }
+    )
+    actuals = pd.DataFrame({"player_id": [1, 2], "gameweek": [1, 1], "minutes": [0, 90]})
+
+    report = minutes_model_diagnostics(predictions, actuals)
+    split = report.zero_minute_mass_by_component
+
+    # Only player 1 played zero minutes, so the split is exactly that row's components.
+    assert list(split["component"]) == ["appearance", "goals", "cards"]  # sorted by mass, desc
+    assert split.set_index("component").loc["appearance", "mass"] == pytest.approx(0.6)
+    assert split.set_index("component").loc["cards", "mass"] == pytest.approx(-0.1)
+    assert split["mass"].sum() == pytest.approx(0.6 + 0.3 - 0.1)
+
+
+def test_minutes_diagnostics_component_split_is_none_without_component_columns():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2],
+            "gameweek": [1, 1],
+            "expected_points": [1.0, 3.0],
+            "p_zero": [0.9, 0.1],
+            "expected_minutes": [5.0, 85.0],
+        }
+    )
+    actuals = pd.DataFrame({"player_id": [1, 2], "gameweek": [1, 1], "minutes": [0, 90]})
+
+    assert minutes_model_diagnostics(predictions, actuals).zero_minute_mass_by_component is None
+
+
+def test_calibrated_floor_is_zero_for_a_perfectly_discriminating_model():
+    # B2: a model that is never wrong about who plays carries no mass on zero-minute rows, so its
+    # floor is zero and any observed mass is pure excess.
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 1, 1],
+            "expected_points": [5.0, 0.0, 0.0, 6.0],
+            "p_zero": [0.0, 1.0, 1.0, 0.0],
+            "expected_minutes": [90.0, 0.0, 0.0, 90.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {"player_id": [1, 2, 3, 4], "gameweek": [1, 1, 1, 1], "minutes": [90, 0, 0, 90]}
+    )
+
+    report = minutes_model_diagnostics(predictions, actuals)
+
+    assert report.calibrated_floor_mass_per_scored_row == pytest.approx(0.0)
+    assert report.zero_minute_mass_excess == pytest.approx(0.0)
+
+
+def test_calibrated_floor_absorbs_mass_a_correctly_uncertain_model_cannot_avoid():
+    # Ten identical players each given a 50% chance of playing and 4 expected points; exactly five
+    # play. The model is perfectly calibrated, so all the mass on the five who didn't play is
+    # irreducible -- the floor must equal the observed mass and the excess must be zero.
+    predictions = pd.DataFrame(
+        {
+            "player_id": list(range(1, 11)),
+            "gameweek": [1] * 10,
+            "expected_points": [4.0] * 10,
+            "p_zero": [0.5] * 10,
+            "expected_minutes": [45.0] * 10,
+        }
+    )
+    actuals = pd.DataFrame(
+        {"player_id": list(range(1, 11)), "gameweek": [1] * 10, "minutes": [90] * 5 + [0] * 5}
+    )
+
+    report = minutes_model_diagnostics(predictions, actuals)
+
+    assert report.predicted_points_mass_per_scored_row == pytest.approx(2.0)  # 5 * 4.0 / 10
+    assert report.calibrated_floor_mass_per_scored_row == pytest.approx(2.0)
+    assert report.zero_minute_mass_excess == pytest.approx(0.0)
+
+
+def test_calibrated_floor_is_below_observed_mass_for_an_overconfident_model():
+    # Same setup, but the model claims 80% will play when only 50% do. The floor rescales to the
+    # realised rate, so the excess is the part attributable to that over-confidence.
+    predictions = pd.DataFrame(
+        {
+            "player_id": list(range(1, 11)),
+            "gameweek": [1] * 10,
+            "expected_points": [4.0] * 10,
+            "p_zero": [0.2] * 10,
+            "expected_minutes": [72.0] * 10,
+        }
+    )
+    actuals = pd.DataFrame(
+        {"player_id": list(range(1, 11)), "gameweek": [1] * 10, "minutes": [90] * 5 + [0] * 5}
+    )
+
+    report = minutes_model_diagnostics(predictions, actuals)
+
+    assert report.predicted_points_mass_per_scored_row == pytest.approx(2.0)
+    # Rescaled by realised/predicted = 0.5/0.8.
+    assert report.calibrated_floor_mass_per_scored_row == pytest.approx(2.0 * 0.5 / 0.8)
+    assert report.zero_minute_mass_excess > 0.0
+
+
 def test_floor_ceiling_coverage_fraction_within_bounds():
     floor = pd.Series([0.0, 0.0, 5.0])
     ceiling = pd.Series([5.0, 5.0, 10.0])

@@ -324,7 +324,7 @@ def test_fitted_shrinkage_k_shrinks_goals_and_assists_toward_team_prior(
         1,
         fitted_minutes_model,
         fitted_bonus_model,
-        FittedConstants(shrinkage_k=180.0),
+        FittedConstants(goals_shrinkage_k=180.0, assists_shrinkage_k=180.0),
     ).set_index("player_id")
 
     assert shrunk.loc[4, "goals"] < baseline.loc[4, "goals"]
@@ -332,6 +332,75 @@ def test_fitted_shrinkage_k_shrinks_goals_and_assists_toward_team_prior(
     # A player with no understat_effective_minutes column at all defaults to full shrinkage --
     # still strictly less than the unshrunk baseline for the same outlier rate.
     assert "expected_goals" in shrunk.columns
+
+
+def test_goals_and_assists_shrinkage_k_are_independent(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    # ENGINE_IMPROVEMENTS_4.md: a real walk-forward sweep found goals and assists need very
+    # different shrinkage strengths -- this is the actual defect that split them from one shared
+    # `shrinkage_k` field. Shrinking only assists must move assists without moving goals, and
+    # vice versa.
+    pool = synthetic_pool.copy()
+    pool["understat_effective_minutes"] = 5.0  # thin evidence, so shrinkage has visible effect
+    pool.loc[pool["player_id"] == 4, "npxg_per_90"] = 3.0
+    pool.loc[pool["player_id"] == 4, "xa_per_90"] = 1.5
+
+    baseline = project_gameweek_pool(pool, 1, fitted_minutes_model, fitted_bonus_model).set_index(
+        "player_id"
+    )
+    assists_only = project_gameweek_pool(
+        pool,
+        1,
+        fitted_minutes_model,
+        fitted_bonus_model,
+        FittedConstants(goals_shrinkage_k=0.0, assists_shrinkage_k=180.0),
+    ).set_index("player_id")
+    goals_only = project_gameweek_pool(
+        pool,
+        1,
+        fitted_minutes_model,
+        fitted_bonus_model,
+        FittedConstants(goals_shrinkage_k=180.0, assists_shrinkage_k=0.0),
+    ).set_index("player_id")
+
+    assert assists_only.loc[4, "assists"] < baseline.loc[4, "assists"]
+    assert assists_only.loc[4, "goals"] == pytest.approx(baseline.loc[4, "goals"])
+    assert goals_only.loc[4, "goals"] < baseline.loc[4, "goals"]
+    assert goals_only.loc[4, "assists"] == pytest.approx(baseline.loc[4, "assists"])
+
+
+def test_assist_share_of_team_xg_by_position_is_used_when_shrinking(
+    fitted_minutes_model, fitted_bonus_model
+):
+    # ENGINE_IMPROVEMENTS_4.md: the actual fix behind a real severe FWD over-prediction bias --
+    # a flat per-position assist_share previously shrunk every position toward the same prior
+    # regardless of how much that position really assists relative to its team's xG. A FWD-specific
+    # low share must pull a thin-sample FWD's shrunk rate lower than the flat default does.
+    row = _base_row(4, "FWD")
+    row["xa_per_90"] = 0.5
+    row["understat_effective_minutes"] = 5.0  # thin evidence -- shrinkage dominates
+    pool = pd.DataFrame([row])
+
+    flat_default = project_gameweek_pool(
+        pool,
+        1,
+        fitted_minutes_model,
+        fitted_bonus_model,
+        FittedConstants(assists_shrinkage_k=500.0),
+    ).set_index("player_id")
+    fwd_specific = project_gameweek_pool(
+        pool,
+        1,
+        fitted_minutes_model,
+        fitted_bonus_model,
+        FittedConstants(
+            assists_shrinkage_k=500.0,
+            assist_share_of_team_xg_by_position={"FWD": 0.02, "MID": 0.12, "DEF": 0.12},
+        ),
+    ).set_index("player_id")
+
+    assert fwd_specific.loc[4, "assists"] < flat_default.loc[4, "assists"]
 
 
 def test_penalty_sub_model_activates_via_optional_row_columns(

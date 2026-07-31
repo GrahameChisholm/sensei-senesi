@@ -69,6 +69,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+import pandas as pd
 
 VAASTAV_RAW_BASE = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
 
@@ -255,6 +256,24 @@ def fetch_fpl_id_list(season_start_year: int, client: httpx.Client) -> dict[str,
     response.raise_for_status()
     reader = csv.DictReader(io.StringIO(response.text))
     return {f"{row['first_name']} {row['second_name']}": int(row["id"]) for row in reader}
+
+
+def fpl_id_by_name_from_elements(elements: pd.DataFrame) -> dict[str, int]:
+    """FPL name -> FPL element id, from the live ``bootstrap-static`` ``elements`` table
+    (:func:`engine.data.fpl_client.bootstrap_to_dataframes`) -- the live-ingestion equivalent of
+    :func:`fetch_fpl_id_list`, which sources the identical ``"{first_name} {second_name}"`` -> id
+    shape from vaastav's archived CSV instead. Not interchangeable across seasons with that
+    function's output (element ids are only stable within one season), but produces the exact same
+    mapping shape :func:`build_crosswalk` expects, with no vaastav dependency at all — the live
+    path already has this data from the same bootstrap pull every other live source reads.
+    """
+    return {f"{row.first_name} {row.second_name}": int(row.id) for row in elements.itertuples()}
+
+
+def fpl_web_name_by_id_from_elements(elements: pd.DataFrame) -> dict[str, int]:
+    """Live-ingestion equivalent of :func:`fetch_fpl_web_names` — ``web_name`` -> FPL element id
+    from the live bootstrap ``elements`` table rather than vaastav's ``players_raw.csv``."""
+    return {row.web_name: int(row.id) for row in elements.itertuples()}
 
 
 def fetch_fpl_web_names(season_start_year: int, client: httpx.Client) -> dict[str, int]:

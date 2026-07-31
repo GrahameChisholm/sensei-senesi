@@ -10,6 +10,11 @@ from types import MappingProxyType
 GK, DEF, MID, FWD = "GK", "DEF", "MID", "FWD"
 POSITIONS = (GK, DEF, MID, FWD)
 
+# FPL bootstrap's own `element_type` (1-4) -> this engine's position string. The one place this
+# mapping is defined; every FPL-data-facing module (engine.data.live_adapter,
+# engine.data.team_state_builder) imports it from here rather than re-declaring it.
+ELEMENT_TYPE_TO_POSITION = MappingProxyType({1: GK, 2: DEF, 3: MID, 4: FWD})
+
 # Minutes played -> appearance points. Unchanged for 2026/27.
 APPEARANCE_POINTS = MappingProxyType(
     {

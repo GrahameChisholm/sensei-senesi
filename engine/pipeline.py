@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from engine.aggregate import ComponentBreakdown, aggregate_gameweek
-from engine.models.assists import project_assists
+from engine.models.assists import DEFAULT_ASSIST_SHARE_OF_TEAM_XG, project_assists
 from engine.models.bonus import BonusModel, build_features
 from engine.models.cards import project_cards, project_own_goals
 from engine.models.clean_sheets import DEFAULT_DIXON_COLES_RHO, project_clean_sheet
@@ -49,10 +49,14 @@ class FittedConstants:
     regression layer was meant to fit but never did (ENGINE_IMPROVEMENTS.md Tier 1.2) — Dixon-Coles
     ``rho``, the saves model's conversion rate and away-shot multiplier, defensive contribution's
     Negative Binomial overdispersion (per position), and per-player penalty conversion rates. Also
-    carries ``shrinkage_k`` (ENGINE_IMPROVEMENTS_2.md B.2), the goals/assists thin-sample-rate
-    shrinkage strength — unlike the five Tier 1.2 constants, this has no closed-form per-gameweek
-    estimator, so it's an evidence-based fixed hyperparameter selected once via an end-to-end
-    backtest sweep (``backtest/run_season.py``'s ``SHRINKAGE_K``) rather than refit every gameweek.
+    carries ``goals_shrinkage_k``/``assists_shrinkage_k`` (ENGINE_IMPROVEMENTS_2.md B.2, split per
+    ENGINE_IMPROVEMENTS_4.md), the goals/assists thin-sample-rate shrinkage strengths — unlike the
+    five Tier 1.2 constants, these have no closed-form per-gameweek estimator, so each is an
+    evidence-based fixed hyperparameter selected once via an end-to-end backtest sweep
+    (``backtest/run_season.py``'s ``GOALS_SHRINKAGE_K``/``ASSISTS_SHRINKAGE_K``) rather than refit
+    every gameweek. Kept as two separate fields, not one shared value, because a real sweep found
+    the two components disagree sharply on what it should be (assists' own-rate calibration keeps
+    improving all the way to near-total shrinkage, goals' does not).
 
     Every field defaults to the corresponding component's own existing ``DEFAULT_*`` constant, so
     ``project_gameweek_pool(players, gameweek, minutes_model, bonus_model)`` called with no
@@ -74,8 +78,30 @@ class FittedConstants:
     )
     penalty_conversion_rate_by_player: Mapping[int, float] = field(default_factory=dict)
     league_avg_penalty_conversion_rate: float = DEFAULT_PENALTY_CONVERSION_RATE
-    # 0.0 = shrinkage disabled, matching project_goals'/project_assists' own opt-in default.
-    shrinkage_k: float = 0.0
+    # ENGINE_IMPROVEMENTS_4.md: previously one shared `shrinkage_k` fed both goals and assists,
+    # which forced a single compromise value even though a real walk-forward sweep found the two
+    # components disagree sharply on what that value should be -- assists' played-only mean
+    # calibration goes from -22.6% (k=0, no shrinkage) to +1.9% (k=1000, fully shrunk to the
+    # team-xG-derived prior) while goals' optimum sits at k~20-30. Split so each component can be
+    # swept and set independently. 0.0 = shrinkage disabled, matching project_goals'/
+    # project_assists' own opt-in default.
+    goals_shrinkage_k: float = 0.0
+    assists_shrinkage_k: float = 0.0
+    # ENGINE_IMPROVEMENTS_4.md: per-position empirical replacement for assists.py's flat
+    # DEFAULT_ASSIST_SHARE_OF_TEAM_XG (0.12 for every position) — the actual defect a real sweep
+    # found behind a severe FWD over-prediction bias once assists_shrinkage_k was raised enough to
+    # fix assists' aggregate calibration: shrinking every position toward the SAME flat prior
+    # inflates whichever position's true assist-per-team-xG share is lower than that constant.
+    # Defaults to the component's own flat constant per position, via fields(default_factory=...)
+    # since a dict comprehension needs `engine.models.assists.DEFAULT_ASSIST_SHARE_OF_TEAM_XG` and
+    # `engine.scoring`'s position names, both already imported below.
+    assist_share_of_team_xg_by_position: Mapping[str, float] = field(
+        default_factory=lambda: {
+            DEF: DEFAULT_ASSIST_SHARE_OF_TEAM_XG,
+            MID: DEFAULT_ASSIST_SHARE_OF_TEAM_XG,
+            FWD: DEFAULT_ASSIST_SHARE_OF_TEAM_XG,
+        }
+    )
     # ENGINE_IMPROVEMENTS_3.md A.3: per-position league-average card/own-goal rates and their
     # shrinkage strengths — same opt-in-disabled-by-default shape as `shrinkage_k` above. Red and
     # own-goal shrinkage strengths are typically much larger than yellow's, since both are rare
@@ -176,7 +202,7 @@ def _project_one_player(
     expected_minutes = minutes_distribution.expected_minutes
 
     # ENGINE_IMPROVEMENTS_2.md B.2: thin-sample rate shrinkage, opt-in via
-    # fitted_constants.shrinkage_k
+    # fitted_constants.goals_shrinkage_k / assists_shrinkage_k (ENGINE_IMPROVEMENTS_4.md split)
     # (0.0 by default = disabled, matching each component's own project_*'s pre-B.2 behavior).
     # `understat_effective_minutes` defaults to 0.0 (full shrinkage toward the prior) when the row
     # doesn't carry it — the correct behavior for a player with no prior Understat history at all.
@@ -203,7 +229,7 @@ def _project_one_player(
         ),
         individual_weight=understat_effective_minutes,
         team_xg_per_90=row["team_xg_per_90"],
-        shrinkage_k=fitted_constants.shrinkage_k,
+        shrinkage_k=fitted_constants.goals_shrinkage_k,
     )
     assists = project_assists(
         player_xa_per_90=row["xa_per_90"],
@@ -212,7 +238,10 @@ def _project_one_player(
         expected_minutes=expected_minutes,
         individual_weight=understat_effective_minutes,
         team_xg_per_90=row["team_xg_per_90"],
-        shrinkage_k=fitted_constants.shrinkage_k,
+        shrinkage_k=fitted_constants.assists_shrinkage_k,
+        assist_share_of_team_xg=fitted_constants.assist_share_of_team_xg_by_position.get(
+            position, DEFAULT_ASSIST_SHARE_OF_TEAM_XG
+        ),
     )
     clean_sheet = project_clean_sheet(
         team_xg_per_90=row["team_xg_per_90"],

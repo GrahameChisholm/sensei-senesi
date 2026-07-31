@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from engine.models.assists import (
+    DEFAULT_ASSIST_SHARE_OF_TEAM_XG,
     AssistProjection,
     expected_assist_rate,
+    fit_assist_share_of_team_xg,
     prior_assist_rate_from_team_xg,
     project_assists,
     shrunk_player_xa_per_90,
@@ -129,3 +132,61 @@ def test_project_assists_missing_shrinkage_args_falls_back_to_raw_rate():
         team_xg_per_90=1.0,
     )
     assert projection.assist_rate == pytest.approx(0.9)
+
+
+def test_fit_assist_share_of_team_xg_inverts_the_prior_formula():
+    # 3 rows, each implying an opportunity of team_xg_per_90 * minutes / 90 = 2.0 * 90/90 = 2.0,
+    # total opportunity 6.0; total assists 3 -> share = 3/6 = 0.5.
+    assists = pd.Series([1, 1, 1])
+    team_xg_per_90 = pd.Series([2.0, 2.0, 2.0])
+    minutes = pd.Series([90.0, 90.0, 90.0])
+
+    share = fit_assist_share_of_team_xg(assists, team_xg_per_90, minutes, min_rows=1)
+
+    assert share == pytest.approx(0.5)
+
+
+def test_fit_assist_share_of_team_xg_falls_back_for_thin_sample():
+    assists = pd.Series([1, 1])
+    team_xg_per_90 = pd.Series([2.0, 2.0])
+    minutes = pd.Series([90.0, 90.0])
+
+    share = fit_assist_share_of_team_xg(assists, team_xg_per_90, minutes, min_rows=100)
+
+    assert share == DEFAULT_ASSIST_SHARE_OF_TEAM_XG
+
+
+def test_fit_assist_share_of_team_xg_falls_back_for_zero_opportunity():
+    assists = pd.Series([0, 0])
+    team_xg_per_90 = pd.Series([0.0, 0.0])
+    minutes = pd.Series([90.0, 90.0])
+
+    share = fit_assist_share_of_team_xg(assists, team_xg_per_90, minutes, min_rows=1)
+
+    assert share == DEFAULT_ASSIST_SHARE_OF_TEAM_XG
+
+
+def test_project_assists_uses_a_custom_assist_share_when_shrinking():
+    # A lower assist_share_of_team_xg pulls the shrunk rate toward a lower prior -- this is the
+    # per-position lever ENGINE_IMPROVEMENTS_4.md wires in to fix a real FWD over-prediction bias
+    # a single flat share caused once shrinkage was strong enough to fix aggregate calibration.
+    flat_share = project_assists(
+        player_xa_per_90=0.9,
+        opponent_xga_per_90=1.4,
+        league_avg_xga_per_90=1.4,
+        expected_minutes=90.0,
+        individual_weight=5.0,
+        team_xg_per_90=1.0,
+        shrinkage_k=50.0,
+    )
+    low_share = project_assists(
+        player_xa_per_90=0.9,
+        opponent_xga_per_90=1.4,
+        league_avg_xga_per_90=1.4,
+        expected_minutes=90.0,
+        individual_weight=5.0,
+        team_xg_per_90=1.0,
+        shrinkage_k=50.0,
+        assist_share_of_team_xg=0.02,
+    )
+    assert low_share.assist_rate < flat_share.assist_rate

@@ -156,6 +156,61 @@ def validate_understat_tables(
     return _combine(*outcomes)
 
 
+# Lenient floors for the two A1 live-history sources, matching MIN_FPL_ELEMENTS/
+# MIN_UNDERSTAT_PLAYERS' own "catch collapse, not assert precision" philosophy. Both are naturally
+# much larger than an elements/players table (one history row per player per gameweek so far this
+# season, not one row per player) -- floors are correspondingly higher, but still well below a
+# real season's true row count so a genuinely small early-season pull doesn't trip the alarm.
+MIN_FPL_ELEMENT_SUMMARY_ROWS = 400
+MIN_UNDERSTAT_PLAYER_HISTORY_ROWS = 300
+
+
+def validate_fpl_element_summaries(
+    tables: dict[str, pd.DataFrame],
+    previous_row_counts: dict[str, int] | None = None,
+) -> ValidationOutcome:
+    """Sanity-check the A1 live per-gameweek player-history pull
+    (``engine.data.ingest.capture_current_gameweek``'s ``fpl_element_summaries`` source) before
+    it's allowed into a snapshot."""
+    previous_row_counts = previous_row_counts or {}
+    histories = tables["histories"]
+
+    outcomes = [
+        check_row_count(histories, "histories", MIN_FPL_ELEMENT_SUMMARY_ROWS),
+        check_required_columns(
+            histories, "histories", ["element", "round", "minutes", "total_points"]
+        ),
+        check_null_rate(histories, "histories", ["element", "round"]),
+    ]
+    if "histories" in previous_row_counts:
+        outcomes.append(
+            check_row_count_collapse("histories", len(histories), previous_row_counts["histories"])
+        )
+    return _combine(*outcomes)
+
+
+def validate_understat_player_histories(
+    tables: dict[str, pd.DataFrame],
+    previous_row_counts: dict[str, int] | None = None,
+) -> ValidationOutcome:
+    """Sanity-check the A1 live per-match Understat player-history pull
+    (``engine.data.ingest.capture_current_gameweek``'s ``understat_player_histories`` source)
+    before it's allowed into a snapshot. Deliberately does not require a minimum row count to grow
+    monotonically the way the FPL element-summary check does -- a thin crosswalk match share (a
+    genuinely new signing not yet in the manual overlay) legitimately shrinks this table without
+    the pull itself having failed, so a collapse check would produce false alarms this source
+    doesn't need; the row-count floor and required-columns checks still catch a truly broken pull.
+    """
+    previous_row_counts = previous_row_counts or {}
+    histories = tables["histories"]
+
+    return _combine(
+        check_row_count(histories, "histories", MIN_UNDERSTAT_PLAYER_HISTORY_ROWS),
+        check_required_columns(histories, "histories", ["fpl_id", "date", "xG", "xA"]),
+        check_null_rate(histories, "histories", ["fpl_id", "date"]),
+    )
+
+
 def make_validator(
     validate: Callable[[dict[str, pd.DataFrame], dict[str, int] | None], ValidationOutcome],
     previous_row_counts: dict[str, int] | None,

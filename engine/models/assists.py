@@ -19,6 +19,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import pandas as pd
+
 from engine.rates import shrink_toward_prior
 from engine.scoring import ASSIST_POINTS
 
@@ -129,3 +131,35 @@ def project_assists(
         effective_xa_per_90, opponent_xga_per_90, league_avg_xga_per_90, expected_minutes
     )
     return AssistProjection(assist_rate=rate)
+
+
+def fit_assist_share_of_team_xg(
+    assists: pd.Series,
+    team_xg_per_90: pd.Series,
+    minutes: pd.Series,
+    min_rows: int = 100,
+) -> float:
+    """The empirical version of :data:`DEFAULT_ASSIST_SHARE_OF_TEAM_XG`, fit from real assists
+    against real team-xG-implied opportunity (ENGINE_IMPROVEMENTS_4.md).
+
+    A single flat 0.12 share applied to every position turned out to be the actual defect behind a
+    real measured finding: heavy shrinkage toward that flat prior fixed assists' aggregate
+    calibration but introduced a severe FWD over-prediction bias (real players assist less per
+    unit of team xG than the flat share implies) that a uniform shrinkage-strength sweep alone
+    could not fix — the prior itself, not just how hard to lean on it, needed to vary by position.
+    Callers fit one of these per position group (same aggregation style as
+    ``backtest.run_season._fit_league_avg_rate_by_position``: a plain whole-window total, not an
+    EWMA, since this is the base rate the individual EWMA rate shrinks toward).
+
+    Inverts :func:`prior_assist_rate_from_team_xg`'s ``team_xg_per_90 * assist_share`` form: the
+    share that would make the team-xG-derived prior exactly reproduce this group's total assists,
+    given its total team-xG-implied opportunity (``team_xg_per_90 * minutes / 90``). Falls back to
+    :data:`DEFAULT_ASSIST_SHARE_OF_TEAM_XG` for a too-thin sample or zero opportunity, matching
+    every other Tier 1.2 fit function's thin-sample contract.
+    """
+    if len(assists) < min_rows:
+        return DEFAULT_ASSIST_SHARE_OF_TEAM_XG
+    total_opportunity = float((team_xg_per_90 * minutes / 90.0).sum())
+    if total_opportunity <= 0:
+        return DEFAULT_ASSIST_SHARE_OF_TEAM_XG
+    return float(assists.sum()) / total_opportunity

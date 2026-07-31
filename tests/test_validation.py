@@ -9,7 +9,9 @@ from engine.data.validation import (
     check_row_count_collapse,
     make_validator,
     row_counts,
+    validate_fpl_element_summaries,
     validate_fpl_tables,
+    validate_understat_player_histories,
     validate_understat_tables,
 )
 
@@ -137,6 +139,84 @@ def test_make_validator_binds_previous_row_counts():
     tables = _good_fpl_tables(n_elements=450)  # 55% drop vs. 1000 -> collapse
     outcome = validator(tables)
     assert not outcome.ok
+
+
+def _good_element_summary_histories(n_rows: int = 450) -> dict[str, pd.DataFrame]:
+    return {
+        "histories": pd.DataFrame(
+            {
+                "element": list(range(n_rows)),
+                "round": [1] * n_rows,
+                "minutes": [90] * n_rows,
+                "total_points": [6] * n_rows,
+            }
+        )
+    }
+
+
+def test_validate_fpl_element_summaries_passes_for_healthy_data():
+    assert validate_fpl_element_summaries(_good_element_summary_histories()).ok
+
+
+def test_validate_fpl_element_summaries_fails_on_too_few_rows():
+    outcome = validate_fpl_element_summaries(_good_element_summary_histories(n_rows=10))
+    assert not outcome.ok
+    assert "histories" in outcome.reason
+
+
+def test_validate_fpl_element_summaries_fails_on_missing_columns():
+    tables = _good_element_summary_histories()
+    tables["histories"] = tables["histories"].drop(columns=["round"])
+    outcome = validate_fpl_element_summaries(tables)
+    assert not outcome.ok
+    assert "round" in outcome.reason
+
+
+def test_validate_fpl_element_summaries_detects_row_collapse_vs_previous():
+    tables = _good_element_summary_histories(n_rows=450)
+    previous = row_counts(_good_element_summary_histories(n_rows=2000))
+    outcome = validate_fpl_element_summaries(tables, previous_row_counts=previous)
+    assert not outcome.ok
+
+
+def _good_understat_player_histories(n_rows: int = 400) -> dict[str, pd.DataFrame]:
+    return {
+        "histories": pd.DataFrame(
+            {
+                "fpl_id": list(range(n_rows)),
+                "date": ["2025-08-16"] * n_rows,
+                "xG": [0.3] * n_rows,
+                "xA": [0.1] * n_rows,
+            }
+        )
+    }
+
+
+def test_validate_understat_player_histories_passes_for_healthy_data():
+    assert validate_understat_player_histories(_good_understat_player_histories()).ok
+
+
+def test_validate_understat_player_histories_fails_on_too_few_rows():
+    outcome = validate_understat_player_histories(_good_understat_player_histories(n_rows=10))
+    assert not outcome.ok
+    assert "histories" in outcome.reason
+
+
+def test_validate_understat_player_histories_fails_on_missing_columns():
+    tables = _good_understat_player_histories()
+    tables["histories"] = tables["histories"].drop(columns=["xA"])
+    outcome = validate_understat_player_histories(tables)
+    assert not outcome.ok
+    assert "xA" in outcome.reason
+
+
+def test_validate_understat_player_histories_does_not_flag_a_thin_crosswalk_as_a_collapse():
+    # Deliberately no row-count-collapse check for this source -- a thinner crosswalk match
+    # share (e.g. a new signing not yet in the manual overlay) is not itself a broken pull.
+    tables = _good_understat_player_histories(n_rows=400)
+    previous = row_counts(_good_understat_player_histories(n_rows=2000))
+    outcome = validate_understat_player_histories(tables, previous_row_counts=previous)
+    assert outcome.ok
 
 
 def test_row_counts_helper():

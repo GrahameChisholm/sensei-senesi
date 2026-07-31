@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
+import pytest
 
 from engine.data.snapshots import (
     SnapshotManifest,
@@ -13,6 +14,7 @@ from engine.data.snapshots import (
     list_snapshot_timestamps,
     load_manifest,
     load_snapshot_tables,
+    prune_snapshot_history,
 )
 
 SEASON = "2025-26"
@@ -149,6 +151,55 @@ def test_get_predeadline_snapshot_none_when_all_after_deadline(tmp_path):
         SEASON, GW, sources={"fpl": _ok_source(tables)}, captured_at=T0, base_dir=tmp_path
     )
     assert get_predeadline_snapshot(tmp_path, SEASON, GW, T0 - timedelta(days=1)) is None
+
+
+def _capture_at(tmp_path, captured_at):
+    tables = {"players": pd.DataFrame({"id": [1]})}
+    capture_snapshot(
+        SEASON, GW, sources={"fpl": _ok_source(tables)}, captured_at=captured_at, base_dir=tmp_path
+    )
+
+
+def test_prune_snapshot_history_keeps_only_the_latest_n(tmp_path):
+    timestamps = [T0 + timedelta(days=i) for i in range(5)]
+    for ts in timestamps:
+        _capture_at(tmp_path, ts)
+
+    deleted = prune_snapshot_history(tmp_path, SEASON, GW, keep_latest_n=2)
+
+    assert deleted == timestamps[:3]
+    assert list_snapshot_timestamps(tmp_path, SEASON, GW) == timestamps[3:]
+
+
+def test_prune_snapshot_history_keeps_everything_when_under_the_limit(tmp_path):
+    timestamps = [T0 + timedelta(days=i) for i in range(2)]
+    for ts in timestamps:
+        _capture_at(tmp_path, ts)
+
+    deleted = prune_snapshot_history(tmp_path, SEASON, GW, keep_latest_n=5)
+
+    assert deleted == []
+    assert list_snapshot_timestamps(tmp_path, SEASON, GW) == timestamps
+
+
+def test_prune_snapshot_history_keep_zero_deletes_everything(tmp_path):
+    timestamps = [T0 + timedelta(days=i) for i in range(3)]
+    for ts in timestamps:
+        _capture_at(tmp_path, ts)
+
+    deleted = prune_snapshot_history(tmp_path, SEASON, GW, keep_latest_n=0)
+
+    assert deleted == timestamps
+    assert list_snapshot_timestamps(tmp_path, SEASON, GW) == []
+
+
+def test_prune_snapshot_history_rejects_negative_keep_latest_n(tmp_path):
+    with pytest.raises(ValueError):
+        prune_snapshot_history(tmp_path, SEASON, GW, keep_latest_n=-1)
+
+
+def test_prune_snapshot_history_empty_when_nothing_captured(tmp_path):
+    assert prune_snapshot_history(tmp_path, SEASON, GW, keep_latest_n=5) == []
 
 
 def test_manifest_json_round_trip():
