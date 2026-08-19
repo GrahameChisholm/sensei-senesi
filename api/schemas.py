@@ -59,6 +59,10 @@ class GameweekOut(BaseModel):
     deadline_passed: bool
     generated_at: str
     model_version: str
+    # True only for a Season Replay season (real recorded results exist to score against) --
+    # false for the live season, where the team page is a planning tool rather than a simulation
+    # of FPL's transfer/hit rules (see POST /squad/live-transfer).
+    is_replay: bool
 
 
 class TeamStateOut(BaseModel):

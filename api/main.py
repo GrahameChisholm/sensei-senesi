@@ -44,7 +44,7 @@ from features.squad_draft import (
     set_draft_chip,
 )
 from features.squad_points import projected_points
-from features.squad_rules import RuleViolation, SquadRuleError, optimise_xi
+from features.squad_rules import RuleViolation, SquadRuleError, optimise_xi, transfer
 from features.team_state import SquadPlayer
 
 app = FastAPI(title="FPL Assistant API", version="0.1.0")
@@ -104,6 +104,7 @@ def get_gameweek() -> schemas.GameweekOut:
         deadline_passed=state.deadline_passed,
         generated_at=state.generated_at.isoformat(),
         model_version=state.model_version,
+        is_replay=state.results is not None,
     )
 
 
@@ -293,6 +294,35 @@ def draft_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
         app_state.team_id_by_player,
     )
     set_squad_state(committed, new_draft)
+    return _squad_out()
+
+
+@app.post("/squad/live-transfer", response_model=schemas.SquadOut)
+def live_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
+    """The live (non-replay) team page's only transfer path: swap a player straight in and out of
+    the real committed squad, no draft/preview, no hit cost, no free-transfer accounting. This
+    page is a planning tool for a season that hasn't been played yet, not a simulation of FPL's
+    transfer-limit rules -- that simulation only matters for Season Replay, which still goes
+    through the draft/confirm endpoints above instead. 400s outside the live season, since
+    bypassing hit costs there would silently corrupt a replay's scoring fidelity.
+    """
+    app_state = get_app_state()
+    if app_state.results is not None:
+        raise HTTPException(400, "live transfers aren't available for a Season Replay season")
+    committed, pending = get_squad_state()
+    if committed.team_state is None:
+        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
+    if pending is not None:
+        raise HTTPException(400, "a draft is unexpectedly open -- confirm or discard it first")
+    new_team_state = transfer(
+        committed.team_state,
+        body.out_id,
+        body.in_id,
+        body.in_price,
+        body.in_position,
+        app_state.team_id_by_player,
+    )
+    set_squad_state(replace(committed, team_state=new_team_state), None)
     return _squad_out()
 
 
