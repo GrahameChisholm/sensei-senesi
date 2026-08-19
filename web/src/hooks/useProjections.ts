@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, GameweekOut, PlayerPanelRowOut, SquadPointsOut, TeamOut } from "../api";
+import {
+  api,
+  FixtureTickerRowOut,
+  GameweekOut,
+  PlayerPanelRowOut,
+  SquadPointsOut,
+  TeamOut,
+} from "../api";
 
 /** Returns [gameweek, refresh] -- Season Replay's "Advance" moves the process-wide app state on to
  * the next gameweek's cache server-side, so the header needs an explicit way to refetch rather
@@ -107,6 +114,29 @@ export function usePlayerPanel(filters: {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.position, filters.min_price, filters.max_price, filters.search]);
+
+  return { rows, loading };
+}
+
+export function useFixtureTicker(horizon: number) {
+  const [rows, setRows] = useState<FixtureTickerRowOut[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    let cancelled = false;
+    api
+      .getFixtureTicker(horizon)
+      .then((result) => {
+        if (!cancelled) setRows(result);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [horizon]);
 
   return { rows, loading };
 }

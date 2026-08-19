@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api import schemas
+from api.fixtures_view import DEFAULT_FIXTURE_TICKER_HORIZON, build_fixture_ticker_rows
 from api.panel import build_panel_rows, build_team_fixture_map
 from api.state import (
     DEFAULT_PROJECTION_CACHE_DIR,
@@ -91,6 +92,38 @@ def list_teams() -> list[schemas.TeamOut]:
     return [
         schemas.TeamOut(team_id=team_id, name=data["name"], short_name=data["short_name"])
         for team_id, data in app_state.teams.items()
+    ]
+
+
+@app.get("/fixtures", response_model=list[schemas.FixtureTickerRowOut])
+def list_fixture_ticker(
+    horizon: int = DEFAULT_FIXTURE_TICKER_HORIZON,
+) -> list[schemas.FixtureTickerRowOut]:
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1")
+    app_state = get_app_state()
+    gameweeks = list(range(app_state.gameweek, app_state.gameweek + horizon))
+    rows = build_fixture_ticker_rows(app_state.fixtures, app_state.teams.keys(), gameweeks)
+    return [
+        schemas.FixtureTickerRowOut(
+            team_id=row.team_id,
+            gameweeks=[
+                schemas.FixtureTickerCellOut(
+                    gameweek=cell.gameweek,
+                    fixtures=[
+                        schemas.FixtureTickerCellFixtureOut(
+                            opponent_id=entry.opponent_id,
+                            is_home=entry.is_home,
+                            difficulty=entry.difficulty,
+                        )
+                        for entry in cell.fixtures
+                    ],
+                )
+                for cell in row.gameweeks
+            ],
+            average_difficulty=row.average_difficulty,
+        )
+        for row in rows
     ]
 
 

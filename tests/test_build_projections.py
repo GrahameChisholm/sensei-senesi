@@ -119,12 +119,16 @@ def _fixtures_df() -> pd.DataFrame:
                 "team_h": TEAM_A,
                 "team_a": TEAM_B,
                 "kickoff_time": "2026-08-22T14:00:00Z",
+                "team_h_difficulty": 2,
+                "team_a_difficulty": 4,
             },
             {
                 "event": 2,
                 "team_h": TEAM_B,
                 "team_a": TEAM_A,
                 "kickoff_time": "2026-08-29T14:00:00Z",
+                "team_h_difficulty": 3,
+                "team_a_difficulty": 3,
             },
             {"event": None, "team_h": TEAM_A, "team_a": TEAM_C, "kickoff_time": None},
         ]
@@ -151,6 +155,14 @@ class TestBuildFixtureList:
     def test_unscheduled_fixture_is_skipped(self):
         rows = build_fixture_list(_fixtures_df())
         assert not any(r["team_id"] == TEAM_C for r in rows)
+
+    def test_difficulty_is_carried_through_from_the_correct_side(self):
+        rows = build_fixture_list(_fixtures_df())
+        gw1 = [r for r in rows if r["gameweek"] == 1]
+        home_row = next(r for r in gw1 if r["team_id"] == TEAM_A)
+        away_row = next(r for r in gw1 if r["team_id"] == TEAM_B)
+        assert home_row["difficulty"] == 2
+        assert away_row["difficulty"] == 4
 
 
 def _cold_start_priors():
@@ -279,6 +291,13 @@ class TestAssembleProjectionCache:
         cache = self._cache()
         assert set(cache["players"]) == {"1", "2", "3"}
         assert set(cache["projections"]) == {"1", "2"}
+
+    def test_fixtures_carry_the_difficulty_field(self):
+        cache = self._cache()
+        gw1_home_row = next(
+            row for row in cache["fixtures"] if row["gameweek"] == 1 and row["team_id"] == TEAM_A
+        )
+        assert gw1_home_row["difficulty"] == 2
 
     def test_source_and_low_confidence_flags(self):
         cache = self._cache()
