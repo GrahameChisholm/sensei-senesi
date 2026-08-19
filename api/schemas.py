@@ -136,6 +136,23 @@ class PlayerPanelRowOut(BaseModel):
     fixtures: list[FixtureCellOut]
 
 
+class FixtureTickerCellFixtureOut(BaseModel):
+    opponent_id: int
+    is_home: bool
+    difficulty: int
+
+
+class FixtureTickerCellOut(BaseModel):
+    gameweek: int
+    fixtures: list[FixtureTickerCellFixtureOut]
+
+
+class FixtureTickerRowOut(BaseModel):
+    team_id: int
+    gameweeks: list[FixtureTickerCellOut]
+    average_difficulty: float | None
+
+
 # --- request bodies ------------------------------------------------------------------------
 
 

@@ -90,9 +90,14 @@ DEFAULT_OUTPUT_DIR = Path("data_store/projections")
 def build_fixture_list(fixtures: pd.DataFrame) -> list[dict]:
     """One row per team-perspective fixture (both the home and away sides of every match) --
     exactly the cache's own ``fixtures`` shape (§6.1 of the team-page plan): ``team_id``,
-    ``opponent_id``, ``gameweek``, ``is_home``, ``kickoff_time``. A fixture with no assigned
-    gameweek yet (``event`` is null -- not yet scheduled) is skipped, matching how a real blank
-    gameweek already has no fixture row for the affected teams."""
+    ``opponent_id``, ``gameweek``, ``is_home``, ``kickoff_time``, ``difficulty``. A fixture with no
+    assigned gameweek yet (``event`` is null -- not yet scheduled) is skipped, matching how a real
+    blank gameweek already has no fixture row for the affected teams.
+
+    ``difficulty`` is FPL's own ``team_h_difficulty``/``team_a_difficulty`` (1 easiest to 5
+    hardest, from this team's own perspective for this specific fixture), carried straight through
+    for the fixtures ticker rather than derived. Read defensively via ``getattr`` like ``event``
+    above, since a hand built test frame may not carry these columns."""
     rows: list[dict] = []
     for row in fixtures.itertuples():
         event = getattr(row, "event", None)
@@ -107,6 +112,7 @@ def build_fixture_list(fixtures: pd.DataFrame) -> list[dict]:
                 "gameweek": gameweek,
                 "is_home": True,
                 "kickoff_time": kickoff,
+                "difficulty": getattr(row, "team_h_difficulty", None),
             }
         )
         rows.append(
@@ -116,6 +122,7 @@ def build_fixture_list(fixtures: pd.DataFrame) -> list[dict]:
                 "gameweek": gameweek,
                 "is_home": False,
                 "kickoff_time": kickoff,
+                "difficulty": getattr(row, "team_a_difficulty", None),
             }
         )
     return rows
@@ -276,6 +283,7 @@ def assemble_projection_cache(
             "gameweek": row["gameweek"],
             "is_home": row["is_home"],
             "kickoff_time": _isoformat(row["kickoff_time"]),
+            "difficulty": row["difficulty"],
         }
         for row in fixture_rows
     ]

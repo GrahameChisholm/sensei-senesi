@@ -37,3 +37,23 @@ export function expectedPointsColour(expectedPoints: number | null): string {
 export function lowConfidenceBorder(): string {
   return "2px dashed #9a6b00";
 }
+
+// Fixture difficulty rating (1 easiest to 5 hardest, FPL's own team_h_difficulty/
+// team_a_difficulty scale) -> colour, the same green to red convention Fantasy Football Hub's own
+// fixture ticker uses. A discrete lookup, not a continuous mix, since the rating is already a
+// whole number 1 through 5.
+const DIFFICULTY_COLOURS: Record<number, string> = {
+  1: "#1a7a3c",
+  2: "#7fbf6c",
+  3: "#e5e5e5",
+  4: "#f08a9a",
+  5: "#c0284a",
+};
+
+/** Background colour for one fixture cell. Null means a blank gameweek, shaded the same neutral
+ * grey expectedPointsColour already uses for a blank. */
+export function fixtureDifficultyColour(difficulty: number | null): string {
+  if (difficulty === null) return "#e5e5e5";
+  const bucket = Math.min(5, Math.max(1, Math.round(difficulty)));
+  return DIFFICULTY_COLOURS[bucket];
+}

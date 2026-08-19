@@ -132,6 +132,23 @@ export interface PlayerPanelRowOut {
   fixtures: FixtureCellOut[];
 }
 
+export interface FixtureTickerCellFixtureOut {
+  opponent_id: number;
+  is_home: boolean;
+  difficulty: number;
+}
+
+export interface FixtureTickerCellOut {
+  gameweek: number;
+  fixtures: FixtureTickerCellFixtureOut[];
+}
+
+export interface FixtureTickerRowOut {
+  team_id: number;
+  gameweeks: FixtureTickerCellOut[];
+  average_difficulty: number | null;
+}
+
 // --- Season Replay -----------------------------------------------------------------------
 
 export interface SeasonLogEntryOut {
@@ -241,6 +258,9 @@ export const api = {
   }) => request<PlayerPanelRowOut[]>(`/players${query(filters)}`),
   getPlayer: (playerId: number, gameweek?: number) =>
     request<PlayerDetailOut>(`/players/${playerId}${query({ gameweek })}`),
+
+  getFixtureTicker: (horizon?: number) =>
+    request<FixtureTickerRowOut[]>(`/fixtures${query({ horizon })}`),
 
   advanceGameweek: () => request<AdvanceResultOut>("/squad/advance", { method: "POST" }),
 };
