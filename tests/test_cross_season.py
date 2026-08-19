@@ -247,6 +247,21 @@ class TestPriorSeasonMergedGw:
         with pytest.raises(ValueError, match="missing expected column"):
             prior_season_merged_gw(broken, code_map, team_map, _relegated_team_ids())
 
+    def test_real_vaastav_shape_with_both_round_and_gw_columns_does_not_duplicate(self):
+        # Every real vaastav merged_gw export (verified against this repo's own cached 2024/25 and
+        # 2025/26 parquets) carries both `round` and `GW`, always identical -- the fixtures above
+        # only ever define `round`, so this is the one case that would have caught the real
+        # duplicate-"GW"-column bug (renaming `round -> GW` when `GW` already exists).
+        with_both = _prior_merged_gw().assign(GW=lambda df: df["round"])
+        code_map = player_code_map(_prior_players_raw(), _live_elements())
+        team_map = team_id_map(_prior_teams(), _live_teams())
+        result = prior_season_merged_gw(with_both, code_map, team_map, _relegated_team_ids())
+
+        assert list(result.columns) == MERGED_GW_COLUMNS
+        assert result.columns.tolist().count("GW") == 1
+        assert isinstance(result["GW"], pd.Series)
+        assert result["GW"].min() == 1 - PRIOR_SEASON_GAMEWEEKS
+
 
 def _understat_history(player_dates: list[str]) -> pd.DataFrame:
     return pd.DataFrame(

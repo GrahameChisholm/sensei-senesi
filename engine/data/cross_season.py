@@ -208,8 +208,19 @@ def prior_season_merged_gw(
 
     Players who left the league entirely (no entry in ``code_map``) are dropped, not defaulted —
     matching ENGINE_IMPROVEMENTS_2.md C.1/C.2's "never default a missing rate to zero" rule.
+
+    Every real vaastav ``merged_gw`` export (verified against this repo's own cached 2024/25 and
+    2025/26 parquets) carries **both** ``round`` and ``GW`` already, always identical — renaming
+    ``round -> GW`` unconditionally would silently produce two same-named ``GW`` columns (pandas
+    allows this, and every later ``df["GW"]`` access then returns a 2-column frame instead of a
+    Series, corrupting the gameweek-offset arithmetic below and the final column selection alike).
+    ``round`` is only ever renamed when ``GW`` isn't already present.
     """
-    df = prior_merged_gw.rename(columns={"element": "player_id", "round": "GW"}).copy()
+    df = prior_merged_gw.rename(columns={"element": "player_id"}).copy()
+    if "GW" not in df.columns and "round" in df.columns:
+        df = df.rename(columns={"round": "GW"})
+    elif "round" in df.columns:
+        df = df.drop(columns=["round"])
 
     df["player_id"] = df["player_id"].map(code_map)
     df = df[df["player_id"].notna()].copy()
