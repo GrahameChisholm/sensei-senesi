@@ -44,7 +44,14 @@ from features.squad_draft import (
     set_draft_chip,
 )
 from features.squad_points import projected_points
-from features.squad_rules import RuleViolation, SquadRuleError, optimise_xi, transfer
+from features.squad_rules import (
+    RuleViolation,
+    SquadRuleError,
+    optimise_xi,
+    set_captain,
+    set_vice_captain,
+    transfer,
+)
 from features.team_state import SquadPlayer
 
 app = FastAPI(title="FPL Assistant API", version="0.1.0")
@@ -297,6 +304,21 @@ def draft_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
     return _squad_out()
 
 
+def _require_live_committed():
+    """Shared guard for the live (non-replay) direct-mutation endpoints below: no draft/preview,
+    so they must never be reachable for a Season Replay season (that still needs the real
+    draft/confirm hit-cost machinery) or while a draft happens to be open."""
+    app_state = get_app_state()
+    if app_state.results is not None:
+        raise HTTPException(400, "not available for a Season Replay season")
+    committed, pending = get_squad_state()
+    if committed.team_state is None:
+        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
+    if pending is not None:
+        raise HTTPException(400, "a draft is unexpectedly open -- confirm or discard it first")
+    return app_state, committed
+
+
 @app.post("/squad/live-transfer", response_model=schemas.SquadOut)
 def live_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
     """The live (non-replay) team page's only transfer path: swap a player straight in and out of
@@ -306,14 +328,7 @@ def live_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
     through the draft/confirm endpoints above instead. 400s outside the live season, since
     bypassing hit costs there would silently corrupt a replay's scoring fidelity.
     """
-    app_state = get_app_state()
-    if app_state.results is not None:
-        raise HTTPException(400, "live transfers aren't available for a Season Replay season")
-    committed, pending = get_squad_state()
-    if committed.team_state is None:
-        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
-    if pending is not None:
-        raise HTTPException(400, "a draft is unexpectedly open -- confirm or discard it first")
+    app_state, committed = _require_live_committed()
     new_team_state = transfer(
         committed.team_state,
         body.out_id,
@@ -322,6 +337,22 @@ def live_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
         body.in_position,
         app_state.team_id_by_player,
     )
+    set_squad_state(replace(committed, team_state=new_team_state), None)
+    return _squad_out()
+
+
+@app.post("/squad/live-captain", response_model=schemas.SquadOut)
+def live_captain(body: schemas.CaptainIn) -> schemas.SquadOut:
+    """The live season's captain/vice-captain path -- same direct-mutation shape as
+    :func:`live_transfer`, just simpler: captaincy never carried a hit cost even under the
+    draft/confirm model, so there's nothing to bypass beyond the preview step itself."""
+    _, committed = _require_live_committed()
+    if body.role == "captain":
+        new_team_state = set_captain(committed.team_state, body.player_id)
+    elif body.role == "vice":
+        new_team_state = set_vice_captain(committed.team_state, body.player_id)
+    else:
+        raise HTTPException(400, "role must be 'captain' or 'vice'")
     set_squad_state(replace(committed, team_state=new_team_state), None)
     return _squad_out()
 
