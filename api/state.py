@@ -26,6 +26,7 @@ from api.persistence import (
     save_squad_state,
 )
 from engine.aggregate import ComponentBreakdown
+from engine.data.player_history import PlayerGameweekActual
 from engine.data.storage import DEFAULT_DB_PATH, Base, get_engine
 from engine.models.minutes import MinutesDistribution
 from engine.projections import (
@@ -110,6 +111,10 @@ def _horizon_projection_from_dict(player_id: int, data: dict) -> PlayerHorizonPr
     return project_player_horizon(player_id, position, gameweeks)
 
 
+def _player_actual_from_dict(data: dict) -> PlayerGameweekActual:
+    return PlayerGameweekActual(**data)
+
+
 @dataclass
 class AppState:
     """One loaded projection cache (§6.1 of the team-page plan) — everything the API needs that
@@ -130,6 +135,9 @@ class AppState:
     # Season Replay only -- None for the live 2026/27 cache (no ground-truth results exist for a
     # season that hasn't been played yet). See DEFAULT_RESULTS_DIR.
     results: dict[int, dict[int, dict]] | None = None
+    # Player Stats page (D1/D4/G1) -- this season's actual per-gameweek performance, live only.
+    # Empty for any cache built before this field existed (see load_projection_cache's .get()).
+    player_history: dict[int, list[PlayerGameweekActual]] = field(default_factory=dict)
     team_id_by_player: dict[int, int] = field(init=False)
     buy_prices: dict[int, int] = field(init=False)
     position_by_player: dict[int, str] = field(init=False)
@@ -172,6 +180,10 @@ def load_projection_cache(path: Path, results_dir: Path = DEFAULT_RESULTS_DIR) -
     }
     players = {int(player_id): data for player_id, data in raw["players"].items()}
     teams = {int(team_id): data for team_id, data in raw["teams"].items()}
+    player_history = {
+        int(player_id): [_player_actual_from_dict(row) for row in rows]
+        for player_id, rows in raw.get("player_history", {}).items()
+    }
     return AppState(
         season=raw["season"],
         gameweek=raw["gameweek"],
@@ -186,6 +198,7 @@ def load_projection_cache(path: Path, results_dir: Path = DEFAULT_RESULTS_DIR) -
         fixtures=raw["fixtures"],
         diagnostics=raw["diagnostics"],
         results=_load_results_for_season(raw["season"], results_dir),
+        player_history=player_history,
     )
 
 

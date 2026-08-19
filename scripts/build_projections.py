@@ -56,6 +56,7 @@ from engine.data.live_horizon import (
     augment_feature_inputs_with_prior_season,
     build_live_horizon_from_feature_inputs,
 )
+from engine.data.player_history import PlayerGameweekActual, load_live_player_history
 from engine.data.snapshots import DEFAULT_BASE_DIR, load_snapshot_tables
 from engine.data.understat_client import UnderstatClient
 from engine.projections import (
@@ -225,6 +226,33 @@ def _isoformat(value) -> str:
     return pd.Timestamp(value).isoformat()
 
 
+def _serialize_player_history(history: list[PlayerGameweekActual]) -> list[dict]:
+    return [
+        {
+            "gameweek": actual.gameweek,
+            "minutes": actual.minutes,
+            "goals_scored": actual.goals_scored,
+            "assists": actual.assists,
+            "clean_sheets": actual.clean_sheets,
+            "goals_conceded": actual.goals_conceded,
+            "own_goals": actual.own_goals,
+            "penalties_saved": actual.penalties_saved,
+            "penalties_missed": actual.penalties_missed,
+            "saves": actual.saves,
+            "yellow_cards": actual.yellow_cards,
+            "red_cards": actual.red_cards,
+            "bonus": actual.bonus,
+            "defensive_contribution": actual.defensive_contribution,
+            "total_points": actual.total_points,
+            "expected_goals": actual.expected_goals,
+            "expected_assists": actual.expected_assists,
+            "expected_goal_involvements": actual.expected_goal_involvements,
+            "expected_goals_conceded": actual.expected_goals_conceded,
+        }
+        for actual in history
+    ]
+
+
 def assemble_projection_cache(
     season: str,
     gameweek: int,
@@ -239,9 +267,16 @@ def assemble_projection_cache(
     deadline_passed: bool,
     model_version: str,
     diagnostics: dict,
+    player_history: dict[int, list[PlayerGameweekActual]] | None = None,
 ) -> dict:
     """Build the exact JSON-serialisable cache dict §6.1 of the team-page plan specifies -- pure
-    assembly from already-computed pieces, no I/O of its own."""
+    assembly from already-computed pieces, no I/O of its own.
+
+    ``player_history`` (PLAYER_STATS_PLAN Phase 2) is optional so any caller/fixture built before
+    the Player Stats page still assembles a valid cache; it defaults to no history for every
+    player rather than requiring every call site to be updated.
+    """
+    player_history = player_history or {}
     team_name_by_id = {int(row.id): row.name for row in live_teams.itertuples()}
     team_short_name_by_id = {int(row.id): row.short_name for row in live_teams.itertuples()}
 
@@ -249,6 +284,7 @@ def assemble_projection_cache(
     for row in live_elements.itertuples():
         player_id = int(row.id)
         chance = getattr(row, "chance_of_playing_next_round", None)
+        ownership = getattr(row, "selected_by_percent", None)
         players[str(player_id)] = {
             "web_name": row.web_name,
             "full_name": f"{row.first_name} {row.second_name}",
@@ -259,6 +295,7 @@ def assemble_projection_cache(
             "chance_of_playing_next_round": float(chance) if pd.notna(chance) else 100.0,
             "low_confidence": player_id in cold_start_ids,
             "source": "cold_start" if player_id in cold_start_ids else "engine",
+            "selected_by_percent": float(ownership) if pd.notna(ownership) else None,
         }
 
     teams = {
@@ -296,6 +333,10 @@ def assemble_projection_cache(
         "teams": teams,
         "fixtures": fixtures_out,
         "diagnostics": diagnostics,
+        "player_history": {
+            str(player_id): _serialize_player_history(history)
+            for player_id, history in player_history.items()
+        },
     }
 
 
@@ -434,6 +475,11 @@ def build_projections(
         priors = fit_cold_start_priors(prior_merged_gw_raw)
         team_id_by_player = {int(row.id): int(row.team) for row in live_elements.itertuples()}
         fixture_rows = build_fixture_list(fixtures_df)
+
+        # --- this season's actual per-gameweek performance (Player Stats page, D1/D4/D8) -----
+        player_history = load_live_player_history(
+            fpl_client, [int(row.id) for row in live_elements.itertuples()]
+        )
         team_gameweeks_with_fixture = {(row["team_id"], row["gameweek"]) for row in fixture_rows}
         full_projections, cold_start_ids = merge_cold_start_projections(
             live_elements,
@@ -478,6 +524,7 @@ def build_projections(
             deadline_passed,
             model_version,
             diagnostics,
+            player_history,
         )
         path = write_projection_cache(cache, output_dir, season, gameweek)
         _print_summary(cache, diagnostics, path)
