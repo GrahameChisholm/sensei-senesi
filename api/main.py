@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from api import schemas
 from api.fixtures_view import DEFAULT_FIXTURE_TICKER_HORIZON, build_fixture_ticker_rows
 from api.panel import build_panel_rows, build_team_fixture_map
+from api.player_stats_panel import build_player_stats_rows
 from api.state import (
     DEFAULT_PROJECTION_CACHE_DIR,
     get_app_state,
@@ -30,6 +31,7 @@ from api.state import (
 )
 from features.actual_points import score_actual_gameweek
 from features.chip_calendar import available_chips_this_gameweek
+from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
 from features.squad_draft import (
     advance_gameweek,
@@ -600,6 +602,107 @@ def list_players(
             position=row.position,
             price=row.price,
             low_confidence=row.low_confidence,
+            fixtures=[
+                schemas.FixtureCellOut(
+                    gameweek=cell.gameweek,
+                    opponent_id=cell.opponent_id,
+                    is_home=cell.is_home,
+                    expected_points=cell.expected_points,
+                )
+                for cell in row.fixtures
+            ],
+        )
+        for row in rows
+    ]
+
+
+@app.get("/players/stats", response_model=list[schemas.PlayerStatsRowOut])
+def list_player_stats(gameweek_from: int, gameweek_to: int) -> list[schemas.PlayerStatsRowOut]:
+    """Every player with recorded actual stats in ``[gameweek_from, gameweek_to]``, plus their
+    predicted expected points for each of the app's 3-gameweek horizon. Search, team, position,
+    and price filtering (D14) all happen client-side over this one bulk response.
+
+    Registered *before* ``/players/{player_id}`` below -- Starlette matches routes in
+    registration order, so this literal path must come first or ``{player_id}`` would swallow
+    the request and fail trying to parse "stats" as an int.
+    """
+    if gameweek_from > gameweek_to:
+        raise HTTPException(400, "gameweek_from must be less than or equal to gameweek_to")
+
+    app_state = get_app_state()
+    player_names = {pid: data["web_name"] for pid, data in app_state.players.items()}
+    low_confidence_ids = {
+        pid for pid, data in app_state.players.items() if data.get("low_confidence")
+    }
+    ownership_by_player = {
+        pid: data.get("selected_by_percent") for pid, data in app_state.players.items()
+    }
+    fixture_map = build_team_fixture_map(app_state.fixtures)
+
+    actual_stats_by_player = build_actual_stats_by_player(
+        app_state.player_history,
+        app_state.position_by_player,
+        gameweek_from,
+        gameweek_to,
+        ownership_by_player,
+    )
+    rows = build_player_stats_rows(
+        actual_stats_by_player,
+        app_state.projections,
+        player_names,
+        app_state.buy_prices,
+        app_state.team_id_by_player,
+        app_state.position_by_player,
+        low_confidence_ids,
+        fixture_map,
+        app_state.horizon_gameweeks,
+    )
+    return [
+        schemas.PlayerStatsRowOut(
+            player_id=row.player_id,
+            name=row.name,
+            team_id=row.team_id,
+            position=row.position,
+            price=row.price,
+            low_confidence=row.low_confidence,
+            actuals=schemas.ActualStatsOut(
+                gameweek_from=row.actuals.gameweek_from,
+                gameweek_to=row.actuals.gameweek_to,
+                apps=row.actuals.apps,
+                minutes=row.actuals.minutes,
+                goals_scored=row.actuals.goals_scored,
+                assists=row.actuals.assists,
+                clean_sheets=row.actuals.clean_sheets,
+                goals_conceded=row.actuals.goals_conceded,
+                own_goals=row.actuals.own_goals,
+                penalties_missed=row.actuals.penalties_missed,
+                penalties_saved=row.actuals.penalties_saved,
+                saves=row.actuals.saves,
+                bonus=row.actuals.bonus,
+                yellow_cards=row.actuals.yellow_cards,
+                red_cards=row.actuals.red_cards,
+                total_points=row.actuals.total_points,
+                expected_goals=row.actuals.expected_goals,
+                expected_assists=row.actuals.expected_assists,
+                expected_goal_involvements=row.actuals.expected_goal_involvements,
+                expected_goals_conceded=row.actuals.expected_goals_conceded,
+                points_breakdown=schemas.ComponentBreakdownOut(
+                    appearance=row.actuals.points_breakdown.appearance,
+                    goals=row.actuals.points_breakdown.goals,
+                    assists=row.actuals.points_breakdown.assists,
+                    clean_sheet=row.actuals.points_breakdown.clean_sheet,
+                    goals_conceded=row.actuals.points_breakdown.goals_conceded,
+                    defensive_contribution=row.actuals.points_breakdown.defensive_contribution,
+                    saves=row.actuals.points_breakdown.saves,
+                    bonus=row.actuals.points_breakdown.bonus,
+                    cards=row.actuals.points_breakdown.cards,
+                    penalty_misses=row.actuals.points_breakdown.penalty_misses,
+                    own_goals=row.actuals.points_breakdown.own_goals,
+                    total=row.actuals.points_breakdown.total,
+                ),
+                selected_by_percent=row.actuals.selected_by_percent,
+                small_sample=row.actuals.small_sample,
+            ),
             fixtures=[
                 schemas.FixtureCellOut(
                     gameweek=cell.gameweek,

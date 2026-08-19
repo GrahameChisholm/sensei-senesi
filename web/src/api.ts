@@ -149,6 +149,45 @@ export interface FixtureTickerRowOut {
   average_difficulty: number | null;
 }
 
+// --- Player Stats page ---------------------------------------------------------------------
+
+export interface ActualStatsOut {
+  gameweek_from: number;
+  gameweek_to: number;
+  apps: number;
+  minutes: number;
+  goals_scored: number;
+  assists: number;
+  clean_sheets: number;
+  goals_conceded: number;
+  own_goals: number;
+  penalties_missed: number;
+  penalties_saved: number;
+  saves: number;
+  bonus: number;
+  yellow_cards: number;
+  red_cards: number;
+  total_points: number;
+  expected_goals: number;
+  expected_assists: number;
+  expected_goal_involvements: number;
+  expected_goals_conceded: number;
+  points_breakdown: ComponentBreakdownOut;
+  selected_by_percent: number | null;
+  small_sample: boolean;
+}
+
+export interface PlayerStatsRowOut {
+  player_id: number;
+  name: string;
+  team_id: number | null;
+  position: string;
+  price: number | null;
+  low_confidence: boolean;
+  actuals: ActualStatsOut;
+  fixtures: FixtureCellOut[];
+}
+
 // --- Season Replay -----------------------------------------------------------------------
 
 export interface SeasonLogEntryOut {
@@ -261,6 +300,10 @@ export const api = {
 
   getFixtureTicker: (horizon?: number) =>
     request<FixtureTickerRowOut[]>(`/fixtures${query({ horizon })}`),
+  getPlayerStats: (gameweekFrom: number, gameweekTo: number) =>
+    request<PlayerStatsRowOut[]>(
+      `/players/stats${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,
+    ),
 
   advanceGameweek: () => request<AdvanceResultOut>("/squad/advance", { method: "POST" }),
 };

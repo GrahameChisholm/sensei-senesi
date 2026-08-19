@@ -153,6 +153,46 @@ class FixtureTickerRowOut(BaseModel):
     average_difficulty: float | None
 
 
+# --- Player Stats page (PLAYER_STATS_PLAN) --------------------------------------------------
+
+
+class ActualStatsOut(BaseModel):
+    gameweek_from: int
+    gameweek_to: int
+    apps: int
+    minutes: int
+    goals_scored: int
+    assists: int
+    clean_sheets: int
+    goals_conceded: int
+    own_goals: int
+    penalties_missed: int
+    penalties_saved: int
+    saves: int
+    bonus: int
+    yellow_cards: int
+    red_cards: int
+    total_points: int
+    expected_goals: float
+    expected_assists: float
+    expected_goal_involvements: float
+    expected_goals_conceded: float
+    points_breakdown: ComponentBreakdownOut
+    selected_by_percent: float | None
+    small_sample: bool
+
+
+class PlayerStatsRowOut(BaseModel):
+    player_id: int
+    name: str
+    team_id: int | None
+    position: str
+    price: int | None
+    low_confidence: bool
+    actuals: ActualStatsOut
+    fixtures: list[FixtureCellOut]
+
+
 # --- request bodies ------------------------------------------------------------------------
 
 
