@@ -20,7 +20,9 @@ export function TeamSelection() {
 
   const [horizon, setHorizon] = useState<"next" | "three">("next");
   const [previewChip, setPreviewChip] = useState<string | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
+  // The squad member currently marked for removal (hover "x" on their card), if any -- purely
+  // local until a same-position replacement is picked in the Player Panel.
+  const [removing, setRemoving] = useState<number | null>(null);
   const [seasonLog, setSeasonLog] = useState<SeasonLogEntryOut[]>([]);
   const [lastResult, setLastResult] = useState<AdvanceResultOut | null>(null);
 
@@ -54,6 +56,9 @@ export function TeamSelection() {
     );
   }
 
+  // Season Replay still goes through the draft/confirm machinery (hit costs and free transfers
+  // matter when simulating a real season); the live season doesn't -- see api.liveTransfer.
+  const isReplay = gameweek?.is_replay ?? false;
   const editing = squad.draft !== null;
   const teamState = squad.draft?.working_state ?? squad.committed!;
 
@@ -67,9 +72,16 @@ export function TeamSelection() {
   }
 
   async function handleTransferIn(playerId: number, position: string, price: number) {
-    if (selected === null) return;
-    await squadState.transfer(selected, playerId, price, position);
-    setSelected(null);
+    if (removing === null) return;
+    if (isReplay) {
+      if (!squad!.draft) {
+        await squadState.openDraft();
+      }
+      await squadState.transfer(removing, playerId, price, position);
+    } else {
+      await squadState.liveTransfer(removing, playerId, price, position);
+    }
+    setRemoving(null);
   }
 
   async function handleAdvance() {
@@ -85,8 +97,8 @@ export function TeamSelection() {
   }
 
   const draftChipIsRebuild = squad.draft?.chip === "wildcard" || squad.draft?.chip === "free_hit";
-  const selectedSquadPlayer = selected !== null ? teamState.squad.find((p) => p.player_id === selected) : undefined;
-  const affordableBudget = selectedSquadPlayer ? teamState.bank + selectedSquadPlayer.sell_price : null;
+  const removingPlayer = removing !== null ? teamState.squad.find((p) => p.player_id === removing) : undefined;
+  const affordableBudget = removingPlayer ? teamState.bank + removingPlayer.sell_price : null;
 
   return (
     <div className="team-selection">
@@ -108,11 +120,10 @@ export function TeamSelection() {
         horizon={horizon}
         onHorizonChange={setHorizon}
         editing={editing}
-        onEditTeam={() => void squadState.openDraft()}
         onOptimise={() => void squadState.optimiseXi()}
         onResetTeam={() => {
           void squadState.discardDraft();
-          setSelected(null);
+          setRemoving(null);
         }}
       />
 
@@ -126,18 +137,19 @@ export function TeamSelection() {
           directory={directory}
           teams={teams}
           horizon={horizon}
-          editable={editing}
-          selected={selected}
-          onSelect={setSelected}
-          onSubstitute={(outId, inId) => void squadState.substitute(outId, inId)}
+          removing={removing}
+          onStartRemove={setRemoving}
+          onCancelRemove={() => setRemoving(null)}
         />
 
         <PlayerPanel
           teams={teams}
-          editable={editing}
-          transferOutSelected={selected}
+          transferOutSelected={removing}
+          fillPosition={removingPlayer?.position ?? null}
+          squadPlayerIds={teamState.squad.map((p) => p.player_id)}
           affordableBudget={affordableBudget}
           onTransferIn={(playerId, position, price) => void handleTransferIn(playerId, position, price)}
+          onCancel={() => setRemoving(null)}
         />
       </div>
 

@@ -18,10 +18,9 @@ interface PlayerCardProps {
   isCaptain?: boolean;
   isVice?: boolean;
   lowConfidence?: boolean;
-  clickable?: boolean;
-  selected?: boolean;
-  disabledReason?: string | null;
-  onClick?: () => void;
+  /** Shows a small "x" in the top corner on hover, for marking this player for removal from the
+   * squad; omit to hide it (there's currently no case where a card is shown without it). */
+  onRemove?: () => void;
 }
 
 function fixtureLabel(fixture: CardFixture | undefined): string {
@@ -38,29 +37,31 @@ export function PlayerCard({
   isCaptain,
   isVice,
   lowConfidence,
-  clickable,
-  selected,
-  disabledReason,
-  onClick,
+  onRemove,
 }: PlayerCardProps) {
   const [hovered, setHovered] = useState(false);
   const primary = fixtures[0];
 
   return (
     <div
-      className={[
-        "player-card",
-        clickable && !disabledReason ? "clickable" : "",
-        selected ? "selected" : "",
-        disabledReason ? "disabled" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      className="player-card"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={disabledReason ? undefined : onClick}
-      title={disabledReason ?? undefined}
     >
+      {hovered && onRemove && (
+        <button
+          type="button"
+          className="card-remove-button"
+          title="Remove from squad"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+        >
+          ×
+        </button>
+      )}
+
       <div className="player-card-name">
         {name}
         {isCaptain && <span className="badge captain-badge">C</span>}

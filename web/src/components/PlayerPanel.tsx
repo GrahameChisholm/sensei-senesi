@@ -30,20 +30,29 @@ function sortRows(rows: PlayerPanelRowOut[], sortKey: SortKey): PlayerPanelRowOu
 
 interface PlayerPanelProps {
   teams: Record<number, TeamOut>;
-  editable: boolean;
   transferOutSelected: number | null;
+  /** The removed slot's position (GK/DEF/MID/FWD) -- while set, the position filter is locked to
+   * it, since any other position would fail the squad's own quota check anyway. */
+  fillPosition: string | null;
+  /** Every player_id currently in the squad (including the one being removed) -- while a slot is
+   * being filled, none of these are valid transfer-in targets (the removed player because the
+   * backend hasn't actually let go of them yet, everyone else because they're already owned). */
+  squadPlayerIds: number[];
   /** Bank + the selected player's own sell price (D6/D2: what a transfer could actually afford) --
    * null when nothing is selected, so "Affordable only" has nothing to filter against yet. */
   affordableBudget: number | null;
   onTransferIn: (playerId: number, position: string, price: number) => void;
+  onCancel: () => void;
 }
 
 export function PlayerPanel({
   teams,
-  editable,
   transferOutSelected,
+  fillPosition,
+  squadPlayerIds,
   affordableBudget,
   onTransferIn,
+  onCancel,
 }: PlayerPanelProps) {
   const [position, setPosition] = useState("All");
   const [search, setSearch] = useState("");
@@ -51,16 +60,25 @@ export function PlayerPanel({
   const [sortKey, setSortKey] = useState<SortKey>("ep");
   const [affordableOnly, setAffordableOnly] = useState(false);
 
+  const effectivePosition = fillPosition ?? position;
+
   const { rows: unsortedRows, loading } = usePlayerPanel({
-    position: position === "All" ? undefined : position,
+    position: effectivePosition === "All" ? undefined : effectivePosition,
     search: search || undefined,
     max_price: maxPrice,
   });
 
   const filteredRows = useMemo(() => {
-    if (!affordableOnly || affordableBudget === null) return unsortedRows;
-    return unsortedRows.filter((row) => row.price !== null && row.price <= affordableBudget);
-  }, [unsortedRows, affordableOnly, affordableBudget]);
+    let result = unsortedRows;
+    if (transferOutSelected !== null) {
+      const owned = new Set(squadPlayerIds);
+      result = result.filter((row) => !owned.has(row.player_id));
+    }
+    if (affordableOnly && affordableBudget !== null) {
+      result = result.filter((row) => row.price !== null && row.price <= affordableBudget);
+    }
+    return result;
+  }, [unsortedRows, affordableOnly, affordableBudget, transferOutSelected, squadPlayerIds]);
 
   const rows = useMemo(() => sortRows(filteredRows, sortKey), [filteredRows, sortKey]);
 
@@ -71,7 +89,12 @@ export function PlayerPanel({
       <div className="panel-filters">
         <div className="position-tabs">
           {POSITIONS.map((p) => (
-            <button key={p} className={position === p ? "active" : ""} onClick={() => setPosition(p)}>
+            <button
+              key={p}
+              className={effectivePosition === p ? "active" : ""}
+              disabled={fillPosition !== null}
+              onClick={() => setPosition(p)}
+            >
               {p}
             </button>
           ))}
@@ -116,8 +139,13 @@ export function PlayerPanel({
         )}
       </div>
 
-      {editable && transferOutSelected !== null && (
-        <p className="transfer-hint">Select a player below to transfer in for #{transferOutSelected}.</p>
+      {transferOutSelected !== null && (
+        <p className="transfer-hint">
+          Pick a {fillPosition ?? ""} to fill the empty slot.{" "}
+          <button className="link-button" onClick={onCancel}>
+            Cancel
+          </button>
+        </p>
       )}
 
       {loading ? (
@@ -137,9 +165,9 @@ export function PlayerPanel({
             {rows.map((row) => (
               <tr
                 key={row.player_id}
-                className={editable && transferOutSelected !== null ? "clickable-row" : undefined}
+                className={transferOutSelected !== null ? "clickable-row" : undefined}
                 onClick={
-                  editable && transferOutSelected !== null && row.price !== null
+                  transferOutSelected !== null && row.price !== null
                     ? () => onTransferIn(row.player_id, row.position, row.price as number)
                     : undefined
                 }

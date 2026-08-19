@@ -6,8 +6,9 @@ interface GameweekHeaderProps {
   points: SquadPointsOut | null;
   horizon: "next" | "three";
   onHorizonChange: (horizon: "next" | "three") => void;
+  /** True only while a Season Replay edit is mid-flight (a draft is open, pending Confirm/Reset)
+   * -- the live season never opens a draft, so this (and the buttons it gates) never shows there. */
   editing: boolean;
-  onEditTeam: () => void;
   onOptimise: () => void;
   onResetTeam: () => void;
 }
@@ -19,7 +20,6 @@ export function GameweekHeader({
   horizon,
   onHorizonChange,
   editing,
-  onEditTeam,
   onOptimise,
   onResetTeam,
 }: GameweekHeaderProps) {
@@ -62,9 +62,7 @@ export function GameweekHeader({
       </div>
 
       <div className="header-actions">
-        {!editing ? (
-          <button onClick={onEditTeam}>Edit team</button>
-        ) : (
+        {editing && (
           <button className="danger" onClick={onResetTeam}>
             Reset team
           </button>

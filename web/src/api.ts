@@ -33,6 +33,9 @@ export interface GameweekOut {
   deadline_passed: boolean;
   generated_at: string;
   model_version: string;
+  // True only for a Season Replay season -- false for the live season, where transfers apply
+  // straight to the squad with no hit cost or confirm step (see api.liveTransfer).
+  is_replay: boolean;
 }
 
 export interface SquadPlayerOut {
@@ -199,6 +202,11 @@ export const api = {
     }),
   transfer: (out_id: number, in_id: number, in_price: number, in_position: string) =>
     request<SquadOut>("/squad/draft/transfer", {
+      method: "POST",
+      body: JSON.stringify({ out_id, in_id, in_price, in_position }),
+    }),
+  liveTransfer: (out_id: number, in_id: number, in_price: number, in_position: string) =>
+    request<SquadOut>("/squad/live-transfer", {
       method: "POST",
       body: JSON.stringify({ out_id, in_id, in_price, in_position }),
     }),

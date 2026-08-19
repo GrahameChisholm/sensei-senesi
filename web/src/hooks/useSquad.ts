@@ -72,6 +72,8 @@ export function useSquad() {
     substitute: (outId: number, inId: number) => run(() => api.substitute(outId, inId)),
     transfer: (outId: number, inId: number, inPrice: number, inPosition: string) =>
       run(() => api.transfer(outId, inId, inPrice, inPosition)),
+    liveTransfer: (outId: number, inId: number, inPrice: number, inPosition: string) =>
+      run(() => api.liveTransfer(outId, inId, inPrice, inPosition)),
     setCaptain: (playerId: number, role: "captain" | "vice") =>
       run(() => api.setCaptain(playerId, role)),
     setBenchOrder: (benchOrder: number[]) => run(() => api.setBenchOrder(benchOrder)),

@@ -18,17 +18,19 @@ interface PitchProps {
   directory: Record<number, PlayerPanelRowOut>;
   teams: Record<number, TeamOut>;
   horizon: "next" | "three";
-  editable: boolean;
-  selected: number | null;
-  onSelect: (playerId: number | null) => void;
-  onSubstitute: (outId: number, inId: number) => void;
+  /** The squad member currently marked for removal (via the card's hover "x"), if any -- a
+   * purely local, not-yet-applied intent: nothing is removed from the real squad until a
+   * replacement is picked in the Player Panel (a squad can never actually hold 14 players, see
+   * features.team_state.MyTeamState). Rendered as an empty slot instead of that player's card. */
+  removing: number | null;
+  onStartRemove: (playerId: number) => void;
+  onCancelRemove: () => void;
 }
 
-/** Selection lives in the parent page (not locally) so the player panel can also react to "which
- * squad member is currently selected" -- clicking a bench/XI player selects them; clicking the
- * other group's player while one is selected substitutes; clicking a panel row while a squad
- * player is selected instead triggers a transfer (handled by the parent, TeamSelection.tsx). */
-export function Pitch({ teamState, directory, teams, horizon, editable, selected, onSelect, onSubstitute }: PitchProps) {
+/** No more "edit team" mode: the pitch is always live. Hovering any squad player reveals a small
+ * "x"; clicking it marks that slot empty (still just local UI state) until the Player Panel picks
+ * a same-position replacement, which is what actually calls the API (TeamSelection.tsx). */
+export function Pitch({ teamState, directory, teams, horizon, removing, onStartRemove, onCancelRemove }: PitchProps) {
   const positionById = Object.fromEntries(teamState.squad.map((p) => [p.player_id, p.position]));
   const priceById = Object.fromEntries(teamState.squad.map((p) => [p.player_id, p.current_price]));
 
@@ -37,28 +39,21 @@ export function Pitch({ teamState, directory, teams, horizon, editable, selected
     rowsByPosition[positionById[playerId]]?.push(playerId);
   }
 
-  function handleClick(playerId: number, isBench: boolean) {
-    if (!editable) return;
-    if (selected === null) {
-      onSelect(playerId);
-      return;
+  function renderSlot(playerId: number) {
+    if (playerId === removing) {
+      return (
+        <button
+          key={playerId}
+          type="button"
+          className="empty-slot"
+          onClick={onCancelRemove}
+          title="Cancel"
+        >
+          <span>{positionById[playerId]}</span>
+          <span className="empty-slot-hint">Pick a replacement, or click to cancel</span>
+        </button>
+      );
     }
-    if (selected === playerId) {
-      onSelect(null);
-      return;
-    }
-    const selectedIsBench = teamState.bench_order.includes(selected);
-    if (selectedIsBench === isBench) {
-      onSelect(playerId); // same group -- just change the selection
-      return;
-    }
-    const outId = isBench ? selected : playerId;
-    const inId = isBench ? playerId : selected;
-    onSubstitute(outId, inId);
-    onSelect(null);
-  }
-
-  function renderCard(playerId: number, isBench: boolean) {
     const row = directory[playerId];
     return (
       <PlayerCard
@@ -71,9 +66,7 @@ export function Pitch({ teamState, directory, teams, horizon, editable, selected
         isCaptain={teamState.captain_id === playerId}
         isVice={teamState.vice_captain_id === playerId}
         lowConfidence={row?.low_confidence}
-        clickable={editable}
-        selected={selected === playerId}
-        onClick={() => handleClick(playerId, isBench)}
+        onRemove={() => onStartRemove(playerId)}
       />
     );
   }
@@ -82,12 +75,12 @@ export function Pitch({ teamState, directory, teams, horizon, editable, selected
     <div className="pitch">
       {POSITION_ORDER.map((position) => (
         <div className="pitch-row" key={position}>
-          {rowsByPosition[position].map((playerId) => renderCard(playerId, false))}
+          {rowsByPosition[position].map((playerId) => renderSlot(playerId))}
         </div>
       ))}
       <div className="pitch-row bench-row">
         <div className="bench-label">Bench</div>
-        {teamState.bench_order.map((playerId) => renderCard(playerId, true))}
+        {teamState.bench_order.map((playerId) => renderSlot(playerId))}
       </div>
     </div>
   );

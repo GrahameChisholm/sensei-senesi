@@ -201,19 +201,6 @@ body {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
 }
 
-.player-card.clickable {
-  cursor: pointer;
-}
-
-.player-card.selected {
-  outline: 3px solid #4a90d9;
-}
-
-.player-card.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .player-card-name {
   font-weight: 600;
   font-size: 0.8rem;
@@ -286,6 +273,52 @@ body {
 .low-confidence-badge {
   background: #e6a700;
   color: white;
+}
+
+.card-remove-button {
+  position: absolute;
+  top: -0.5rem;
+  right: -0.5rem;
+  width: 1.3rem;
+  height: 1.3rem;
+  line-height: 1.1rem;
+  border-radius: 50%;
+  border: 1px solid #c0392b;
+  background: white;
+  color: #c0392b;
+  font-size: 0.9rem;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.card-remove-button:hover {
+  background: #c0392b;
+  color: white;
+}
+
+.empty-slot {
+  width: 110px;
+  min-height: 92px;
+  border: 2px dashed #bbb;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.4);
+  color: #555;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.4rem;
+  cursor: pointer;
+  text-align: center;
+}
+
+.empty-slot span:first-child {
+  font-weight: 700;
+}
+
+.empty-slot-hint {
+  font-size: 0.6rem;
 }
 
 /* --- Breakdown popover --- */
