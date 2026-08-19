@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy.orm import Session
 
-from api.persistence import load_squad_state, save_squad_state
+from api.persistence import (
+    load_season_log,
+    load_squad_state,
+    save_season_log,
+    save_squad_state,
+)
 from engine.data.storage import Base, get_engine
 from engine.scoring import DEF, FWD, GK, MID
 from features.chip_calendar import ChipUsage
@@ -128,3 +134,43 @@ class TestRoundTrip:
 
         count = session.execute(select(func.count()).select_from(SavedSquad)).scalar_one()
         assert count == 1
+
+    def test_gameweek_hit_cost_round_trips(self, tmp_path):
+        session = _session(tmp_path)
+        committed = CommittedSquad(
+            team_state=_committed().team_state, committed_gameweek=1, gameweek_hit_cost=8
+        )
+        save_squad_state(session, "2025-26", committed, None)
+
+        loaded, _ = load_squad_state(session, "2025-26")
+        assert loaded.gameweek_hit_cost == 8
+
+    def test_gameweek_hit_cost_defaults_to_zero(self, tmp_path):
+        session = _session(tmp_path)
+        save_squad_state(session, "2026-27", _committed(), None)
+
+        loaded, _ = load_squad_state(session, "2026-27")
+        assert loaded.gameweek_hit_cost == 0
+
+
+class TestSeasonLog:
+    def test_round_trips(self, tmp_path):
+        session = _session(tmp_path)
+        save_squad_state(session, "2025-26", _committed(), None)
+        log = [
+            {"gameweek": 1, "points": 62.0, "running_total": 62.0, "chip_played": None},
+            {"gameweek": 2, "points": 55.0, "running_total": 117.0, "chip_played": "bench_boost"},
+        ]
+        save_season_log(session, log)
+
+        assert load_season_log(session) == log
+
+    def test_empty_when_never_saved(self, tmp_path):
+        session = _session(tmp_path)
+        save_squad_state(session, "2025-26", _committed(), None)
+        assert load_season_log(session) == []
+
+    def test_raises_if_no_row_exists_yet(self, tmp_path):
+        session = _session(tmp_path)
+        with pytest.raises(ValueError, match="save_squad_state"):
+            save_season_log(session, [])

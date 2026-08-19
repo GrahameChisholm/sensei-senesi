@@ -129,6 +129,28 @@ export interface PlayerPanelRowOut {
   fixtures: FixtureCellOut[];
 }
 
+// --- Season Replay -----------------------------------------------------------------------
+
+export interface SeasonLogEntryOut {
+  gameweek: number;
+  points: number;
+  running_total: number;
+  chip_played: string | null;
+}
+
+export interface AdvanceResultOut {
+  gameweek: number;
+  chip_played: string | null;
+  effective_xi: number[];
+  effective_captain_id: number;
+  hit_cost: number;
+  points: number;
+  running_total: number;
+  season_complete: boolean;
+  season_log: SeasonLogEntryOut[];
+  squad: SquadOut;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -206,4 +228,6 @@ export const api = {
   }) => request<PlayerPanelRowOut[]>(`/players${query(filters)}`),
   getPlayer: (playerId: number, gameweek?: number) =>
     request<PlayerDetailOut>(`/players/${playerId}${query({ gameweek })}`),
+
+  advanceGameweek: () => request<AdvanceResultOut>("/squad/advance", { method: "POST" }),
 };

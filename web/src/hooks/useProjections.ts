@@ -1,14 +1,22 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, GameweekOut, PlayerPanelRowOut, SquadPointsOut, TeamOut } from "../api";
 
-export function useGameweek() {
+/** Returns [gameweek, refresh] -- Season Replay's "Advance" moves the process-wide app state on to
+ * the next gameweek's cache server-side, so the header needs an explicit way to refetch rather
+ * than relying on the once-on-mount fetch alone. */
+export function useGameweek(): [GameweekOut | null, () => Promise<void>] {
   const [gameweek, setGameweek] = useState<GameweekOut | null>(null);
 
-  useEffect(() => {
-    void api.getGameweek().then(setGameweek);
+  const refresh = useCallback(async () => {
+    const result = await api.getGameweek();
+    setGameweek(result);
   }, []);
 
-  return gameweek;
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return [gameweek, refresh];
 }
 
 export function useTeams(): Record<number, TeamOut> {
@@ -24,17 +32,22 @@ export function useTeams(): Record<number, TeamOut> {
 }
 
 /** Every player's panel row, unfiltered -- doubles as the pitch's own player directory (name,
- * team, position, price, 3 fixture cells) so the pitch never needs a separate bulk lookup. */
-export function usePlayerDirectory(): Record<number, PlayerPanelRowOut> {
+ * team, position, price, 3 fixture cells) so the pitch never needs a separate bulk lookup.
+ * Returns [directory, refresh] -- Season Replay's "Advance" needs to force a refetch once the
+ * process-wide app state has moved on to a new gameweek's prices/fixtures/projections. */
+export function usePlayerDirectory(): [Record<number, PlayerPanelRowOut>, () => Promise<void>] {
   const [directory, setDirectory] = useState<Record<number, PlayerPanelRowOut>>({});
 
-  useEffect(() => {
-    void api.listPlayers({}).then((rows) => {
-      setDirectory(Object.fromEntries(rows.map((row) => [row.player_id, row])));
-    });
+  const refresh = useCallback(async () => {
+    const rows = await api.listPlayers({});
+    setDirectory(Object.fromEntries(rows.map((row) => [row.player_id, row])));
   }, []);
 
-  return directory;
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return [directory, refresh];
 }
 
 export function useSquadPoints(

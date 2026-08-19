@@ -481,3 +481,92 @@ body {
   font-size: 1rem;
   cursor: pointer;
 }
+
+/* --- Season Replay --- */
+
+.season-progress {
+  background: white;
+  border-radius: 12px;
+  padding: 0.75rem 1.5rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.season-progress-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+
+.season-label {
+  font-weight: 700;
+}
+
+.running-total {
+  color: #444;
+}
+
+.season-complete-badge {
+  background: #d7f0d7;
+  color: #1f8b1f;
+  border-radius: 20px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.season-progress-summary button {
+  border: 1px solid #4a90d9;
+  background: #4a90d9;
+  color: white;
+  border-radius: 8px;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+}
+
+.season-progress-summary button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.link-button {
+  background: none !important;
+  border: none !important;
+  color: #4a90d9 !important;
+  text-decoration: underline;
+  padding: 0 !important;
+  font-size: 0.85rem;
+}
+
+.season-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.season-log-table th,
+.season-log-table td {
+  padding: 0.3rem 0.5rem;
+  text-align: center;
+  border-top: 1px solid #eee;
+}
+
+.gameweek-result-banner {
+  background: #eef3fb;
+  border: 1px solid #4a90d9;
+  border-radius: 8px;
+  padding: 0.6rem 1rem;
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.gameweek-result-banner button {
+  background: none;
+  border: none;
+  font-size: 1rem;
+  cursor: pointer;
+}

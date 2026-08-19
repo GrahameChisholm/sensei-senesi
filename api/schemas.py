@@ -172,3 +172,29 @@ class ConfirmSquadIn(BaseModel):
     bench_order: list[int]
     captain_id: int
     vice_captain_id: int
+
+
+# --- Season Replay --------------------------------------------------------------------------
+
+
+class SeasonLogEntryOut(BaseModel):
+    gameweek: int
+    points: float
+    running_total: float
+    chip_played: str | None
+
+
+class AdvanceResultOut(BaseModel):
+    """``POST /squad/advance``'s response: this gameweek's real, already-decided outcome, plus the
+    refreshed squad (now on the next gameweek, unless the season just ended)."""
+
+    gameweek: int
+    chip_played: str | None
+    effective_xi: list[int]
+    effective_captain_id: int
+    hit_cost: int
+    points: float
+    running_total: float
+    season_complete: bool
+    season_log: list[SeasonLogEntryOut]
+    squad: SquadOut

@@ -28,6 +28,8 @@ __all__ = [
     "pending_draft_from_dict",
     "save_squad_state",
     "load_squad_state",
+    "save_season_log",
+    "load_season_log",
 ]
 
 
@@ -141,6 +143,7 @@ def save_squad_state(
     row.pending_draft_json = (
         json.dumps(pending_draft_to_dict(pending)) if pending is not None else None
     )
+    row.gameweek_hit_cost = committed.gameweek_hit_cost
     session.commit()
 
 
@@ -171,6 +174,7 @@ def load_squad_state(
         free_hit_snapshot=free_hit_snapshot,
         free_hit_snapshot_gameweek=row.free_hit_snapshot_gameweek,
         committed_gameweek=row.committed_gameweek,
+        gameweek_hit_cost=row.gameweek_hit_cost or 0,
     )
     pending = (
         pending_draft_from_dict(json.loads(row.pending_draft_json))
@@ -178,3 +182,23 @@ def load_squad_state(
         else None
     )
     return committed, pending
+
+
+def save_season_log(session: Session, season_log: list[dict]) -> None:
+    """Persist Season Replay's running gameweek-by-gameweek score history onto the same single row
+    ``save_squad_state`` writes — call this *after* ``save_squad_state`` for a given advance, so a
+    row always exists to update. A no-op concept for the live 2026/27 squad (never called there)."""
+    row = session.get(SavedSquad, 1)
+    if row is None:
+        raise ValueError("no saved squad row exists yet -- call save_squad_state first")
+    row.season_log_json = json.dumps(season_log)
+    session.commit()
+
+
+def load_season_log(session: Session) -> list[dict]:
+    """The season-so-far score history, or ``[]`` if none has ever been saved (a fresh replay, or
+    the live 2026/27 squad, which never writes one)."""
+    row = session.execute(select(SavedSquad).where(SavedSquad.id == 1)).scalar_one_or_none()
+    if row is None or not row.season_log_json:
+        return []
+    return json.loads(row.season_log_json)

@@ -8,16 +8,21 @@ import { Pitch } from "../components/Pitch";
 import { PlayerPanel } from "../components/PlayerPanel";
 import { SquadBuilder } from "../components/SquadBuilder";
 import { RuleViolationToast } from "../components/RuleViolationToast";
+import { SeasonProgress } from "../components/SeasonProgress";
+import { GameweekResultBanner } from "../components/GameweekResultBanner";
+import { AdvanceResultOut, SeasonLogEntryOut } from "../api";
 
 export function TeamSelection() {
   const squadState = useSquad();
-  const gameweek = useGameweek();
+  const [gameweek, refreshGameweek] = useGameweek();
   const teams = useTeams();
-  const directory = usePlayerDirectory();
+  const [directory, refreshDirectory] = usePlayerDirectory();
 
   const [horizon, setHorizon] = useState<"next" | "three">("next");
   const [previewChip, setPreviewChip] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [seasonLog, setSeasonLog] = useState<SeasonLogEntryOut[]>([]);
+  const [lastResult, setLastResult] = useState<AdvanceResultOut | null>(null);
 
   const { squad, error, loading, clearError } = squadState;
 
@@ -67,6 +72,18 @@ export function TeamSelection() {
     setSelected(null);
   }
 
+  async function handleAdvance() {
+    const result = await squadState.advance();
+    if (result === null) return;
+    setSeasonLog(result.season_log);
+    setLastResult(result);
+    // /squad/advance already moved the process-wide app state on to the next gameweek's cache --
+    // the header and player directory (prices/fixtures/projections) both need an explicit refetch
+    // to pick that up, since neither polls on its own.
+    await refreshGameweek();
+    await refreshDirectory();
+  }
+
   const draftChipIsRebuild = squad.draft?.chip === "wildcard" || squad.draft?.chip === "free_hit";
   const selectedSquadPlayer = selected !== null ? teamState.squad.find((p) => p.player_id === selected) : undefined;
   const affordableBudget = selectedSquadPlayer ? teamState.bank + selectedSquadPlayer.sell_price : null;
@@ -74,6 +91,15 @@ export function TeamSelection() {
   return (
     <div className="team-selection">
       {error && <RuleViolationToast message={error} onDismiss={clearError} />}
+      <GameweekResultBanner result={lastResult} onDismiss={() => setLastResult(null)} />
+
+      <SeasonProgress
+        gameweek={gameweek}
+        seasonLog={seasonLog}
+        seasonComplete={lastResult?.season_complete ?? false}
+        editing={editing}
+        onAdvance={() => void handleAdvance()}
+      />
 
       <GameweekHeader
         gameweek={gameweek}

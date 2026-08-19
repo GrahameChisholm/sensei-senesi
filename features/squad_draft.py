@@ -87,7 +87,11 @@ class CommittedSquad:
     (D23). ``active_chip``/``active_chip_gameweek`` name whichever chip (if any) is in effect for
     ``active_chip_gameweek`` specifically — cleared by :func:`advance_gameweek` once that
     gameweek has passed. ``free_hit_snapshot`` holds the pre-chip squad while (and only while)
-    Free Hit is the active chip, restored automatically by :func:`advance_gameweek` (D15)."""
+    Free Hit is the active chip, restored automatically by :func:`advance_gameweek` (D15).
+    ``gameweek_hit_cost`` accumulates every hit :func:`confirm_draft` has charged for
+    ``committed_gameweek`` specifically (a manager may confirm more than once before that
+    gameweek is actually played) — Season Replay's ``POST /squad/advance`` is the one consumer
+    that needs this total; :func:`advance_gameweek` resets it to 0 for the new gameweek."""
 
     team_state: MyTeamState | None
     chip_usage: ChipUsage = ChipUsage()
@@ -96,6 +100,7 @@ class CommittedSquad:
     free_hit_snapshot: MyTeamState | None = None
     free_hit_snapshot_gameweek: int | None = None
     committed_gameweek: int = 0
+    gameweek_hit_cost: int = 0
 
 
 def _raise_first(violations: tuple[RuleViolation, ...]) -> None:
@@ -269,6 +274,7 @@ def confirm_draft(
         free_hit_snapshot=free_hit_snapshot,
         free_hit_snapshot_gameweek=free_hit_snapshot_gameweek,
         committed_gameweek=gameweek,
+        gameweek_hit_cost=committed.gameweek_hit_cost + hit_cost,
     )
     return new_committed, hit_cost
 
@@ -285,6 +291,8 @@ def advance_gameweek(
     - Free transfers accrue by 1, capped at 5 (2026/27's banking rule), regardless of chip.
     - A ``pending`` draft opened for a gameweek other than ``new_gameweek`` is dropped (D24) rather
       than silently carried forward against the wrong deadline.
+    - ``gameweek_hit_cost`` resets to 0 for the new gameweek (the old gameweek's hits have already
+      been consumed by whoever scored that gameweek).
     """
     team_state = committed.team_state
     free_hit_snapshot = committed.free_hit_snapshot
@@ -321,6 +329,7 @@ def advance_gameweek(
         free_hit_snapshot=free_hit_snapshot,
         free_hit_snapshot_gameweek=free_hit_snapshot_gameweek,
         committed_gameweek=new_gameweek,
+        gameweek_hit_cost=0,
     )
 
     new_pending = pending if pending is not None and pending.base_gameweek == new_gameweek else None

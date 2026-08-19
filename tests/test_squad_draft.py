@@ -286,6 +286,27 @@ class TestConfirmDraft:
         assert new_committed.team_state.free_transfers == 1  # 3 banked - 2 used
         assert hit_cost == 0
 
+    def test_hit_cost_accumulates_across_repeated_confirms_in_the_same_gameweek(self):
+        # Season Replay's POST /squad/advance needs the *total* hit charged for a gameweek, even
+        # if the manager confirmed more than once before advancing.
+        committed = _initial_committed()
+        draft = open_draft(committed, gameweek=2)
+        team_ids = _team_id_by_player()
+        team_ids[9001] = 9001
+        team_ids[9002] = 9002
+        draft = apply_transfer_to_draft(draft, FWD_IDS[2], 9001, 40, FWD, team_ids)
+        draft = apply_transfer_to_draft(draft, MID_IDS[4], 9002, 40, MID, team_ids)
+        committed, hit_cost_1 = confirm_draft(committed, draft, gameweek=2, deadline_passed=True)
+        assert hit_cost_1 == 4
+        assert committed.gameweek_hit_cost == 4
+
+        draft2 = open_draft(committed, gameweek=2)
+        team_ids[9003] = 9003
+        draft2 = apply_transfer_to_draft(draft2, DEF_IDS[4], 9003, 40, DEF, team_ids)
+        committed, hit_cost_2 = confirm_draft(committed, draft2, gameweek=2, deadline_passed=True)
+        assert hit_cost_2 == 4  # this draft's own single transfer, 0 free -> 1 chargeable x 4
+        assert committed.gameweek_hit_cost == 8  # accumulated across both confirms
+
 
 class TestFreeHitWorkedExample:
     """The full worked example from the team-page plan's own §8.4."""
@@ -393,3 +414,17 @@ class TestAdvanceGameweek:
         original_free_transfers = committed.team_state.free_transfers
         advance_gameweek(committed, pending=None, new_gameweek=2)
         assert committed.team_state.free_transfers == original_free_transfers
+
+    def test_gameweek_hit_cost_resets_to_zero_for_the_new_gameweek(self):
+        committed = _initial_committed(gameweek=1)
+        team_ids = _team_id_by_player()
+        team_ids[9001] = 9001
+        team_ids[9002] = 9002
+        draft = open_draft(committed, gameweek=1)
+        draft = apply_transfer_to_draft(draft, FWD_IDS[2], 9001, 40, FWD, team_ids)
+        draft = apply_transfer_to_draft(draft, MID_IDS[4], 9002, 40, MID, team_ids)
+        committed, hit_cost = confirm_draft(committed, draft, gameweek=1, deadline_passed=True)
+        assert committed.gameweek_hit_cost == 4
+
+        new_committed, _ = advance_gameweek(committed, pending=None, new_gameweek=2)
+        assert new_committed.gameweek_hit_cost == 0

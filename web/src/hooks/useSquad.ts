@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, SquadOut } from "../api";
+import { AdvanceResultOut, api, ApiError, SquadOut } from "../api";
 
 // The server is always the source of truth (D16): every mutation just calls the API and replaces
 // local state with whatever it returns -- never reconstructed client-side.
@@ -36,6 +36,21 @@ export function useSquad() {
     }
   }, []);
 
+  // Season Replay's "Advance to GW N+1" -- unlike every other mutation, the API's response is an
+  // AdvanceResultOut (this gameweek's real result + the refreshed squad nested inside it), not a
+  // bare SquadOut, so it can't go through `run` above.
+  const advance = useCallback(async (): Promise<AdvanceResultOut | null> => {
+    try {
+      const result = await api.advanceGameweek();
+      setSquad(result.squad);
+      setError(null);
+      return result;
+    } catch (e) {
+      setError(e instanceof ApiError ? e.violation.message : "Something went wrong");
+      return null;
+    }
+  }, []);
+
   return {
     squad,
     error,
@@ -63,5 +78,6 @@ export function useSquad() {
     setDraftChip: (chip: string | null) => run(() => api.setDraftChip(chip)),
     confirmDraft: () => run(() => api.confirmDraft()),
     optimiseXi: () => run(() => api.optimiseXi()),
+    advance,
   };
 }

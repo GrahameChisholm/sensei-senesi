@@ -11,6 +11,7 @@ every mutation delegates to ``features.squad_rules``/``features.squad_draft``, m
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,12 @@ from pathlib import Path
 import numpy as np
 from sqlalchemy.orm import Session
 
-from api.persistence import load_squad_state, save_squad_state
+from api.persistence import (
+    load_season_log,
+    load_squad_state,
+    save_season_log,
+    save_squad_state,
+)
 from engine.aggregate import ComponentBreakdown
 from engine.data.storage import DEFAULT_DB_PATH, Base, get_engine
 from engine.models.minutes import MinutesDistribution
@@ -43,10 +49,21 @@ __all__ = [
     "confirm_and_save",
     "get_build_picks",
     "set_build_picks",
+    "get_season_log",
+    "set_season_log",
     "reset_state",
 ]
 
 DEFAULT_PROJECTION_CACHE_DIR = Path("data_store/projections")
+# Season Replay only (scripts.build_replay_projections' own DEFAULT_RESULTS_DIR): real recorded
+# {gameweek: {player_id: {minutes, total_points}}} ground truth, one file per season, that
+# POST /squad/advance scores a committed squad against. The live 2026/27 cache has no sibling file
+# here, so AppState.results stays None for it -- see load_projection_cache.
+DEFAULT_RESULTS_DIR = Path("data_store/replay")
+# Set (e.g. `FPL_REPLAY_SEASON=2025-26 uvicorn api.main:app`) to point a fresh process at a
+# historical replay season instead of get_app_state()'s normal "lexicographically last season dir"
+# default -- the live 2026/27 path is completely unaffected when this is unset.
+_REPLAY_SEASON_ENV_VAR = "FPL_REPLAY_SEASON"
 
 
 def _breakdown_from_dict(data: dict) -> ComponentBreakdown:
@@ -110,6 +127,9 @@ class AppState:
     teams: dict[int, dict]
     fixtures: list[dict]
     diagnostics: dict
+    # Season Replay only -- None for the live 2026/27 cache (no ground-truth results exist for a
+    # season that hasn't been played yet). See DEFAULT_RESULTS_DIR.
+    results: dict[int, dict[int, dict]] | None = None
     team_id_by_player: dict[int, int] = field(init=False)
     buy_prices: dict[int, int] = field(init=False)
     position_by_player: dict[int, str] = field(init=False)
@@ -131,7 +151,20 @@ class AppState:
         }
 
 
-def load_projection_cache(path: Path) -> AppState:
+def _load_results_for_season(season: str, results_dir: Path = DEFAULT_RESULTS_DIR) -> dict | None:
+    """Season Replay's ground truth, if this season has one -- ``None`` for the live 2026/27 cache,
+    which has no ``data_store/replay/2026-27/results.json`` (that season hasn't been played yet)."""
+    path = results_dir / season / "results.json"
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text())
+    return {
+        int(gameweek): {int(player_id): result for player_id, result in gw_results.items()}
+        for gameweek, gw_results in raw.items()
+    }
+
+
+def load_projection_cache(path: Path, results_dir: Path = DEFAULT_RESULTS_DIR) -> AppState:
     raw = json.loads(path.read_text())
     projections = {
         int(player_id): _horizon_projection_from_dict(int(player_id), horizon_data)
@@ -152,6 +185,7 @@ def load_projection_cache(path: Path) -> AppState:
         teams=teams,
         fixtures=raw["fixtures"],
         diagnostics=raw["diagnostics"],
+        results=_load_results_for_season(raw["season"], results_dir),
     )
 
 
@@ -163,22 +197,47 @@ def _latest_cache_path(cache_dir: Path, season: str) -> Path:
     return candidates[-1]
 
 
+def _earliest_cache_path(cache_dir: Path, season: str) -> Path:
+    """Season Replay's own cold-start pick: unlike the live path (where "latest generated" means
+    "this real season's actual current gameweek"), a replay season has every gameweek's cache
+    pre-built at once (``scripts.build_replay_projections``), so a fresh process should always
+    start the user at gameweek 1 -- not jump straight to the season's final gameweek."""
+    season_dir = cache_dir / season
+    candidates = sorted(season_dir.glob("gw*.json"))
+    if not candidates:
+        raise FileNotFoundError(f"no projection cache found under {season_dir}")
+    return candidates[0]
+
+
 _app_state: AppState | None = None
 _committed: CommittedSquad | None = None
 _pending: PendingDraft | None = None
 _build_picks: list[SquadPlayer] | None = None
+_season_log: list[dict] | None = None
 _db_path: str = DEFAULT_DB_PATH
 
 
 def get_app_state(
     cache_dir: Path = DEFAULT_PROJECTION_CACHE_DIR, season: str | None = None
 ) -> AppState:
-    """Loads the most recent cache file for ``season`` (or the newest across every season found,
-    if omitted) on first access — the process-wide state every endpoint reads from."""
+    """Loads a cache file on first access — the process-wide state every endpoint reads from.
+
+    - ``season`` given explicitly (a caller override, or tests): the most recent cache file for
+      it — matching the live path's "whichever gameweek was generated most recently" semantics.
+    - Nothing given, but ``FPL_REPLAY_SEASON`` is set (Season Replay's opt-in switch): the
+      *earliest* cache file for that season instead — a replay season has every gameweek
+      pre-built at once, so a fresh process should start the user at gameweek 1, not jump to the
+      season's last gameweek the way "most recent" would.
+    - Neither given: the newest season dir found, its most recent cache file — today's existing
+      live-path default, completely unaffected when ``FPL_REPLAY_SEASON`` is unset.
+    """
     global _app_state
     if _app_state is None:
+        replay_season = os.environ.get(_REPLAY_SEASON_ENV_VAR)
         if season is not None:
             path = _latest_cache_path(cache_dir, season)
+        elif replay_season is not None:
+            path = _earliest_cache_path(cache_dir, replay_season)
         else:
             season_dirs = (
                 sorted(d for d in cache_dir.iterdir() if d.is_dir()) if cache_dir.exists() else []
@@ -254,11 +313,31 @@ def set_build_picks(picks: list[SquadPlayer]) -> None:
     _build_picks = picks
 
 
+def get_season_log() -> list[dict]:
+    """Season Replay's running gameweek-by-gameweek score history (``[]`` for a fresh replay, or
+    always for the live 2026/27 squad, which never calls :func:`set_season_log`)."""
+    global _season_log
+    if _season_log is None:
+        session = _get_session()
+        _season_log = load_season_log(session)
+    return _season_log
+
+
+def set_season_log(log: list[dict]) -> None:
+    """Persist the season log and update the process-wide singleton — called by
+    ``POST /squad/advance`` after every gameweek it scores."""
+    global _season_log
+    session = _get_session()
+    save_season_log(session, log)
+    _season_log = log
+
+
 def reset_state(db_path: str = DEFAULT_DB_PATH) -> None:
     """Test-only: clear every process-wide singleton so the next access reloads from scratch."""
-    global _app_state, _committed, _pending, _build_picks, _db_path
+    global _app_state, _committed, _pending, _build_picks, _season_log, _db_path
     _app_state = None
     _committed = None
     _pending = None
     _build_picks = None
+    _season_log = None
     _db_path = db_path

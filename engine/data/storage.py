@@ -153,6 +153,12 @@ class SavedSquad(Base):
     free_hit_snapshot_json: Mapped[str | None] = mapped_column(String, nullable=True)
     free_hit_snapshot_gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pending_draft_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Season Replay-only fields (unused, always default, for the live 2026/27 squad): the hits
+    # already charged for `committed_gameweek` specifically (features.squad_draft.CommittedSquad
+    # .gameweek_hit_cost), and the running gameweek-by-gameweek score history `POST /squad/advance`
+    # appends to (one JSON list of {gameweek, points, running_total, chip_played} dicts).
+    gameweek_hit_cost: Mapped[int] = mapped_column(Integer, default=0)
+    season_log_json: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
