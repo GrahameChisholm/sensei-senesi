@@ -215,6 +215,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ player_id, role }),
     }),
+  liveCaptain: (player_id: number, role: "captain" | "vice") =>
+    request<SquadOut>("/squad/live-captain", {
+      method: "POST",
+      body: JSON.stringify({ player_id, role }),
+    }),
   setBenchOrder: (bench_order: number[]) =>
     request<SquadOut>("/squad/draft/bench-order", {
       method: "POST",

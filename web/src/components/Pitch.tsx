@@ -25,12 +25,24 @@ interface PitchProps {
   removing: number | null;
   onStartRemove: (playerId: number) => void;
   onCancelRemove: () => void;
+  onSetCaptain: (playerId: number, role: "captain" | "vice") => void;
 }
 
 /** No more "edit team" mode: the pitch is always live. Hovering any squad player reveals a small
  * "x"; clicking it marks that slot empty (still just local UI state) until the Player Panel picks
- * a same-position replacement, which is what actually calls the API (TeamSelection.tsx). */
-export function Pitch({ teamState, directory, teams, horizon, removing, onStartRemove, onCancelRemove }: PitchProps) {
+ * a same-position replacement, which is what actually calls the API (TeamSelection.tsx). Hovering
+ * a starting-XI player also reveals "C"/"VC" pills -- captain/vice must be in the XI, so bench
+ * cards never get them. */
+export function Pitch({
+  teamState,
+  directory,
+  teams,
+  horizon,
+  removing,
+  onStartRemove,
+  onCancelRemove,
+  onSetCaptain,
+}: PitchProps) {
   const positionById = Object.fromEntries(teamState.squad.map((p) => [p.player_id, p.position]));
   const priceById = Object.fromEntries(teamState.squad.map((p) => [p.player_id, p.current_price]));
 
@@ -39,7 +51,7 @@ export function Pitch({ teamState, directory, teams, horizon, removing, onStartR
     rowsByPosition[positionById[playerId]]?.push(playerId);
   }
 
-  function renderSlot(playerId: number) {
+  function renderSlot(playerId: number, isBench: boolean) {
     if (playerId === removing) {
       return (
         <button
@@ -67,6 +79,8 @@ export function Pitch({ teamState, directory, teams, horizon, removing, onStartR
         isVice={teamState.vice_captain_id === playerId}
         lowConfidence={row?.low_confidence}
         onRemove={() => onStartRemove(playerId)}
+        onCaptain={isBench ? undefined : () => onSetCaptain(playerId, "captain")}
+        onVice={isBench ? undefined : () => onSetCaptain(playerId, "vice")}
       />
     );
   }
@@ -75,12 +89,12 @@ export function Pitch({ teamState, directory, teams, horizon, removing, onStartR
     <div className="pitch">
       {POSITION_ORDER.map((position) => (
         <div className="pitch-row" key={position}>
-          {rowsByPosition[position].map((playerId) => renderSlot(playerId))}
+          {rowsByPosition[position].map((playerId) => renderSlot(playerId, false))}
         </div>
       ))}
       <div className="pitch-row bench-row">
         <div className="bench-label">Bench</div>
-        {teamState.bench_order.map((playerId) => renderSlot(playerId))}
+        {teamState.bench_order.map((playerId) => renderSlot(playerId, true))}
       </div>
     </div>
   );

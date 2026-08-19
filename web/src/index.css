@@ -296,6 +296,48 @@ body {
   color: white;
 }
 
+.card-captain-actions {
+  position: absolute;
+  top: -0.5rem;
+  left: -0.4rem;
+  display: flex;
+  gap: 0.2rem;
+  z-index: 10;
+}
+
+.card-captain-button,
+.card-vice-button {
+  height: 1.3rem;
+  min-width: 1.3rem;
+  padding: 0 0.25rem;
+  line-height: 1.1rem;
+  border-radius: 999px;
+  border: 1px solid #333;
+  background: white;
+  color: #333;
+  font-size: 0.65rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.card-captain-button:disabled,
+.card-vice-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.card-captain-button:not(:disabled):hover {
+  background: black;
+  border-color: black;
+  color: white;
+}
+
+.card-vice-button:not(:disabled):hover {
+  background: #888;
+  border-color: #888;
+  color: white;
+}
+
 .empty-slot {
   width: 110px;
   min-height: 92px;

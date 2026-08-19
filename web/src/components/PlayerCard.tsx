@@ -21,6 +21,10 @@ interface PlayerCardProps {
   /** Shows a small "x" in the top corner on hover, for marking this player for removal from the
    * squad; omit to hide it (there's currently no case where a card is shown without it). */
   onRemove?: () => void;
+  /** Shows small "C"/"VC" pills in the top-left corner on hover; omit both to hide them entirely
+   * (only starting-XI players can be captain/vice, so bench cards never get these). */
+  onCaptain?: () => void;
+  onVice?: () => void;
 }
 
 function fixtureLabel(fixture: CardFixture | undefined): string {
@@ -38,6 +42,8 @@ export function PlayerCard({
   isVice,
   lowConfidence,
   onRemove,
+  onCaptain,
+  onVice,
 }: PlayerCardProps) {
   const [hovered, setHovered] = useState(false);
   const primary = fixtures[0];
@@ -60,6 +66,39 @@ export function PlayerCard({
         >
           ×
         </button>
+      )}
+
+      {hovered && (onCaptain || onVice) && (
+        <div className="card-captain-actions">
+          {onCaptain && (
+            <button
+              type="button"
+              className="card-captain-button"
+              disabled={isCaptain}
+              title="Make captain (doubles their expected points)"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCaptain();
+              }}
+            >
+              C
+            </button>
+          )}
+          {onVice && (
+            <button
+              type="button"
+              className="card-vice-button"
+              disabled={isVice}
+              title="Make vice captain"
+              onClick={(e) => {
+                e.stopPropagation();
+                onVice();
+              }}
+            >
+              VC
+            </button>
+          )}
+        </div>
       )}
 
       <div className="player-card-name">

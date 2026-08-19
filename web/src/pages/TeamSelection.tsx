@@ -84,6 +84,17 @@ export function TeamSelection() {
     setRemoving(null);
   }
 
+  async function handleSetCaptain(playerId: number, role: "captain" | "vice") {
+    if (isReplay) {
+      if (!squad!.draft) {
+        await squadState.openDraft();
+      }
+      await squadState.setCaptain(playerId, role);
+    } else {
+      await squadState.liveCaptain(playerId, role);
+    }
+  }
+
   async function handleAdvance() {
     const result = await squadState.advance();
     if (result === null) return;
@@ -140,6 +151,7 @@ export function TeamSelection() {
           removing={removing}
           onStartRemove={setRemoving}
           onCancelRemove={() => setRemoving(null)}
+          onSetCaptain={(playerId, role) => void handleSetCaptain(playerId, role)}
         />
 
         <PlayerPanel
