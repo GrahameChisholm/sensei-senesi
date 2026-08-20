@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { PlayerPanelRowOut, TeamOut } from "../api";
 import { usePlayerPanel } from "../hooks/useProjections";
-import { expectedPointsColour } from "../lib/colours";
+import { expectedPointsColour, expectedPointsTextColour } from "../lib/colours";
 
 const POSITIONS = ["All", "GK", "DEF", "MID", "FWD"];
 
@@ -179,7 +179,10 @@ export function PlayerPanel({
                 </td>
                 <td>{row.price !== null ? `£${(row.price / 10).toFixed(1)}m` : "—"}</td>
                 {row.fixtures.map((f) => (
-                  <td key={f.gameweek} style={{ background: expectedPointsColour(f.expected_points) }}>
+                  <td
+                    key={f.gameweek}
+                    style={{ background: expectedPointsColour(f.expected_points), color: expectedPointsTextColour(f.expected_points) }}
+                  >
                     <div>{f.expected_points !== null ? f.expected_points.toFixed(1) : "—"}</div>
                     <div className="fixture-label">
                       {f.opponent_id !== null && f.is_home !== null

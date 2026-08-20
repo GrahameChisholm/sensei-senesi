@@ -67,7 +67,12 @@ export function GameweekHeader({
             Reset team
           </button>
         )}
-        <button onClick={onOptimise}>Optimise lineup</button>
+        <button className="btn-primary" onClick={onOptimise}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18" />
+          </svg>
+          Optimise lineup
+        </button>
       </div>
     </div>
   );
