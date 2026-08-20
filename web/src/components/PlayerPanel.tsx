@@ -30,28 +30,36 @@ function sortRows(rows: PlayerPanelRowOut[], sortKey: SortKey): PlayerPanelRowOu
 
 interface PlayerPanelProps {
   teams: Record<number, TeamOut>;
-  transferOutSelected: number | null;
-  /** The removed slot's position (GK/DEF/MID/FWD) -- while set, the position filter is locked to
-   * it, since any other position would fail the squad's own quota check anyway. */
-  fillPosition: string | null;
-  /** Every player_id currently in the squad (including the one being removed) -- while a slot is
-   * being filled, none of these are valid transfer-in targets (the removed player because the
+  /** True while at least one squad slot is open and waiting to be filled, either from a
+   * marked-for-removal player on the live pitch, or an unfilled position while building a squad
+   * from scratch. */
+  fillMode: boolean;
+  /** Positions with at least one open slot right now. Ignored when `fillMode` is false. A row
+   * whose position isn't in this list can't be added yet (adding it wouldn't match any open
+   * slot), so its Add action is disabled rather than sent to the API to fail. */
+  fillablePositions: string[];
+  /** Every player_id currently in the squad (including any marked for removal). While a slot is
+   * being filled, none of these are valid add targets (a marked-for-removal player because the
    * backend hasn't actually let go of them yet, everyone else because they're already owned). */
   squadPlayerIds: number[];
-  /** Bank + the selected player's own sell price (D6/D2: what a transfer could actually afford) --
-   * null when nothing is selected, so "Affordable only" has nothing to filter against yet. */
+  /** Bank plus the sell price of every player currently marked for removal, a rough ceiling for
+   * the "Affordable only" filter, not a per-slot guarantee (a specific swap's own budget is
+   * enforced by the API). Null when nothing is open, so the filter has nothing to check against. */
   affordableBudget: number | null;
-  onTransferIn: (playerId: number, position: string, price: number) => void;
-  onCancel: () => void;
+  onAdd: (playerId: number, position: string, price: number) => void;
+  /** Cancels every currently open slot at once. Omit where there's nothing to cancel (e.g.
+   * building a squad from scratch, where an "empty slot" is just not-yet-picked, not a pending
+   * removal). */
+  onCancel?: () => void;
 }
 
 export function PlayerPanel({
   teams,
-  transferOutSelected,
-  fillPosition,
+  fillMode,
+  fillablePositions,
   squadPlayerIds,
   affordableBudget,
-  onTransferIn,
+  onAdd,
   onCancel,
 }: PlayerPanelProps) {
   const [position, setPosition] = useState("All");
@@ -60,17 +68,15 @@ export function PlayerPanel({
   const [sortKey, setSortKey] = useState<SortKey>("ep");
   const [affordableOnly, setAffordableOnly] = useState(false);
 
-  const effectivePosition = fillPosition ?? position;
-
   const { rows: unsortedRows, loading } = usePlayerPanel({
-    position: effectivePosition === "All" ? undefined : effectivePosition,
+    position: position === "All" ? undefined : position,
     search: search || undefined,
     max_price: maxPrice,
   });
 
   const filteredRows = useMemo(() => {
     let result = unsortedRows;
-    if (transferOutSelected !== null) {
+    if (fillMode) {
       const owned = new Set(squadPlayerIds);
       result = result.filter((row) => !owned.has(row.player_id));
     }
@@ -78,7 +84,7 @@ export function PlayerPanel({
       result = result.filter((row) => row.price !== null && row.price <= affordableBudget);
     }
     return result;
-  }, [unsortedRows, affordableOnly, affordableBudget, transferOutSelected, squadPlayerIds]);
+  }, [unsortedRows, affordableOnly, affordableBudget, fillMode, squadPlayerIds]);
 
   const rows = useMemo(() => sortRows(filteredRows, sortKey), [filteredRows, sortKey]);
 
@@ -91,8 +97,7 @@ export function PlayerPanel({
           {POSITIONS.map((p) => (
             <button
               key={p}
-              className={effectivePosition === p ? "active" : ""}
-              disabled={fillPosition !== null}
+              className={position === p ? "active" : ""}
               onClick={() => setPosition(p)}
             >
               {p}
@@ -127,7 +132,7 @@ export function PlayerPanel({
             ))}
           </select>
         </label>
-        {transferOutSelected !== null && affordableBudget !== null && (
+        {fillMode && affordableBudget !== null && (
           <label>
             <input
               type="checkbox"
@@ -139,12 +144,14 @@ export function PlayerPanel({
         )}
       </div>
 
-      {transferOutSelected !== null && (
+      {fillMode && (
         <p className="transfer-hint">
-          Pick a {fillPosition ?? ""} to fill the empty slot.{" "}
-          <button className="link-button" onClick={onCancel}>
-            Cancel
-          </button>
+          Open slots: {fillablePositions.join(", ")}.{" "}
+          {onCancel && (
+            <button className="link-button" onClick={onCancel}>
+              Cancel all
+            </button>
+          )}
         </p>
       )}
 
@@ -162,15 +169,13 @@ export function PlayerPanel({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {rows.map((row) => {
+              const fillable = fillMode && row.price !== null && fillablePositions.includes(row.position);
+              return (
               <tr
                 key={row.player_id}
-                className={transferOutSelected !== null ? "clickable-row" : undefined}
-                onClick={
-                  transferOutSelected !== null && row.price !== null
-                    ? () => onTransferIn(row.player_id, row.position, row.price as number)
-                    : undefined
-                }
+                className={fillMode ? (fillable ? "clickable-row" : "unfillable-row") : undefined}
+                onClick={fillable ? () => onAdd(row.player_id, row.position, row.price as number) : undefined}
               >
                 <td>
                   {row.name}
@@ -192,7 +197,8 @@ export function PlayerPanel({
                   </td>
                 ))}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       )}

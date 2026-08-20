@@ -1,8 +1,6 @@
 import { SquadOut } from "../api";
 
 const CHIPS: { key: string; label: string }[] = [
-  { key: "wildcard", label: "Wildcard" },
-  { key: "free_hit", label: "Free Hit" },
   { key: "bench_boost", label: "Bench Boost" },
   { key: "triple_captain", label: "Triple Captain" },
 ];

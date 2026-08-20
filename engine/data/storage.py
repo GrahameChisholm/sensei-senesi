@@ -161,6 +161,23 @@ class SavedSquad(Base):
     )
 
 
+class SavedBuildPicks(Base):
+    """The team-selection page's in-progress initial-build squad (0 to 15 picks, D6/D23), stored
+    separately from :class:`SavedSquad` since it isn't a real ``MyTeamState`` and shouldn't block
+    that table's schema. A single row (``id`` is always 1), since this is a single-user local
+    tool.
+    """
+
+    __tablename__ = "saved_build_picks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    season: Mapped[str] = mapped_column(String, nullable=False)
+    picks_json: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
     return create_engine(f"sqlite:///{db_path}")
 

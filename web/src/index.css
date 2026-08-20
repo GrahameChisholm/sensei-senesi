@@ -769,6 +769,10 @@ button {
   background: var(--accent-soft);
 }
 
+.unfillable-row {
+  opacity: 0.4;
+}
+
 .transfer-hint {
   background: var(--gold-soft);
   color: #7a5a1a;
@@ -777,112 +781,16 @@ button {
   font-size: 0.8rem;
 }
 
-/* --- Squad builder --- */
+/* --- Build summary (assembling or rebuilding a squad) --- */
 
-.squad-builder {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 1.5rem;
-  box-shadow: var(--shadow-card);
-}
-
-.squad-builder h2 {
-  font-size: 1.3rem;
-  margin-bottom: 1rem;
-}
-
-.builder-summary {
+.build-summary {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 1.5rem;
   margin-bottom: 1rem;
   font-weight: 600;
   font-size: 0.85rem;
   color: var(--text-muted);
-}
-
-.builder-picks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
-}
-
-.builder-pick {
-  background: var(--accent-soft);
-  color: var(--accent-hover);
-  border-radius: 999px;
-  padding: 0.35rem 0.4rem 0.35rem 0.7rem;
-  font-size: 0.78rem;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.builder-pick button {
-  border: none;
-  background: var(--surface);
-  color: var(--danger);
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
-  padding: 0.2rem 0.55rem;
-  cursor: pointer;
-}
-
-.squad-builder > button {
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: var(--radius-md);
-  padding: 0.6rem 1.3rem;
-  font-weight: 700;
-  font-size: 0.85rem;
-  cursor: pointer;
-}
-
-.squad-builder > button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.builder-search {
-  margin-top: 1.25rem;
-}
-
-.builder-search table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 0.75rem;
-  font-size: 0.85rem;
-}
-
-.builder-search td {
-  padding: 0.4rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.builder-search button {
-  border: 1px solid var(--accent);
-  background: var(--surface);
-  color: var(--accent);
-  border-radius: var(--radius-sm);
-  padding: 0.25rem 0.7rem;
-  font-weight: 600;
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-
-.builder-search button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.builder-search button:not(:disabled):hover {
-  background: var(--accent);
-  color: white;
 }
 
 /* --- Confirm bar / toast --- */

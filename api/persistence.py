@@ -14,7 +14,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from engine.data.storage import SavedSquad
+from engine.data.storage import SavedBuildPicks, SavedSquad
 from features.chip_calendar import ChipUsage
 from features.squad_draft import CommittedSquad, PendingDraft
 from features.team_state import MyTeamState, SquadPlayer
@@ -28,6 +28,8 @@ __all__ = [
     "pending_draft_from_dict",
     "save_squad_state",
     "load_squad_state",
+    "save_build_picks",
+    "load_build_picks",
 ]
 
 
@@ -180,3 +182,26 @@ def load_squad_state(
         else None
     )
     return committed, pending
+
+
+def save_build_picks(session: Session, season: str, picks: list[SquadPlayer]) -> None:
+    """Upsert the single ``id=1`` row, written on every build-mode add/remove, so the
+    not-yet-confirmed initial squad survives a restart too."""
+    row = session.get(SavedBuildPicks, 1)
+    if row is None:
+        row = SavedBuildPicks(id=1)
+        session.add(row)
+
+    row.season = season
+    row.picks_json = json.dumps([_squad_player_to_dict(player) for player in picks])
+    session.commit()
+
+
+def load_build_picks(session: Session, season: str) -> list[SquadPlayer] | None:
+    """Returns ``None`` if no build picks have ever been saved for ``season``."""
+    row = session.execute(
+        select(SavedBuildPicks).where(SavedBuildPicks.id == 1)
+    ).scalar_one_or_none()
+    if row is None or row.season != season:
+        return None
+    return [_squad_player_from_dict(data) for data in json.loads(row.picks_json)]
