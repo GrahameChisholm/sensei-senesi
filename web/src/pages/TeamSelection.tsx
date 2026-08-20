@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { useSquad } from "../hooks/useSquad";
-import { useGameweek, usePlayerDirectory, useSquadPoints, useTeams } from "../hooks/useProjections";
+import {
+  useGameweek,
+  usePlayerDirectory,
+  useSquadPoints,
+  useTeams,
+  useTransferRecommendation,
+} from "../hooks/useProjections";
 import { GameweekHeader } from "../components/GameweekHeader";
 import { ChipBar } from "../components/ChipBar";
 import { DraftCompareBar } from "../components/DraftCompareBar";
@@ -9,6 +15,7 @@ import { Pitch } from "../components/Pitch";
 import { PlayerPanel } from "../components/PlayerPanel";
 import { RuleViolationToast } from "../components/RuleViolationToast";
 import { BUDGET, QUOTA, buildDefaultLineup } from "../lib/squadBuild";
+import { TransferRecommendationBanner } from "../components/TransferRecommendationBanner";
 
 export function TeamSelection() {
   const squadState = useSquad();
@@ -22,8 +29,10 @@ export function TeamSelection() {
   // local until a same-position replacement is picked in the Player Panel. Any number of players
   // can be marked at once, each independently filled or cancelled.
   const [removingIds, setRemovingIds] = useState<number[]>([]);
+  const [applyingRecommendation, setApplyingRecommendation] = useState(false);
 
   const { squad, error, loading, clearError } = squadState;
+  const recommendation = useTransferRecommendation(squad);
 
   const activeChipForPoints = previewChip ?? squad?.draft?.chip ?? squad?.active_chip ?? null;
   const points = useSquadPoints(
@@ -116,6 +125,21 @@ export function TeamSelection() {
     await squadState.liveCaptain(playerId, role);
   }
 
+  async function handleApplyRecommendation() {
+    if (!recommendation) return;
+    setApplyingRecommendation(true);
+    try {
+      const { sell_player_id, buy_player_id, buy_price, position } = recommendation;
+      if (squad!.draft) {
+        await squadState.transfer(sell_player_id, buy_player_id, buy_price, position);
+      } else {
+        await squadState.liveTransfer(sell_player_id, buy_player_id, buy_price, position);
+      }
+    } finally {
+      setApplyingRecommendation(false);
+    }
+  }
+
   const draftChipIsRebuild = squad.draft?.chip === "wildcard" || squad.draft?.chip === "free_hit";
   const removingPlayers = teamState.squad.filter((p) => removingIds.includes(p.player_id));
   const fillablePositions = [...new Set(removingPlayers.map((p) => p.position))];
@@ -146,18 +170,28 @@ export function TeamSelection() {
       {editing && draftChipIsRebuild && <DraftCompareBar draftChip={squad.draft!.chip} refreshKey={squad} />}
 
       <div className="main-content">
-        <Pitch
-          teamState={teamState}
-          directory={directory}
-          teams={teams}
-          horizon={horizon}
-          removingIds={removingIds}
-          onStartRemove={(playerId) =>
-            setRemovingIds((ids) => (ids.includes(playerId) ? ids : [...ids, playerId]))
-          }
-          onCancelRemove={(playerId) => setRemovingIds((ids) => ids.filter((id) => id !== playerId))}
-          onSetCaptain={(playerId, role) => void handleSetCaptain(playerId, role)}
-        />
+        <div className="squad-column">
+          <Pitch
+            teamState={teamState}
+            directory={directory}
+            teams={teams}
+            horizon={horizon}
+            removingIds={removingIds}
+            onStartRemove={(playerId) =>
+              setRemovingIds((ids) => (ids.includes(playerId) ? ids : [...ids, playerId]))
+            }
+            onCancelRemove={(playerId) =>
+              setRemovingIds((ids) => ids.filter((id) => id !== playerId))
+            }
+            onSetCaptain={(playerId, role) => void handleSetCaptain(playerId, role)}
+          />
+
+          <TransferRecommendationBanner
+            recommendation={recommendation}
+            onApply={() => void handleApplyRecommendation()}
+            applying={applyingRecommendation}
+          />
+        </div>
 
         <PlayerPanel
           teams={teams}

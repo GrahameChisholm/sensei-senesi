@@ -189,6 +189,19 @@ class PlayerStatsRowOut(BaseModel):
     fixtures: list[FixtureCellOut]
 
 
+class TransferRecommendationOut(BaseModel):
+    sell_player_id: int
+    sell_player_name: str
+    buy_player_id: int
+    buy_player_name: str
+    buy_price: int
+    position: str
+    net_points_gain: float
+    hit_cost: int
+    is_forced: bool
+    reasoning: str
+
+
 # --- request bodies ------------------------------------------------------------------------
 
 

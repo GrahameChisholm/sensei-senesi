@@ -460,6 +460,63 @@ class TestPlayersPanel:
         assert response.status_code == 404
 
 
+class TestTransferRecommendation:
+    def _committed_client(self, client) -> TestClient:
+        _build_full_squad(client)
+        _confirm_build(client)
+        return client
+
+    def test_before_committed_squad_is_rejected(self, client):
+        response = client.get("/transfers/recommended")
+        assert response.status_code == 400
+
+    def test_no_recommendation_when_no_positive_ev_swap(self, client):
+        # The fixture squad and every transfer target share the same flat projected points, so no
+        # swap gains anything net of the hit cost.
+        self._committed_client(client)
+        response = client.get("/transfers/recommended")
+        assert response.status_code == 200
+        assert response.json() is None
+
+    def test_recommends_a_clear_positive_ev_swap(self, client):
+        self._committed_client(client)
+        app_state = state_module.get_app_state()
+        app_state.projections[9001] = _horizon(9001, points=10.0)
+        response = client.get("/transfers/recommended")
+        body = response.json()
+        assert body is not None
+        assert body["buy_player_id"] == 9001
+        assert body["net_points_gain"] > 0
+
+    def test_skips_a_candidate_that_would_breach_club_quota(self, client):
+        self._committed_client(client)
+        app_state = state_module.get_app_state()
+        # Team 100 already holds 3 players (GK1, GK2, DEF_IDS[0]) per the fixture's team
+        # assignment. Putting the otherwise-clear-best candidate on that team would push it to 4
+        # -- illegal, so it must be filtered out rather than recommended.
+        app_state.players[9001]["team_id"] = 100
+        app_state.team_id_by_player[9001] = 100
+        app_state.projections[9001] = _horizon(9001, points=10.0)
+        response = client.get("/transfers/recommended")
+        body = response.json()
+        assert body is None or body["buy_player_id"] != 9001
+
+    def test_evaluates_against_the_open_draft_not_the_stale_committed_squad(self, client):
+        self._committed_client(client)
+        app_state = state_module.get_app_state()
+        app_state.projections[9001] = _horizon(9001, points=10.0)
+
+        client.post("/squad/draft")
+        client.post(
+            "/squad/draft/transfer",
+            json={"out_id": FWD_IDS[2], "in_id": 9001, "in_price": 40, "in_position": FWD},
+        )
+        # 9001 is now owned (in the open draft), so it can no longer be recommended as a buy.
+        response = client.get("/transfers/recommended")
+        body = response.json()
+        assert body is None or body["buy_player_id"] != 9001
+
+
 class TestPersistenceAcrossRestart:
     def test_committed_squad_survives_a_simulated_restart(self, client, tmp_path):
         _build_full_squad(client)

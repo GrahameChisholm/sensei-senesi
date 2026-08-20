@@ -41,6 +41,7 @@ from features.squad_draft import (
 )
 from features.squad_points import projected_points
 from features.squad_rules import (
+    MAX_PER_CLUB,
     RuleViolation,
     SquadRuleError,
     optimise_xi,
@@ -49,6 +50,7 @@ from features.squad_rules import (
     transfer,
 )
 from features.team_state import SquadPlayer
+from features.transfers import TransferCandidate, find_transfer_candidates
 
 app = FastAPI(title="FPL Assistant API", version="0.1.0")
 
@@ -467,6 +469,67 @@ def get_squad_points(
         per_player={str(player_id): points for player_id, points in result.per_player.items()},
         per_gameweek={str(gw): points for gw, points in result.per_gameweek.items()},
         missing_player_ids=list(result.missing_player_ids),
+    )
+
+
+def _respects_club_quota(
+    team_state, candidate: TransferCandidate, team_id_by_player: dict[int, int]
+) -> bool:
+    """``find_transfer_candidates`` only checks position match and budget -- it has no concept of
+    the max-3-per-club rule. Filtering here (rather than in ``features/transfers.py``) keeps that
+    module's scope as a pure points comparator and guarantees the one recommendation this endpoint
+    surfaces always applies cleanly."""
+    counts: dict[int, int] = {}
+    for player in team_state.squad:
+        team_id = team_id_by_player.get(player.player_id)
+        counts[team_id] = counts.get(team_id, 0) + 1
+    counts[team_id_by_player[candidate.sell_player_id]] -= 1
+    buy_team_id = team_id_by_player[candidate.buy_player_id]
+    counts[buy_team_id] = counts.get(buy_team_id, 0) + 1
+    return counts[buy_team_id] <= MAX_PER_CLUB
+
+
+@app.get("/transfers/recommended", response_model=schemas.TransferRecommendationOut | None)
+def get_recommended_transfer() -> schemas.TransferRecommendationOut | None:
+    """The one headline transfer suggestion, evaluated against whichever squad is currently
+    loaded (the open draft's working state if any, else the committed squad) over the full
+    projection horizon, independent of this page's Next GW / Next 3 GWs toggle -- a transfer is a
+    multi-gameweek commitment regardless of which window is on screen."""
+    committed, pending = get_squad_state()
+    team_state = pending.working_state if pending is not None else committed.team_state
+    if team_state is None:
+        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
+    app_state = get_app_state()
+    plan = find_transfer_candidates(
+        team_state, app_state.projections, app_state.projections, app_state.buy_prices
+    )
+    # affordable_candidates is already sorted by net_points_gain descending, so filtering
+    # preserves that order.
+    legal = [
+        c
+        for c in plan.affordable_candidates
+        if _respects_club_quota(team_state, c, app_state.team_id_by_player)
+    ]
+    forced = [c for c in legal if c.is_forced]
+    if forced:
+        candidate = max(forced, key=lambda c: c.net_points_gain)
+    else:
+        candidate = legal[0] if legal and legal[0].net_points_gain > 0 else None
+    if candidate is None:
+        return None
+
+    player_names = {pid: data["web_name"] for pid, data in app_state.players.items()}
+    return schemas.TransferRecommendationOut(
+        sell_player_id=candidate.sell_player_id,
+        sell_player_name=player_names.get(candidate.sell_player_id, "?"),
+        buy_player_id=candidate.buy_player_id,
+        buy_player_name=player_names.get(candidate.buy_player_id, "?"),
+        buy_price=candidate.buy_price,
+        position=candidate.position,
+        net_points_gain=candidate.net_points_gain,
+        hit_cost=candidate.hit_cost,
+        is_forced=candidate.is_forced,
+        reasoning=candidate.reasoning,
     )
 
 
