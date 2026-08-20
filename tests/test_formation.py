@@ -1,12 +1,12 @@
-"""Tests for simulator/formation.py -- starting XI/formation selection and FPL's autosub rule."""
+"""Tests for features/formation.py -- starting XI/formation selection."""
 
 from __future__ import annotations
 
 import pytest
 
 from engine.scoring import DEF, FWD, GK, MID
+from features.formation import VALID_FORMATIONS, select_starting_xi
 from features.team_state import SquadPlayer
-from simulator.formation import VALID_FORMATIONS, apply_autosubs, select_starting_xi
 
 
 def _squad_player(player_id: int, position: str) -> SquadPlayer:
@@ -80,43 +80,3 @@ def test_select_starting_xi_raises_with_no_goalkeeper():
     squad = tuple(p for p in _standard_squad() if p.position != GK)
     with pytest.raises(ValueError, match="goalkeeper"):
         select_starting_xi(squad, {pid: 1.0 for pid in range(3, 16)})
-
-
-def test_apply_autosubs_brings_on_bench_player_for_zero_minute_starter():
-    squad = _standard_squad()
-    ev = {pid: float(pid) for pid in range(1, 16)}
-    starting_xi, bench_order = select_starting_xi(squad, ev)
-    # Force the lowest-EV starter (first FWD in formation, or whichever landed in XI) to blank.
-    zero_minute_player = starting_xi[-1]
-    minutes = dict.fromkeys(range(1, 16), 90)
-    minutes[zero_minute_player] = 0
-    effective_xi = apply_autosubs(starting_xi, bench_order, squad, minutes)
-    assert zero_minute_player not in effective_xi
-    assert len(effective_xi) == 11
-
-
-def test_apply_autosubs_does_not_break_def_floor():
-    squad = _standard_squad()
-    ev = {pid: float(pid) for pid in range(1, 16)}
-    starting_xi, bench_order = select_starting_xi(squad, ev)
-    # Blank every DEF starter at once -- autosubs must never drop below 3 DEF in the final XI.
-    minutes = dict.fromkeys(range(1, 16), 90)
-    for pid in starting_xi:
-        if pid in {3, 4, 5, 6, 7}:
-            minutes[pid] = 0
-    effective_xi = apply_autosubs(starting_xi, bench_order, squad, minutes)
-    def_count = sum(1 for pid in effective_xi if pid in {3, 4, 5, 6, 7})
-    assert def_count >= 3 or def_count == sum(1 for pid in starting_xi if pid in {3, 4, 5, 6, 7})
-
-
-def test_apply_autosubs_reserve_gk_only_replaces_starting_gk():
-    squad = _standard_squad()
-    ev = {pid: float(pid) for pid in range(1, 16)}
-    ev[2] = 10.0  # GK 2 starts, GK 1 benched
-    starting_xi, bench_order = select_starting_xi(squad, ev)
-    minutes = dict.fromkeys(range(1, 16), 90)
-    # An outfield starter blanks, but the reserve GK must not come on for them.
-    outfield_starter = next(pid for pid in starting_xi if pid != 2)
-    minutes[outfield_starter] = 0
-    effective_xi = apply_autosubs(starting_xi, bench_order, squad, minutes)
-    assert 1 not in effective_xi  # reserve GK stays put; an outfield reserve came on instead

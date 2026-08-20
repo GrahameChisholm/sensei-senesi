@@ -1,15 +1,12 @@
-"""2026/27's real chip calendar (D14/G7) — a sibling to, and deliberately **not** a reuse of,
-``simulator/chip_calendar.py``.
+"""2026/27's real chip calendar (D14/G7): all four chips (Wildcard, Free Hit, Bench Boost, Triple
+Captain), one full set per half of the season.
 
-That module's own docstring records the live-confirmed finding this one is built from: 2026/27
-grants **eight chips total, one full set (Wildcard, Free Hit, Bench Boost, Triple Captain)
-independently per half of the season** — GW1-19 and GW20-38, the same boundary
-``simulator/chip_calendar.py`` already uses. This is a genuinely different, and simpler, shape
-than the older 2025/26 format that module implements (two Wildcards for the whole season, but only
-one each of Free Hit/Bench Boost/Triple Captain across the *entire* season, not per half) — mixing
-the two up would silently under- or over-grant a chip, so this page's own team_page_plan
-deliberately keeps them as two separate modules rather than parameterising one to cover both
-seasons' rules.
+2026/27 grants **eight chips total, one full set of Wildcard, Free Hit, Bench Boost, and Triple
+Captain independently per half of the season**, GW1 to GW19 and GW20 to GW38, real FPL's own
+half-season split point. This is a different, and simpler, shape than the older 2025/26 format
+(two Wildcards for the whole season, but only one each of Free Hit, Bench Boost, and Triple
+Captain across the *entire* season, not per half); mixing the two up would silently under or over
+grant a chip.
 """
 
 from __future__ import annotations
@@ -25,7 +22,7 @@ __all__ = [
     "record_chip_played",
 ]
 
-# Same GW19/20 boundary as simulator/chip_calendar.py -- real FPL's own half-season split point.
+# GW19/20 boundary: real FPL's own half-season split point.
 FIRST_HALF_LAST_GAMEWEEK = 19
 
 

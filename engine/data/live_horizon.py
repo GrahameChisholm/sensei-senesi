@@ -1,12 +1,11 @@
-"""Live multi-gameweek planning horizon — the live counterpart to ``simulator/horizon.py``.
+"""Live multi-gameweek planning horizon.
 
-``simulator/horizon.py`` already proves the "fit once, predict/simulate per gameweek" pattern
-works for a multi-gameweek horizon when replaying a historical season, where every horizon
-gameweek's fixture-dependent features already exist as real rows in an already-engineered frame.
-This module is the same pattern applied to a live snapshot of a season in progress, where the
-horizon's gameweeks (the current one, plus however many gameweeks ahead) haven't been played yet
-and need :func:`~engine.data.live_adapter.snapshot_to_feature_inputs`'s target-row synthesis
-first.
+:mod:`engine.horizon` provides the shared "fit once, predict/simulate per gameweek" helper for a
+multi-gameweek horizon, given a frame where every horizon gameweek's fixture-dependent features
+already exist as real rows in an already-engineered frame. This module applies that helper to a
+live snapshot of a season in progress, where the horizon's gameweeks (the current one, plus
+however many gameweeks ahead) haven't been played yet and need
+:func:`~engine.data.live_adapter.snapshot_to_feature_inputs`'s target-row synthesis first.
 
 **A season's true opening gameweek(s) need one more piece.** ``snapshot_to_feature_inputs`` can
 pool *team-level* Understat rates across prior seasons (its own ``understat_client``/
@@ -19,11 +18,10 @@ computes a ``NaN`` ``npxg_per_90``/``xa_per_90``, and ``engineer_features``' dro
 the training frame. :func:`augment_feature_inputs_with_prior_season` closes both gaps together —
 see ``engine/data/cross_season.py``'s own module docstring for the full reasoning.
 
-Deliberately does not import ``backtest.run_season``/``simulator.horizon`` at module scope — same
+Deliberately does not import ``backtest.run_season``/``engine.horizon`` at module scope — same
 documented exception ``engine/data/live_adapter.py`` already makes to "engine/ never depends on
-backtest/": this module's whole purpose is exactly what ``simulator/horizon.py`` does for
-historical replay, reused here rather than duplicated, so the dependency is contained to the one
-function that needs it.
+backtest/": this module calls :mod:`engine.horizon`'s shared fit/predict pattern rather than
+duplicating it, so the dependency is contained to the one function that needs it.
 """
 
 from __future__ import annotations
@@ -57,9 +55,9 @@ __all__ = [
 # Current gameweek + next 2 — a manager plans transfers/captaincy/chips against this window.
 DEFAULT_HORIZON_LENGTH = 3
 
-# Mirrors simulator/run_simulation.py's own DEFAULT_MIN_TRAINING_GAMEWEEKS -- below this, there
-# isn't enough real history yet for `fit_fn` to fit a meaningful model (the GW1/GW2 cold-start
-# case engine/data/live_adapter.py's own docstring already documents as a real, unresolved gap).
+# Below this many real training gameweeks, there isn't enough real history yet for `fit_fn` to
+# fit a meaningful model (the GW1/GW2 cold-start case engine/data/live_adapter.py's own docstring
+# already documents as a real, unresolved gap).
 DEFAULT_MIN_TRAINING_GAMEWEEKS = 3
 
 
@@ -120,13 +118,13 @@ def build_live_horizon_from_feature_inputs(
     :func:`~engine.data.live_adapter.snapshot_to_feature_inputs`, or built directly in a test the
     way ``tests/test_live_adapter.py`` already does), fit once on real history strictly before
     ``current_gameweek`` and predict/simulate every gameweek in ``target_gameweeks`` from that one
-    fit — exactly :func:`simulator.horizon.build_horizon_predictions`'s own pattern.
+    fit, exactly :func:`engine.horizon.build_horizon_predictions`'s own pattern.
 
     Raises ``ValueError`` rather than letting ``fit_fn`` crash obscurely on a near-empty frame
     when fewer than ``min_training_gameweeks`` real gameweeks of history are available.
     """
     from backtest.run_season import engineer_features, fit_fn
-    from simulator.horizon import build_horizon_predictions, build_horizon_projections
+    from engine.horizon import build_horizon_predictions, build_horizon_projections
 
     engineered = engineer_features(
         feature_inputs.merged_gw,

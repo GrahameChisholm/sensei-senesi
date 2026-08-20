@@ -44,8 +44,7 @@ uv run uvicorn api.main:app --reload   # http://localhost:8000
 ```
 The API serves precomputed data only; it never fetches or computes projections on request (D7). Run
 `uv run python scripts/build_projections.py` first to populate `data_store/projections/` from a live
-snapshot. To point a running API process at a historical replay season instead of live data, set
-`FPL_REPLAY_SEASON=2025-26` before starting uvicorn (see `api/state.py`).
+snapshot.
 
 Copy `.env.example` to `.env` for local secrets (only needed for the market overlay's odds API key;
 the core engine has no external-key dependency). Never commit `.env`.
@@ -99,7 +98,7 @@ per BUILD_PLAN Phase 2:
   between FPL and Understat (`crosswalk.py`), point-in-time snapshots (`snapshots.py` — the
   anti-leakage mechanism: backtesting must only ever see data as it stood before the gameweek being
   predicted), cold-start priors for historyless players (`cold_start.py`), cross-season history
-  stitching for the true-GW1 problem (`cross_season.py`), and the live/replay adapters
+  stitching for the true-GW1 problem (`cross_season.py`), and the live adapters
   (`live_adapter.py`, `live_horizon.py`) that turn a raw snapshot into engine-ready feature rows.
 - `engine/scoring.py` — the single source of truth for 2026/27 FPL point values. Never hardcode a
   point value elsewhere.
@@ -137,14 +136,11 @@ lives in `api/` — it all lives here.
   subsequent edit (`open_draft`/`apply_*_to_draft`/`confirm_draft`), because the first has no existing
   committed squad to diff against.
 - `features/chip_calendar.py` — 2026/27 chip rules specifically: all four chips (Wildcard, Free Hit,
-  Bench Boost, Triple Captain), one full set per half-season. Do not confuse with
-  `simulator/chip_calendar.py`, which implements the *older* 2025/26 ruleset (2 Wildcards, one each of
-  the others, no halves) for replaying that season.
+  Bench Boost, Triple Captain), one full set per half-season. The older 2025/26 ruleset (2 Wildcards,
+  one each of the others, no halves) no longer has any code path in this repo.
 - `features/captaincy.py`, `transfers.py`, `chips.py`, `fixtures.py` — the four planning features,
   each ranking/evaluating over the full player pool or planning horizon, not just the user's own 15.
 - `features/squad_points.py` — projects points for a squad/XI, chip-aware.
-- `features/actual_points.py` — scores a committed squad against real recorded outcomes (used by
-  season replay and by `POST /squad/advance`).
 
 ### Web app (`api/`, `web/`)
 
@@ -159,18 +155,6 @@ backend endpoint and no FPL rule logic of its own — the server is always the s
 client just re-renders whatever it returns. `web/src/pages/TeamSelection.tsx` is the current (and so
 far only) page; `web/src/components/` holds the pitch view, squad builder, chip bar, and per-player
 breakdown popover.
-
-### Season Replay
-
-`scripts/build_replay_projections.py` turns a finished historical season (vaastav's cached
-`merged_gw`/`teams` data under `data_store/season_cache/`) into the same per-gameweek projection-cache
-JSON shape `scripts/build_projections.py` produces for live data, so the entire existing web app can
-run against real historical seasons with zero frontend changes. `data_store/replay/<season>/` holds
-the resulting cache plus real per-gameweek ground truth (`total_points`/`minutes`) that
-`POST /squad/advance` scores a committed squad against. `simulator/run_simulation.py` is a separate,
-older season-loop tool (BUILD_PLAN's season simulator, predates the web app) that replays a season
-end-to-end deciding chips/transfers/captaincy purely from horizon projections and reports the delta
-against a hold-and-never-transfer baseline; it is not the same code path as the web app's replay mode.
 
 ## Working conventions
 

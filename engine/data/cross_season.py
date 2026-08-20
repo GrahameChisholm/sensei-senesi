@@ -76,7 +76,7 @@ __all__ = [
 # target rows: last season's GW38 becomes 0, GW1 becomes -37, etc. Any value >= the prior season's
 # own gameweek count works (real ordering comes from `kickoff_time`, not this number — see this
 # module's own docstring); 38 is simply the real length of a normal season, matching
-# `simulator/chip_calendar.py`'s own `FIRST_HALF_LAST_GAMEWEEK`-adjacent convention of using real
+# `features/chip_calendar.py`'s own `FIRST_HALF_LAST_GAMEWEEK`-adjacent convention of using real
 # FPL calendar facts rather than an arbitrary round number.
 PRIOR_SEASON_GAMEWEEKS = 38
 

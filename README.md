@@ -12,8 +12,8 @@ API and web frontend they describe have been removed and are being rebuilt from 
 Phase 0 (project setup), Phase 1 (data foundation), Phase 2 (the prediction engine), and Phase 3
 (backtesting & validation) are built out. Phase 4 (feature logic — `features/fixtures.py`,
 `captaincy.py`, `transfers.py`, `chips.py`, plus the shared `MyTeamState`), Phase 4b (the live
-market overlay — `market_overlay/odds_client.py`, `divergence.py`), and the season simulator
-(`simulator/`) are also implemented and tested.
+market overlay — `market_overlay/odds_client.py`, `divergence.py`) are also implemented and
+tested.
 
 ## Development
 

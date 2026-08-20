@@ -24,9 +24,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from engine.scoring import DEF, FWD, GK, MID, POSITIONS
+from features.formation import VALID_FORMATIONS, select_starting_xi
 from features.team_state import MyTeamState, SquadPlayer
 from features.transfers import TRANSFER_HIT_COST
-from simulator.formation import VALID_FORMATIONS, select_starting_xi
 
 __all__ = [
     "SQUAD_SIZE",
@@ -142,7 +142,7 @@ def validate_xi(
     starting_xi: Sequence[int], position_by_player: Mapping[int, str]
 ) -> tuple[RuleViolation, ...]:
     """Position-legal starting XI: exactly 11 players, exactly 1 GK, and the outfield (DEF, MID,
-    FWD) split one of :data:`~simulator.formation.VALID_FORMATIONS` — checked as an exact
+    FWD) split one of :data:`~features.formation.VALID_FORMATIONS` — checked as an exact
     membership test, not independent per-position ranges, since not every combination of
     individually-legal counts sums to 10 outfield players."""
     if len(starting_xi) != 11:
@@ -326,7 +326,7 @@ def reorder_bench(state: MyTeamState, bench_order: Sequence[int]) -> MyTeamState
 
 def optimise_xi(state: MyTeamState, expected_points: Mapping[int, float]) -> MyTeamState:
     """Best legal formation from the existing 15, by expected points
-    (:func:`~simulator.formation.select_starting_xi`) — applied immediately, with no draft/confirm
+    (:func:`~features.formation.select_starting_xi`) — applied immediately, with no draft/confirm
     step, since it can only ever rearrange players already owned (D22: no budget/quota/legality
     risk to weigh first).
 

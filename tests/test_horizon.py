@@ -1,4 +1,4 @@
-"""Tests for simulator/horizon.py -- multi-gameweek horizon projections built from one fixed
+"""Tests for engine/horizon.py -- multi-gameweek horizon projections built from one fixed
 fitted engine state."""
 
 from __future__ import annotations
@@ -6,7 +6,7 @@ from __future__ import annotations
 import pandas as pd
 
 from backtest.run_season import engineer_features, fit_fn
-from simulator.horizon import build_horizon_predictions, build_horizon_projections
+from engine.horizon import build_horizon_predictions, build_horizon_projections
 
 
 def _synthetic_season() -> pd.DataFrame:

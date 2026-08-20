@@ -1,9 +1,8 @@
-"""Starting XI / bench-order selection and FPL's real autosub rule (``planning/
-SEASON_SIMULATOR.md`` component 3's "Formation/starting XI" and "Autosubs" bullets) — nothing in
-``features/`` picks a valid formation today (``features.chips.evaluate_wildcard`` explicitly
-disclaims a full optimal-XI search as out of v1 scope, and ``features.team_state.MyTeamState``
-only validates squad/XI *counts*, never position-legality), so this is genuinely new logic, not a
-reuse of anything that already existed.
+"""Starting XI and bench-order selection for a squad, satisfying a valid FPL formation.
+
+Given a squad and each player's expected points, this module picks the highest-EV legal
+starting XI (exactly 1 GK plus a DEF/MID/FWD split from :data:`VALID_FORMATIONS`) and orders
+the remaining players as the bench.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from engine.scoring import DEF, FWD, GK, MID
 from features.team_state import SquadPlayer
 
-__all__ = ["VALID_FORMATIONS", "select_starting_xi", "apply_autosubs"]
+__all__ = ["VALID_FORMATIONS", "select_starting_xi"]
 
 # Every legal FPL formation: (DEF, MID, FWD) summing to 10 outfield starters, with exactly 1 GK
 # always separate — FPL's own constraints are 3-5 DEF, 2-5 MID, 1-3 FWD.
@@ -73,45 +72,3 @@ def select_starting_xi(
         p.player_id for p in reserve_gk
     )
     return best_combo, bench_order
-
-
-def apply_autosubs(
-    starting_xi: tuple[int, ...],
-    bench_order: tuple[int, ...],
-    squad: Sequence[SquadPlayer],
-    minutes_played: Mapping[int, int],
-) -> tuple[int, ...]:
-    """FPL's real autosub rule: a bench player in ``bench_order`` comes on for a starter who
-    played 0 minutes, in bench order, skipped if it would leave the resulting XI short of the
-    legal 3-DEF/1-FWD floor. The reserve goalkeeper only ever considers replacing the starting
-    goalkeeper (bench order already places it last, so by the time it's reached the only
-    zero-minute "starter" left standing is normally the keeper; the position check below guards
-    that explicitly rather than relying on ordering alone).
-    """
-    position_by_id = {p.player_id: p.position for p in squad}
-    final_xi = list(starting_xi)
-
-    def count(position: str, ids: Sequence[int]) -> int:
-        return sum(1 for pid in ids if position_by_id[pid] == position)
-
-    for bench_id in bench_order:
-        zero_minute_starters = [pid for pid in final_xi if minutes_played.get(pid, 0) == 0]
-        if not zero_minute_starters:
-            break
-        bench_position = position_by_id[bench_id]
-        candidate_out = next(
-            (
-                pid
-                for pid in zero_minute_starters
-                if (position_by_id[pid] == GK) == (bench_position == GK)
-            ),
-            None,
-        )
-        if candidate_out is None:
-            continue
-        trial_xi = [bench_id if pid == candidate_out else pid for pid in final_xi]
-        if count(DEF, trial_xi) < 3 or count(FWD, trial_xi) < 1:
-            continue
-        final_xi = trial_xi
-
-    return tuple(final_xi)

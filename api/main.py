@@ -18,23 +18,16 @@ from api.fixtures_view import DEFAULT_FIXTURE_TICKER_HORIZON, build_fixture_tick
 from api.panel import build_panel_rows, build_team_fixture_map
 from api.player_stats_panel import build_player_stats_rows
 from api.state import (
-    DEFAULT_PROJECTION_CACHE_DIR,
     get_app_state,
     get_build_picks,
-    get_season_log,
     get_squad_state,
-    load_projection_cache,
-    set_app_state,
     set_build_picks,
-    set_season_log,
     set_squad_state,
 )
-from features.actual_points import score_actual_gameweek
 from features.chip_calendar import available_chips_this_gameweek
 from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
 from features.squad_draft import (
-    advance_gameweek,
     apply_optimise_xi_to_draft,
     apply_reorder_bench_to_draft,
     apply_set_captain_to_draft,
@@ -146,7 +139,6 @@ def get_gameweek() -> schemas.GameweekOut:
         deadline_passed=state.deadline_passed,
         generated_at=state.generated_at.isoformat(),
         model_version=state.model_version,
-        is_replay=state.results is not None,
     )
 
 
@@ -340,12 +332,9 @@ def draft_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
 
 
 def _require_live_committed():
-    """Shared guard for the live (non-replay) direct-mutation endpoints below: no draft/preview,
-    so they must never be reachable for a Season Replay season (that still needs the real
-    draft/confirm hit-cost machinery) or while a draft happens to be open."""
+    """Shared guard for the direct-mutation endpoints below: validates there's a committed squad
+    already and no draft happens to be open."""
     app_state = get_app_state()
-    if app_state.results is not None:
-        raise HTTPException(400, "not available for a Season Replay season")
     committed, pending = get_squad_state()
     if committed.team_state is None:
         raise HTTPException(400, "no committed squad yet -- build and confirm one first")
@@ -356,12 +345,10 @@ def _require_live_committed():
 
 @app.post("/squad/live-transfer", response_model=schemas.SquadOut)
 def live_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
-    """The live (non-replay) team page's only transfer path: swap a player straight in and out of
-    the real committed squad, no draft/preview, no hit cost, no free-transfer accounting. This
-    page is a planning tool for a season that hasn't been played yet, not a simulation of FPL's
-    transfer-limit rules -- that simulation only matters for Season Replay, which still goes
-    through the draft/confirm endpoints above instead. 400s outside the live season, since
-    bypassing hit costs there would silently corrupt a replay's scoring fidelity.
+    """The live team page's only transfer path: swap a player straight in and out of the real
+    committed squad, no draft/preview, no hit cost, no free-transfer accounting. This page is a
+    planning tool for a season that hasn't been played yet, not a simulation of FPL's
+    transfer-limit rules.
     """
     app_state, committed = _require_live_committed()
     new_team_state = transfer(
@@ -378,9 +365,9 @@ def live_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
 
 @app.post("/squad/live-captain", response_model=schemas.SquadOut)
 def live_captain(body: schemas.CaptainIn) -> schemas.SquadOut:
-    """The live season's captain/vice-captain path -- same direct-mutation shape as
-    :func:`live_transfer`, just simpler: captaincy never carried a hit cost even under the
-    draft/confirm model, so there's nothing to bypass beyond the preview step itself."""
+    """The live team page's captain/vice-captain path -- same direct-mutation shape as
+    :func:`live_transfer`, just simpler: captaincy never carries a hit cost, so there's nothing
+    to bypass beyond the preview step itself."""
     _, committed = _require_live_committed()
     if body.role == "captain":
         new_team_state = set_captain(committed.team_state, body.player_id)
@@ -480,87 +467,6 @@ def get_squad_points(
         per_player={str(player_id): points for player_id, points in result.per_player.items()},
         per_gameweek={str(gw): points for gw, points in result.per_gameweek.items()},
         missing_player_ids=list(result.missing_player_ids),
-    )
-
-
-# --- Season Replay: "Advance to GW N+1" ----------------------------------------------------------
-
-
-@app.post("/squad/advance", response_model=schemas.AdvanceResultOut)
-def advance_gameweek_endpoint() -> schemas.AdvanceResultOut:
-    """Season Replay only: score the committed squad against this gameweek's real recorded result
-    (:func:`~features.actual_points.score_actual_gameweek`), append it to the season log, and move
-    the app on to the next gameweek's cache (:func:`~features.squad_draft.advance_gameweek`) — the
-    "Advance to GW N+1" button's endpoint. 400s outside a replay season (``app_state.results`` is
-    ``None`` for the live 2026/27 cache), with an open draft (confirm or discard it first), or once
-    the squad has already moved past the currently-loaded gameweek.
-    """
-    committed, pending = get_squad_state()
-    if committed.team_state is None:
-        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
-    if pending is not None:
-        raise HTTPException(400, "confirm or discard your open draft before advancing")
-
-    app_state = get_app_state()
-    if app_state.results is None:
-        raise HTTPException(
-            400, "this season has no recorded results -- advance only works in Season Replay"
-        )
-    gameweek = app_state.gameweek
-    if committed.committed_gameweek != gameweek:
-        raise HTTPException(
-            400,
-            f"squad is committed for gameweek {committed.committed_gameweek}, "
-            f"not the current gameweek {gameweek}",
-        )
-
-    gw_results = app_state.results.get(gameweek, {})
-    minutes_by_player = {pid: r["minutes"] for pid, r in gw_results.items()}
-    points_by_player = {pid: r["total_points"] for pid, r in gw_results.items()}
-
-    result = score_actual_gameweek(
-        gameweek=gameweek,
-        team_state=committed.team_state,
-        chip=committed.active_chip,
-        hit_cost=committed.gameweek_hit_cost,
-        minutes_by_player=minutes_by_player,
-        points_by_player=points_by_player,
-    )
-
-    previous_total = get_season_log()[-1]["running_total"] if get_season_log() else 0.0
-    running_total = previous_total + result.points
-    new_log = [
-        *get_season_log(),
-        {
-            "gameweek": gameweek,
-            "points": result.points,
-            "running_total": running_total,
-            "chip_played": result.chip_played,
-        },
-    ]
-    set_season_log(new_log)
-
-    next_gameweek = gameweek + 1
-    next_cache_path = (
-        DEFAULT_PROJECTION_CACHE_DIR / app_state.season / f"gw{next_gameweek:02d}.json"
-    )
-    season_complete = not next_cache_path.exists()
-    if not season_complete:
-        set_app_state(load_projection_cache(next_cache_path))
-        new_committed, new_pending = advance_gameweek(committed, None, next_gameweek)
-        set_squad_state(new_committed, new_pending)
-
-    return schemas.AdvanceResultOut(
-        gameweek=result.gameweek,
-        chip_played=result.chip_played,
-        effective_xi=list(result.effective_xi),
-        effective_captain_id=result.effective_captain_id,
-        hit_cost=result.hit_cost,
-        points=result.points,
-        running_total=running_total,
-        season_complete=season_complete,
-        season_log=[schemas.SeasonLogEntryOut(**entry) for entry in new_log],
-        squad=_squad_out(),
     )
 
 

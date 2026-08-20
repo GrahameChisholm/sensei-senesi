@@ -1,13 +1,11 @@
-"""Builds a multi-gameweek "planning horizon" of point-estimate + simulated projections, reusing
-one fixed fitted engine state across every horizon gameweek — exactly the mechanical extension
-``scripts/weekly_refresh.py``'s own docstring already describes as not-yet-built (``planning/
-SEASON_SIMULATOR.md`` component 2). ``backtest.run_season.make_predict_fn``/
-``make_simulate_predict_fn`` already read a fixed, already-fitted ``FittedEngineState`` and a
-fixed ``engineered`` frame; this just calls them once per horizon gameweek instead of once per
-fit — the *same* fitted models throughout (fit strictly on history before the real "current"
-decision gameweek), only the fixture-dependent feature row per player changes gameweek to
-gameweek, matching how a real manager plans: you know the next five weeks' fixtures, never the
-next five weeks' results.
+"""Builds a multi-gameweek "planning horizon" of point-estimate plus simulated projections,
+reusing one fixed fitted engine state across every horizon gameweek.
+``backtest.run_season.make_predict_fn``/``make_simulate_predict_fn`` already read a fixed,
+already-fitted ``FittedEngineState`` and a fixed ``engineered`` frame, this just calls them once
+per horizon gameweek instead of once per fit, the *same* fitted models throughout (fit strictly
+on history before the real "current" decision gameweek), only the fixture-dependent feature row
+per player changes gameweek to gameweek, matching how a real manager plans: you know the next
+five weeks' fixtures, never the next five weeks' results.
 """
 
 from __future__ import annotations

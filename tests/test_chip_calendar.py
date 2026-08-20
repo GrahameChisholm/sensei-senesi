@@ -1,6 +1,5 @@
-"""Tests for features.chip_calendar -- 2026/27's real, symmetric one-full-set-per-half chip
-ruleset (D14/G7), a deliberate sibling to (not a reuse of) simulator/chip_calendar.py's 2025/26
-ruleset.
+"""Tests for features.chip_calendar: 2026/27's real, symmetric one-full-set-per-half chip
+ruleset (D14/G7), granting all four chips independently per half of the season.
 """
 
 from __future__ import annotations
