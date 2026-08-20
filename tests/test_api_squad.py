@@ -492,3 +492,18 @@ class TestPersistenceAcrossRestart:
         body = client.get("/squad").json()
         assert body["draft"] is not None
         assert body["draft"]["transfers_made"] == 1
+
+    def test_build_picks_survive_a_simulated_restart(self, client):
+        client.post(
+            "/squad/build/players", json={"player_id": GK1, "position": GK, "price": 40}
+        )
+
+        db_path = state_module._db_path
+        app_state = state_module.get_app_state()
+        state_module.reset_state(db_path=db_path)
+        state_module.set_app_state(app_state)
+
+        body = client.get("/squad").json()
+        assert body["is_complete"] is False
+        assert len(body["build_picks"]) == 1
+        assert body["build_picks"][0]["player_id"] == GK1

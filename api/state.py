@@ -19,7 +19,9 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from api.persistence import (
+    load_build_picks,
     load_squad_state,
+    save_build_picks,
     save_squad_state,
 )
 from engine.aggregate import ComponentBreakdown
@@ -183,6 +185,7 @@ _app_state: AppState | None = None
 _committed: CommittedSquad | None = None
 _pending: PendingDraft | None = None
 _build_picks: list[SquadPlayer] | None = None
+_build_picks_loaded: bool = False
 _db_path: str = DEFAULT_DB_PATH
 
 
@@ -262,24 +265,33 @@ def confirm_and_save(committed: CommittedSquad, pending: PendingDraft | None = N
 def get_build_picks() -> list[SquadPlayer]:
     """The in-progress initial-build squad (D6/D23) — 0 to 15 picks, not yet a real
     ``MyTeamState`` (which requires exactly 15/11/4 at every step, so it can't represent this
-    state at all). Deliberately **not** persisted across a restart, unlike an ongoing edit draft
-    (D17) — a one-time bootstrapping step is a smaller loss to redo than an in-progress edit."""
-    global _build_picks
-    if _build_picks is None:
-        _build_picks = []
+    state at all). Loaded from ``SavedBuildPicks`` on first access and persisted on every
+    add/remove via :func:`set_build_picks`, so it survives a restart like the committed squad
+    and any pending draft do."""
+    global _build_picks, _build_picks_loaded
+    if not _build_picks_loaded:
+        app_state = get_app_state()
+        session = _get_session()
+        _build_picks = load_build_picks(session, app_state.season) or []
+        _build_picks_loaded = True
     return _build_picks
 
 
 def set_build_picks(picks: list[SquadPlayer]) -> None:
-    global _build_picks
+    global _build_picks, _build_picks_loaded
+    app_state = get_app_state()
+    session = _get_session()
+    save_build_picks(session, app_state.season, picks)
     _build_picks = picks
+    _build_picks_loaded = True
 
 
 def reset_state(db_path: str = DEFAULT_DB_PATH) -> None:
     """Test-only: clear every process-wide singleton so the next access reloads from scratch."""
-    global _app_state, _committed, _pending, _build_picks, _db_path
+    global _app_state, _committed, _pending, _build_picks, _build_picks_loaded, _db_path
     _app_state = None
     _committed = None
     _pending = None
     _build_picks = None
+    _build_picks_loaded = False
     _db_path = db_path
