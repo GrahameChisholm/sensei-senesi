@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { ComponentBreakdownOut, PlayerStatsRowOut, TeamOut } from "../api";
-import { expectedPointsColour } from "../lib/colours";
+import { expectedPointsColour, expectedPointsTextColour } from "../lib/colours";
 import { BreakdownPopover } from "./BreakdownPopover";
 
 const ROW_HEIGHT = 44;
@@ -257,7 +257,11 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
                 <td
                   key={fixture.gameweek}
                   className="clickable-cell"
-                  style={{ background: expectedPointsColour(fixture.expected_points), position: "relative" }}
+                  style={{
+                    background: expectedPointsColour(fixture.expected_points),
+                    color: expectedPointsTextColour(fixture.expected_points),
+                    position: "relative",
+                  }}
                   onClick={() =>
                     setOpenBreakdown((prev) =>
                       prev?.playerId === row.player_id && prev.gameweek === fixture.gameweek

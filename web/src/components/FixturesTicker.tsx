@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { FixtureTickerRowOut, TeamOut } from "../api";
 import { useFixtureTicker } from "../hooks/useProjections";
-import { fixtureDifficultyColour } from "../lib/colours";
+import { fixtureDifficultyColour, fixtureDifficultyTextColour } from "../lib/colours";
 
 const HORIZON_OPTIONS = [3, 5, 8, 10];
 
@@ -85,12 +85,20 @@ export function FixturesTicker({ teams }: FixturesTickerProps) {
             {rows.map((row) => (
               <tr key={row.team_id}>
                 <td>{teams[row.team_id]?.short_name ?? row.team_id}</td>
-                <td style={{ background: fixtureDifficultyColour(row.average_difficulty) }}>
+                <td
+                  style={{
+                    background: fixtureDifficultyColour(row.average_difficulty),
+                    color: fixtureDifficultyTextColour(row.average_difficulty),
+                  }}
+                >
                   {row.average_difficulty !== null ? row.average_difficulty.toFixed(1) : "Blank"}
                 </td>
                 {row.gameweeks.map((cell) =>
                   cell.fixtures.length === 0 ? (
-                    <td key={cell.gameweek} style={{ background: fixtureDifficultyColour(null) }}>
+                    <td
+                      key={cell.gameweek}
+                      style={{ background: fixtureDifficultyColour(null), color: fixtureDifficultyTextColour(null) }}
+                    >
                       Blank
                     </td>
                   ) : (
@@ -99,7 +107,10 @@ export function FixturesTicker({ teams }: FixturesTickerProps) {
                         <div
                           key={index}
                           className="ticker-fixture-entry"
-                          style={{ background: fixtureDifficultyColour(entry.difficulty) }}
+                          style={{
+                            background: fixtureDifficultyColour(entry.difficulty),
+                            color: fixtureDifficultyTextColour(entry.difficulty),
+                          }}
                         >
                           {teams[entry.opponent_id]?.short_name ?? entry.opponent_id}
                           <span className="fixture-label">{entry.is_home ? "(H)" : "(A)"}</span>

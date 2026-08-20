@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { expectedPointsColour } from "../lib/colours";
+import { expectedPointsColour, expectedPointsTextColour } from "../lib/colours";
 import { BreakdownPopover } from "./BreakdownPopover";
 
 export interface CardFixture {
@@ -102,7 +102,7 @@ export function PlayerCard({
       )}
 
       <div className="player-card-name">
-        {name}
+        <span className="player-card-name-text">{name}</span>
         {isCaptain && <span className="badge captain-badge">C</span>}
         {isVice && <span className="badge vice-badge">V</span>}
         {lowConfidence && <span className="badge low-confidence-badge" title="Positional baseline — no history">!</span>}
@@ -110,7 +110,13 @@ export function PlayerCard({
       <div className="player-card-price">{price !== null ? `£${(price / 10).toFixed(1)}m` : "—"}</div>
 
       {horizon === "next" ? (
-        <div className="player-card-points" style={{ background: expectedPointsColour(primary?.expectedPoints ?? null) }}>
+        <div
+          className="player-card-points"
+          style={{
+            background: expectedPointsColour(primary?.expectedPoints ?? null),
+            color: expectedPointsTextColour(primary?.expectedPoints ?? null),
+          }}
+        >
           <div className="ep-value">{primary?.expectedPoints !== null && primary?.expectedPoints !== undefined ? primary.expectedPoints.toFixed(1) : "—"}</div>
           <div className="fixture-label">{fixtureLabel(primary)}</div>
         </div>
@@ -120,7 +126,10 @@ export function PlayerCard({
             <div
               key={fixture.gameweek}
               className="ep-mini"
-              style={{ background: expectedPointsColour(fixture.expectedPoints) }}
+              style={{
+                background: expectedPointsColour(fixture.expectedPoints),
+                color: expectedPointsTextColour(fixture.expectedPoints),
+              }}
             >
               <div className="ep-mini-value">{fixture.expectedPoints !== null ? fixture.expectedPoints.toFixed(1) : "—"}</div>
               <div className="ep-mini-fixture">{fixtureLabel(fixture)}</div>
