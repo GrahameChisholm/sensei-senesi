@@ -185,6 +185,19 @@ export interface PlayerStatsRowOut {
   fixtures: FixtureCellOut[];
 }
 
+export interface TransferRecommendationOut {
+  sell_player_id: number;
+  sell_player_name: string;
+  buy_player_id: number;
+  buy_player_name: string;
+  buy_price: number;
+  position: string;
+  net_points_gain: number;
+  hit_cost: number;
+  is_forced: boolean;
+  reasoning: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -272,6 +285,8 @@ export const api = {
   }) => request<PlayerPanelRowOut[]>(`/players${query(filters)}`),
   getPlayer: (playerId: number, gameweek?: number) =>
     request<PlayerDetailOut>(`/players/${playerId}${query({ gameweek })}`),
+
+  getRecommendedTransfer: () => request<TransferRecommendationOut | null>("/transfers/recommended"),
 
   getFixtureTicker: (horizon?: number) =>
     request<FixtureTickerRowOut[]>(`/fixtures${query({ horizon })}`),
