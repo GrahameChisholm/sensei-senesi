@@ -19,7 +19,9 @@ Steps:
 3. No existing worktree matches, so a new one needs to be created. If the session is already inside
    a worktree (from an earlier EnterWorktree call), creating a second one will be refused. Ask the
    user whether to exit the current worktree first (keep or remove it), don't assume either way.
-4. Call EnterWorktree with `name` set to `$ARGUMENTS`. It creates the worktree under
+4. Call EnterWorktree with `name` set to `$ARGUMENTS`. The project's `worktree.baseRef` setting is
+   pinned to `fresh` (see `.claude/settings.json`), so it always branches from `origin/main`, never
+   from whatever branch the session currently has checked out. It creates the worktree under
    `.claude/worktrees/` and switches the session into it, but it sanitizes the name (slashes become
    `+`, the branch gets a `worktree-` prefix), so the branch it creates will not yet be `$ARGUMENTS`.
    Immediately run `git branch --show-current` to capture that auto-generated name, then rename it
