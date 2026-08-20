@@ -1,6 +1,5 @@
-"""Tests for engine.data.live_horizon -- the live counterpart to simulator/horizon.py's
-"fit once, predict/simulate per gameweek" multi-gameweek horizon, applied to a live snapshot
-instead of a replayed historical season.
+"""Tests for engine.data.live_horizon, which builds the "fit once, predict/simulate per gameweek"
+multi-gameweek horizon from a live snapshot instead of a replayed historical season.
 
 All synthetic (no network, no real snapshot files) -- ``build_live_horizon_from_feature_inputs``
 is exercised directly against a hand-built ``FeatureInputs``, the same disk-free approach

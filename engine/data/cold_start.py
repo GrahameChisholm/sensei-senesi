@@ -197,7 +197,7 @@ def baseline_projection(
 ) -> PlayerGameweekProjection:
     """The flagged, low-confidence projection for a player with no reconstructable history — the
     same real :class:`~engine.projections.PlayerGameweekProjection` shape every other consumer
-    (pitch, panel, ``simulator.formation.select_starting_xi``, chips) already expects, with
+    (pitch, panel, ``features.formation.select_starting_xi``, chips) already expects, with
     ``simulation=None`` (no Monte Carlo run backs this number) marking it as a prior rather than
     an engine output — callers key off that, plus their own ``source: "cold_start"`` cache field,
     to render the low-confidence UI marker (D5).
