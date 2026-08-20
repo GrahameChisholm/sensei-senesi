@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 from sqlalchemy.orm import Session
 
-from api.persistence import (
-    load_season_log,
-    load_squad_state,
-    save_season_log,
-    save_squad_state,
-)
+from api.persistence import load_squad_state, save_squad_state
 from engine.data.storage import Base, get_engine
 from engine.scoring import DEF, FWD, GK, MID
 from features.chip_calendar import ChipUsage
@@ -151,26 +145,3 @@ class TestRoundTrip:
 
         loaded, _ = load_squad_state(session, "2026-27")
         assert loaded.gameweek_hit_cost == 0
-
-
-class TestSeasonLog:
-    def test_round_trips(self, tmp_path):
-        session = _session(tmp_path)
-        save_squad_state(session, "2025-26", _committed(), None)
-        log = [
-            {"gameweek": 1, "points": 62.0, "running_total": 62.0, "chip_played": None},
-            {"gameweek": 2, "points": 55.0, "running_total": 117.0, "chip_played": "bench_boost"},
-        ]
-        save_season_log(session, log)
-
-        assert load_season_log(session) == log
-
-    def test_empty_when_never_saved(self, tmp_path):
-        session = _session(tmp_path)
-        save_squad_state(session, "2025-26", _committed(), None)
-        assert load_season_log(session) == []
-
-    def test_raises_if_no_row_exists_yet(self, tmp_path):
-        session = _session(tmp_path)
-        with pytest.raises(ValueError, match="save_squad_state"):
-            save_season_log(session, [])
