@@ -33,9 +33,6 @@ export interface GameweekOut {
   deadline_passed: boolean;
   generated_at: string;
   model_version: string;
-  // True only for a Season Replay season -- false for the live season, where transfers apply
-  // straight to the squad with no hit cost or confirm step (see api.liveTransfer).
-  is_replay: boolean;
 }
 
 export interface SquadPlayerOut {
@@ -188,28 +185,6 @@ export interface PlayerStatsRowOut {
   fixtures: FixtureCellOut[];
 }
 
-// --- Season Replay -----------------------------------------------------------------------
-
-export interface SeasonLogEntryOut {
-  gameweek: number;
-  points: number;
-  running_total: number;
-  chip_played: string | null;
-}
-
-export interface AdvanceResultOut {
-  gameweek: number;
-  chip_played: string | null;
-  effective_xi: number[];
-  effective_captain_id: number;
-  hit_cost: number;
-  points: number;
-  running_total: number;
-  season_complete: boolean;
-  season_log: SeasonLogEntryOut[];
-  squad: SquadOut;
-}
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -304,6 +279,4 @@ export const api = {
     request<PlayerStatsRowOut[]>(
       `/players/stats${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,
     ),
-
-  advanceGameweek: () => request<AdvanceResultOut>("/squad/advance", { method: "POST" }),
 };

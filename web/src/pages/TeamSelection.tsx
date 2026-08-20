@@ -8,9 +8,6 @@ import { Pitch } from "../components/Pitch";
 import { PlayerPanel } from "../components/PlayerPanel";
 import { SquadBuilder } from "../components/SquadBuilder";
 import { RuleViolationToast } from "../components/RuleViolationToast";
-import { SeasonProgress } from "../components/SeasonProgress";
-import { GameweekResultBanner } from "../components/GameweekResultBanner";
-import { AdvanceResultOut, SeasonLogEntryOut } from "../api";
 
 export function TeamSelection() {
   const squadState = useSquad();
@@ -23,8 +20,6 @@ export function TeamSelection() {
   // The squad member currently marked for removal (hover "x" on their card), if any -- purely
   // local until a same-position replacement is picked in the Player Panel.
   const [removing, setRemoving] = useState<number | null>(null);
-  const [seasonLog, setSeasonLog] = useState<SeasonLogEntryOut[]>([]);
-  const [lastResult, setLastResult] = useState<AdvanceResultOut | null>(null);
 
   const { squad, error, loading, clearError } = squadState;
 
@@ -56,9 +51,6 @@ export function TeamSelection() {
     );
   }
 
-  // Season Replay still goes through the draft/confirm machinery (hit costs and free transfers
-  // matter when simulating a real season); the live season doesn't -- see api.liveTransfer.
-  const isReplay = gameweek?.is_replay ?? false;
   const editing = squad.draft !== null;
   const teamState = squad.draft?.working_state ?? squad.committed!;
 
@@ -73,38 +65,12 @@ export function TeamSelection() {
 
   async function handleTransferIn(playerId: number, position: string, price: number) {
     if (removing === null) return;
-    if (isReplay) {
-      if (!squad!.draft) {
-        await squadState.openDraft();
-      }
-      await squadState.transfer(removing, playerId, price, position);
-    } else {
-      await squadState.liveTransfer(removing, playerId, price, position);
-    }
+    await squadState.liveTransfer(removing, playerId, price, position);
     setRemoving(null);
   }
 
   async function handleSetCaptain(playerId: number, role: "captain" | "vice") {
-    if (isReplay) {
-      if (!squad!.draft) {
-        await squadState.openDraft();
-      }
-      await squadState.setCaptain(playerId, role);
-    } else {
-      await squadState.liveCaptain(playerId, role);
-    }
-  }
-
-  async function handleAdvance() {
-    const result = await squadState.advance();
-    if (result === null) return;
-    setSeasonLog(result.season_log);
-    setLastResult(result);
-    // /squad/advance already moved the process-wide app state on to the next gameweek's cache --
-    // the header and player directory (prices/fixtures/projections) both need an explicit refetch
-    // to pick that up, since neither polls on its own.
-    await refreshGameweek();
-    await refreshDirectory();
+    await squadState.liveCaptain(playerId, role);
   }
 
   const draftChipIsRebuild = squad.draft?.chip === "wildcard" || squad.draft?.chip === "free_hit";
@@ -114,15 +80,6 @@ export function TeamSelection() {
   return (
     <div className="team-selection">
       {error && <RuleViolationToast message={error} onDismiss={clearError} />}
-      <GameweekResultBanner result={lastResult} onDismiss={() => setLastResult(null)} />
-
-      <SeasonProgress
-        gameweek={gameweek}
-        seasonLog={seasonLog}
-        seasonComplete={lastResult?.season_complete ?? false}
-        editing={editing}
-        onAdvance={() => void handleAdvance()}
-      />
 
       <GameweekHeader
         gameweek={gameweek}
