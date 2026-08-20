@@ -1,7 +1,7 @@
 import { PlayerPanelRowOut, TeamOut, TeamStateOut } from "../api";
 import { CardFixture, PlayerCard } from "./PlayerCard";
 
-const POSITION_ORDER = ["GK", "DEF", "MID", "FWD"];
+export const POSITION_ORDER = ["GK", "DEF", "MID", "FWD"];
 
 export function cardFixtures(row: PlayerPanelRowOut | undefined, teams: Record<number, TeamOut>): CardFixture[] {
   if (!row) return [];
@@ -18,27 +18,29 @@ interface PitchProps {
   directory: Record<number, PlayerPanelRowOut>;
   teams: Record<number, TeamOut>;
   horizon: "next" | "three";
-  /** The squad member currently marked for removal (via the card's hover "x"), if any -- a
+  /** Every squad member currently marked for removal (via a card's hover "x"), if any, a
    * purely local, not-yet-applied intent: nothing is removed from the real squad until a
-   * replacement is picked in the Player Panel (a squad can never actually hold 14 players, see
-   * features.team_state.MyTeamState). Rendered as an empty slot instead of that player's card. */
-  removing: number | null;
+   * replacement is picked in the Player Panel (a squad can never actually hold fewer than 15
+   * players, see features.team_state.MyTeamState). Any number of players can be marked at once,
+   * each rendered as an empty slot instead of that player's card, and filled independently. */
+  removingIds: number[];
   onStartRemove: (playerId: number) => void;
-  onCancelRemove: () => void;
+  onCancelRemove: (playerId: number) => void;
   onSetCaptain: (playerId: number, role: "captain" | "vice") => void;
 }
 
 /** No more "edit team" mode: the pitch is always live. Hovering any squad player reveals a small
  * "x"; clicking it marks that slot empty (still just local UI state) until the Player Panel picks
- * a same-position replacement, which is what actually calls the API (TeamSelection.tsx). Hovering
- * a starting-XI player also reveals "C"/"VC" pills -- captain/vice must be in the XI, so bench
- * cards never get them. */
+ * a same-position replacement, which is what actually calls the API (TeamSelection.tsx). Any
+ * number of slots can be emptied at once, so a manager can clear their whole squad and rebuild it
+ * from the panel. Hovering a starting-XI player also reveals "C"/"VC" pills; captain/vice must
+ * be in the XI, so bench cards never get them. */
 export function Pitch({
   teamState,
   directory,
   teams,
   horizon,
-  removing,
+  removingIds,
   onStartRemove,
   onCancelRemove,
   onSetCaptain,
@@ -52,13 +54,13 @@ export function Pitch({
   }
 
   function renderSlot(playerId: number, isBench: boolean) {
-    if (playerId === removing) {
+    if (removingIds.includes(playerId)) {
       return (
         <button
           key={playerId}
           type="button"
           className="empty-slot"
-          onClick={onCancelRemove}
+          onClick={() => onCancelRemove(playerId)}
           title="Cancel"
         >
           <span>{positionById[playerId]}</span>

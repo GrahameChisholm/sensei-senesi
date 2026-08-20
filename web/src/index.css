@@ -507,6 +507,10 @@ body {
   background: #f0f6ff;
 }
 
+.unfillable-row {
+  opacity: 0.4;
+}
+
 .transfer-hint {
   background: #fff3cd;
   padding: 0.4rem 0.6rem;
@@ -514,44 +518,14 @@ body {
   font-size: 0.8rem;
 }
 
-/* --- Squad builder --- */
+/* --- Build summary (assembling or rebuilding a squad) --- */
 
-.squad-builder {
-  background: white;
-  border-radius: 12px;
-  padding: 1.5rem;
-}
-
-.builder-summary {
+.build-summary {
   display: flex;
+  align-items: center;
   gap: 1.5rem;
   margin-bottom: 1rem;
   font-weight: 600;
-}
-
-.builder-picks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
-}
-
-.builder-pick {
-  background: #eef3fb;
-  border-radius: 6px;
-  padding: 0.3rem 0.5rem;
-  font-size: 0.8rem;
-}
-
-.builder-search table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 0.75rem;
-  font-size: 0.85rem;
-}
-
-.builder-search td {
-  padding: 0.3rem;
 }
 
 /* --- Confirm bar / toast --- */
