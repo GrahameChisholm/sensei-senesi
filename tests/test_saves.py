@@ -152,3 +152,31 @@ def test_project_saves_from_own_rate_shrinks_a_thin_sample_toward_the_league_pri
 def test_project_saves_from_own_rate_rejects_negative_rate():
     with pytest.raises(ValueError):
         project_saves_from_own_rate(-1.0)
+
+
+def test_project_saves_from_own_rate_skips_shrinkage_toward_a_degenerate_zero_prior():
+    # T-H: `_fit_league_avg_rate_by_position`'s own min_rows fallback returns exactly 0.0 for the
+    # first several gameweeks of any walk-forward window, before enough real GK rows accumulate.
+    # That 0.0 is a "not enough data yet" placeholder, never a genuine "keepers make no saves"
+    # estimate, so it must not be blended in as if it were one.
+    projection = project_saves_from_own_rate(
+        4.0,
+        expected_minutes=90.0,
+        individual_weight=174.0,
+        league_avg_save_rate_per_90=0.0,
+        shrinkage_k=90.0,
+    )
+    assert projection.expected_saves == pytest.approx(4.0)
+
+
+def test_project_saves_from_own_rate_still_shrinks_toward_a_real_positive_prior():
+    # A genuine, positive prior still shrinks a thin sample exactly as before -- only the
+    # degenerate 0.0 fallback is skipped.
+    projection = project_saves_from_own_rate(
+        4.0,
+        expected_minutes=90.0,
+        individual_weight=90.0,
+        league_avg_save_rate_per_90=3.0,
+        shrinkage_k=90.0,
+    )
+    assert projection.expected_saves == pytest.approx((90 * 4.0 + 90 * 3.0) / 180)

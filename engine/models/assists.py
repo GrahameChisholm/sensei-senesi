@@ -113,11 +113,27 @@ def project_assists(
     team_xg_per_90: float | None = None,
     shrinkage_k: float = 0.0,
     assist_share_of_team_xg: float = DEFAULT_ASSIST_SHARE_OF_TEAM_XG,
+    conversion_factor: float = 1.0,
 ) -> AssistProjection:
     """Top-level entry point. Shrinkage toward the team-xG prior only kicks in when the caller
     supplies ``individual_weight``, ``team_xg_per_90``, and a positive ``shrinkage_k`` — omitting
     them uses the player's own xA/90 rate unmodified, per BUILD_PLAN 2.3 ("not applied to every
-    player as an ongoing input")."""
+    player as an ongoing input").
+
+    ``conversion_factor`` (ENGINE_IMPROVEMENTS_5.md Tier 2.3) scales the finished rate, closing the
+    documented definitional gap between xA as a statistic and an assist as FPL awards it. FPL
+    credits the final pass regardless of how the goal arrived, including deflections, rebounds and
+    won penalties, none of which an xA model attributes to the passer, so xA structurally
+    under-counts. Measured on real 2025/26 data with no model or selection effect in it, FPL's own
+    realised xA totals 538.8 against 733 actual assists (a factor of 1.360), while its realised xG
+    tracks goals at 0.971 — the asymmetry is specific to assists, not a general xG/xA problem.
+
+    Applied after shrinkage, since it converts the finished rate's *units* rather than expressing
+    any uncertainty about the player's own creativity. 1.0 (the default) leaves this function's
+    pre-Tier-2.3 behaviour untouched; the fitted per-position values live in
+    ``engine.pipeline.FittedConstants`` and are fitted on training history only."""
+    if conversion_factor < 0:
+        raise ValueError("conversion_factor must be non-negative")
     effective_xa_per_90 = player_xa_per_90
     if individual_weight is not None and team_xg_per_90 is not None and shrinkage_k > 0:
         effective_xa_per_90 = shrunk_player_xa_per_90(
@@ -130,7 +146,7 @@ def project_assists(
     rate = expected_assist_rate(
         effective_xa_per_90, opponent_xga_per_90, league_avg_xga_per_90, expected_minutes
     )
-    return AssistProjection(assist_rate=rate)
+    return AssistProjection(assist_rate=rate * conversion_factor)
 
 
 def fit_assist_share_of_team_xg(
