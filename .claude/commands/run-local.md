@@ -1,6 +1,6 @@
 ---
 description: Start a locally hosted copy of the app (API + web) on the current branch
-allowed-tools: Bash(git status:*), Bash(git rev-parse:*), Bash(ls:*), Bash(uv run uvicorn:*), Bash(cd:*), Bash(npm install:*), Bash(npm run dev:*), Bash(lsof:*)
+allowed-tools: Bash(git status:*), Bash(git rev-parse:*), Bash(ls:*), Bash(uv run uvicorn:*), Bash(uv run python scripts/build_projections.py:*), Bash(cd:*), Bash(npm install:*), Bash(npm run dev:*), Bash(lsof:*)
 ---
 
 Start a local instance of the app as it exists on whatever branch is currently checked out. Do not
@@ -10,8 +10,10 @@ Steps:
 1. Run `git status` and `git rev-parse --abbrev-ref HEAD` so you know the branch and whether there
    are uncommitted changes (report this, don't block on it).
 2. Check `data_store/projections/` has content for the relevant season. If it's empty, run
-   `uv run python scripts/build_projections.py` first, since the API only serves precomputed data
-   and never computes projections on request.
+   `uv run python scripts/build_projections.py --season <season> --gameweek <n>
+   --understat-season-start-year <year> --prior-season-start-year <year - 1>` first, since the API
+   only serves precomputed data and never computes projections on request. All four flags are
+   required, there is no bare no-argument form.
 3. Check ports 8000 and 5173 aren't already in use (`lsof -i :8000` / `lsof -i :5173`). If something
    is already listening there, tell the user instead of starting a second instance on top of it.
 4. Start the API in the background: `uv run uvicorn api.main:app --reload` from the repo root.

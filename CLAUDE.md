@@ -43,9 +43,15 @@ Running the API locally:
 uv run uvicorn api.main:app --reload   # http://localhost:8000
 ```
 The API serves precomputed data only; it never fetches or computes projections on request (D7). Run
-`uv run python scripts/build_projections.py` first to populate `data_store/projections/` from a live
-snapshot. To point a running API process at a historical replay season instead of live data, set
-`FPL_REPLAY_SEASON=2025-26` before starting uvicorn (see `api/state.py`).
+`build_projections.py` first to populate `data_store/projections/` from a live snapshot, e.g.:
+```bash
+uv run python scripts/build_projections.py --season 2026-27 --gameweek 1 \
+  --understat-season-start-year 2026 --prior-season-start-year 2025
+```
+`--season`, `--gameweek`, `--understat-season-start-year`, and `--prior-season-start-year` are all
+required, there is no bare no-argument form. To point a running API process at a historical replay
+season instead of live data, set `FPL_REPLAY_SEASON=2025-26` before starting uvicorn (see
+`api/state.py`).
 
 Copy `.env.example` to `.env` for local secrets (only needed for the market overlay's odds API key;
 the core engine has no external-key dependency). Never commit `.env`.
