@@ -18,9 +18,15 @@ be derivable from data timestamped strictly before its deadline — real fixture
 real current price/ownership (the live equivalent of BUILD_PLAN 2.1's crowd features), and real
 current ``status``/``chance_of_playing_next_round`` (the strongest injury signal the backtest could
 never reconstruct). Outcome columns (minutes, goals, bonus, ...) are never known for that row and
-are filled with a neutral placeholder (0) — safe only because ``engineer_features`` computes every
-per-player feature via ``.shift(1)``/point-in-time EWMA helpers that structurally exclude a row's
-own outcome values from its own features; the placeholder is written but never read.
+are filled with a neutral placeholder (0), safe for that row's own features only, because
+``engineer_features`` computes every per-player feature via ``.shift(1)``/point-in-time EWMA
+helpers that structurally exclude a row's own outcome values from its own features. It is not safe
+for a *later* target gameweek in the same multi-gameweek horizon: without correction, that later
+row's lagged window would find an earlier target row's placeholder sitting inside it and read the
+fake 0 as real history. ``is_synthesized_target`` (below) exists so ``engineer_features`` can
+exclude a synthesized row from another target row's lagged window (T-E); the placeholder is written
+and, for a horizon longer than one gameweek, is read, which is exactly what that column now guards
+against.
 
 **Known caveat, not yet verified against live data (ENGINE_IMPROVEMENTS.md's own crowd-feature
 caveat, restated for the live path):** past gameweeks' ``selected``/``transfers_*`` come straight
@@ -71,6 +77,7 @@ __all__ = [
     "DEFAULT_TOTAL_MANAGERS",
     "MERGED_GW_COLUMNS",
     "FeatureInputs",
+    "build_live_availability",
     "build_merged_gw",
     "build_player_histories_from_live_snapshot",
     "snapshot_to_feature_inputs",
@@ -85,9 +92,12 @@ __all__ = [
 DEFAULT_TOTAL_MANAGERS = 11_000_000.0
 
 # Outcome/outcome-derived columns the target gameweek's synthesized rows can't know yet. Filled
-# with 0 -- safe only because engineer_features never reads a row's own value for these when
-# computing that same row's features (every per-player rate is a lagged/point-in-time EWMA that
-# structurally excludes the current row). See this module's own docstring.
+# with 0, safe for that row's own features only, because engineer_features never reads a row's own
+# value for these when computing that same row's features (every per-player rate is a
+# lagged/point-in-time EWMA that structurally excludes the current row). Not safe for a later
+# target row in the same multi-gameweek horizon reading this row as its own prior history, which
+# is why engineer_features excludes a synthesized row from another target row's lagged window
+# (T-E, keyed off is_synthesized_target below). See this module's own docstring.
 _UNKNOWN_OUTCOME_COLUMNS = [
     "minutes",
     "starts",
@@ -109,6 +119,20 @@ _UNKNOWN_OUTCOME_COLUMNS = [
 # vaastav/element-summary-history column name -> engineer_features' expected name.
 _HISTORY_RENAME = {"element": "player_id", "round": "GW"}
 
+# Explicit marker distinguishing a synthesized target-gameweek row (see _target_row) from a real
+# played-history row (see _played_rows_from_element_summaries). Plumbed through
+# engineer_features' merges and collapse_double_gameweeks so a later feature can key off it
+# without having to re-derive "is this row real" from the placeholder outcome values; T-E now
+# reads it to exclude a synthesized row from another target row's lagged per-player feature
+# windows, so a multi-gameweek horizon's later gameweeks don't decay against a fabricated zero.
+#
+# ``penalties_order`` (T-K) is the live bootstrap's own designated-penalty-taker rank (1 = current
+# primary taker), carried onto a synthesized target row only (see _target_row). NaN on every real
+# played-history row, since it is a current squad-role field with no retained per-gameweek history
+# to attach to the past, the same reason the backtest path never sees this column at all (see
+# engineer_features' own taker_share block, and engine/models/goals.py's docstring). It exists so
+# a newly appointed or transferred-in penalty taker, who by definition has zero realized penalty
+# attempts to build a lagged EWMA from, is still recognised as the taker on the live path.
 MERGED_GW_COLUMNS = [
     "player_id",
     "GW",
@@ -123,6 +147,8 @@ MERGED_GW_COLUMNS = [
     "selected",
     "transfers_out",
     "transfers_balance",
+    "is_synthesized_target",
+    "penalties_order",
     *_UNKNOWN_OUTCOME_COLUMNS,
 ]
 
@@ -177,6 +203,11 @@ def _played_rows_from_element_summaries(
 
     played["position"] = played["player_id"].map(position_by_element)
     played["team"] = played["player_id"].map(own_team_name_by_element)
+    played["is_synthesized_target"] = False
+    # T-K: penalties_order is a live squad-role snapshot, not a per-gameweek history field, so a
+    # real played row never carries one. This always defaults to NaN rather than being backfilled
+    # from anywhere.
+    played["penalties_order"] = np.nan
     for col in _UNKNOWN_OUTCOME_COLUMNS:
         if col not in played.columns:
             played[col] = 0
@@ -265,6 +296,14 @@ def _target_row(
     selected_by_percent = float(getattr(element, "selected_by_percent", 0.0) or 0.0)
     transfers_in = float(getattr(element, "transfers_in_event", 0.0) or 0.0)
     transfers_out = float(getattr(element, "transfers_out_event", 0.0) or 0.0)
+    # T-K: FPL's bootstrap elements table leaves penalties_order null for a non-taker, and this
+    # module's own crosswalk to that table can hand back None either way (no order at all) or a
+    # real float/int rank. Normalise both to NaN so a downstream `== 1` check never raises.
+    raw_penalties_order = getattr(element, "penalties_order", None)
+    try:
+        penalties_order = float(raw_penalties_order)
+    except (TypeError, ValueError):
+        penalties_order = np.nan
     row = {
         "player_id": player_id,
         "GW": gameweek,
@@ -279,10 +318,34 @@ def _target_row(
         "selected": selected_by_percent / 100.0 * total_managers,
         "transfers_out": transfers_out,
         "transfers_balance": transfers_in - transfers_out,
+        "is_synthesized_target": True,
+        "penalties_order": penalties_order,
     }
     for col in _UNKNOWN_OUTCOME_COLUMNS:
         row[col] = 0
     return row
+
+
+def build_live_availability(elements: pd.DataFrame) -> pd.DataFrame:
+    """The ``live_availability`` frame (``player_id``/``status``/``chance_of_playing_next_round``)
+    :func:`backtest.run_season.engineer_features` understands (T-F), built from the same bootstrap
+    ``elements`` table this module already reads for position/team/price/ownership elsewhere
+    (``_position_by_element``, ``_target_row``).
+
+    FPL's bootstrap payload leaves ``chance_of_playing_next_round`` null when a player carries no
+    injury doubt (fully fit) rather than writing an explicit 100, treated as 100.0 here, the same
+    convention ``scripts/build_projections.py``'s own cache-facing ``players`` block already uses
+    for this exact field, so a caller supplying this frame and the cache's own display value never
+    disagree with each other.
+    """
+    chance = pd.to_numeric(elements["chance_of_playing_next_round"], errors="coerce")
+    return pd.DataFrame(
+        {
+            "player_id": elements["id"].astype(int),
+            "status": elements["status"],
+            "chance_of_playing_next_round": chance.fillna(100.0),
+        }
+    )
 
 
 def build_merged_gw(
@@ -306,6 +369,10 @@ def build_merged_gw(
     A requested gameweek with no fixtures (past the end of the season, or a blank gameweek for
     every team) simply contributes no target rows — the same "no fixtures this gameweek" case
     already handled per-team below.
+
+    Every row carries ``is_synthesized_target``: ``False`` for a real played-history row, ``True``
+    for a synthesized target row, so a downstream consumer of ``engineer_features``' output can
+    tell the two apart without inferring it from the placeholder outcome values.
     """
     position_by_element = _position_by_element(elements)
     team_name_by_id = _team_name_by_id(teams)
@@ -415,7 +482,7 @@ def snapshot_to_feature_inputs(
         target_gameweeks=target_gameweeks,
     )
 
-    teams_history_frames = [understat["teams_history"]]
+    teams_history_frames = [understat.get("teams_history", pd.DataFrame())]
     if understat_client is not None:
         n_prior = n_prior_seasons if n_prior_seasons is not None else N_PRIOR_SEASONS_FOR_TEAM_RATES
         prior_data = fetch_understat_multi_season_league_data(

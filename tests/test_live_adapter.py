@@ -13,6 +13,7 @@ import pytest
 from backtest.run_season import engineer_features
 from engine.data.live_adapter import (
     DEFAULT_TOTAL_MANAGERS,
+    build_live_availability,
     build_merged_gw,
     build_player_histories_from_live_snapshot,
 )
@@ -295,6 +296,36 @@ def test_build_player_histories_from_live_snapshot_drops_future_seasons():
     result = build_player_histories_from_live_snapshot(histories, season_start_year=2025)
 
     assert (pd.to_datetime(result[1]["date"]) < pd.Timestamp("2026-01-01", tz="UTC")).all()
+
+
+def test_build_live_availability_reads_status_and_chance_from_elements():
+    elements = pd.DataFrame(
+        [
+            {"id": 1, "status": "i", "chance_of_playing_next_round": 0.0},
+            {"id": 2, "status": "d", "chance_of_playing_next_round": 75.0},
+        ]
+    )
+
+    result = build_live_availability(elements)
+
+    assert list(result.columns) == ["player_id", "status", "chance_of_playing_next_round"]
+    row_1 = result[result["player_id"] == 1].iloc[0]
+    assert row_1["status"] == "i"
+    assert row_1["chance_of_playing_next_round"] == pytest.approx(0.0)
+    row_2 = result[result["player_id"] == 2].iloc[0]
+    assert row_2["status"] == "d"
+    assert row_2["chance_of_playing_next_round"] == pytest.approx(75.0)
+
+
+def test_build_live_availability_treats_null_chance_as_fully_fit():
+    # FPL's bootstrap payload leaves chance_of_playing_next_round null for a fully fit player
+    # (no injury doubt) rather than writing an explicit 100 -- must match the 100.0 convention
+    # scripts/build_projections.py's own cache-facing "players" block already uses for this field.
+    elements = pd.DataFrame([{"id": 1, "status": "a", "chance_of_playing_next_round": None}])
+
+    result = build_live_availability(elements)
+
+    assert result.iloc[0]["chance_of_playing_next_round"] == pytest.approx(100.0)
 
 
 def test_adapter_output_feeds_engineer_features_end_to_end():
