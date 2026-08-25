@@ -111,8 +111,20 @@ def build_horizon_projections(predictions: pd.DataFrame) -> dict[int, PlayerHori
                 prob_big_haul=row.prob_big_haul,
                 raw_points=np.array([]),
             )
+        # ENGINE_IMPROVEMENTS_5.md Tier 2.1: carried through when the producing pipeline supplied
+        # it, read defensively via getattr so a frame built before this column existed (or a
+        # hand-built test frame) still projects, matching how `floor` is probed just above.
+        conditional = getattr(row, "conditional_expected_points", None)
         projection = project_player_gameweek(
-            row.player_id, row.position, row.gameweek, minutes, breakdown, simulation
+            row.player_id,
+            row.position,
+            row.gameweek,
+            minutes,
+            breakdown,
+            simulation,
+            conditional_expected_points=(
+                float(conditional) if conditional is not None and pd.notna(conditional) else None
+            ),
         )
         by_player.setdefault(row.player_id, {})[row.gameweek] = projection
         position_by_player[row.player_id] = row.position

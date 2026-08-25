@@ -18,11 +18,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 
 from engine.aggregate import ComponentBreakdown, aggregate_gameweek
 from engine.models.assists import DEFAULT_ASSIST_SHARE_OF_TEAM_XG, project_assists
-from engine.models.bonus import BonusModel, build_features
+from engine.models.bonus import (
+    MAX_BONUS,
+    BonusModel,
+    BonusProjection,
+    build_features,
+    expected_bonus_from_fixture_strengths,
+)
 from engine.models.cards import project_cards, project_own_goals
 from engine.models.clean_sheets import DEFAULT_DIXON_COLES_RHO, project_clean_sheet
 from engine.models.defensive_contribution import (
@@ -31,7 +38,7 @@ from engine.models.defensive_contribution import (
 )
 from engine.models.goals import DEFAULT_PENALTY_CONVERSION_RATE, project_goals
 from engine.models.minutes import FEATURE_COLUMNS as MINUTES_FEATURE_COLUMNS
-from engine.models.minutes import MinutesModel
+from engine.models.minutes import MinutesDistribution, MinutesModel
 from engine.models.saves import (
     DEFAULT_AWAY_SHOT_MULTIPLIER,
     DEFAULT_SAVE_CONVERSION_RATE,
@@ -118,6 +125,18 @@ class FittedConstants:
     # opponent shots-on-target data and not currently called by this module.
     league_avg_save_rate_per_90: float = 0.0
     save_rate_shrinkage_k: float = 0.0
+    # ENGINE_IMPROVEMENTS_5.md Tier 2.3: per-position multipliers converting the xG/xA-derived rate
+    # into the quantity FPL actually awards. Empty (the default) means 1.0 everywhere, i.e. the
+    # pre-Tier-2.3 behaviour. Fitted in `backtest.run_season.fit_fn` from training history only.
+    #
+    # These correct two *opposite* real errors that the gate's played-rows calibration could not
+    # see, because restricting to players who played selects the branch on which an unconditional
+    # expectation always looks low, masking an over-prediction and exaggerating an
+    # under-prediction. Evaluated at each row's realised minutes instead, the 2025/26 walk-forward
+    # showed goals running 18% hot and assists 12% cold; the all-rows mean calibration agreed
+    # (goals 24% over, assists 8% under), and only the played-rows figure dissented.
+    goal_conversion_factor_by_position: Mapping[str, float] = field(default_factory=dict)
+    assist_conversion_factor_by_position: Mapping[str, float] = field(default_factory=dict)
 
 
 # Every column ``project_gameweek_pool`` reads from its ``players`` input, beyond the minutes
@@ -143,6 +162,15 @@ GAMEWEEK_POOL_COLUMNS = [
     #   "opponent_shots_on_target_per_90"/"is_home", still blocked on real shot data and not
     #   required here)
 ]
+
+# Optional, not required: "team" and "opponent_team_name" (ENGINE_IMPROVEMENTS_3.md D.2 / T-G).
+# When both are present, project_gameweek_pool redistributes bonus across each real fixture's
+# players with expected_bonus_from_fixture_strengths instead of using BonusModel's raw per-player
+# prediction directly as points. See _distribute_bonus_by_fixture. Same silent-default convention
+# as the other optional columns above (own_goal_rate_per_90, understat_effective_minutes, ...):
+# omitting them reproduces the pre-T-G per-player behavior unchanged, since there is no fixture to
+# group by. backtest/run_season.py's engineered pool already carries both columns (see
+# simulate_gameweek_pool's identical (team, opponent_team_name) grouping).
 
 
 _SHARED_REQUIRED_COLUMNS = [
@@ -184,21 +212,37 @@ def _validate_no_nan_inputs(players: pd.DataFrame) -> None:
         )
 
 
-def _project_one_player(
+@dataclass
+class _PlayerComponents:
+    """Every per-player component computed before bonus is finalized (T-G). Bonus is the one
+    component that cannot be settled player-by-player, since a real fixture's 3/2/1 depends on
+    every other player in that match. Split out of what used to be one ``_project_one_player``
+    function so ``project_gameweek_pool`` can gather every player's raw bonus "strength" across a
+    whole fixture (:func:`_distribute_bonus_by_fixture`) before committing to a final per-player
+    bonus value and only then building the aggregate breakdown."""
+
+    goals: object
+    assists: object
+    clean_sheet: object
+    cards: object
+    own_goals: object | None
+    defensive_contribution: object | None
+    saves: object | None
+    p_clears_threshold: float
+    bonus_features: dict[str, float]
+
+
+def _compute_player_components(
     player_id: int,
     position: str,
-    gameweek: int,
     row: pd.Series,
     minutes_distribution,
-    bonus_model: BonusModel,
     fitted_constants: FittedConstants,
-) -> tuple[PlayerGameweekProjection, ComponentBreakdown, float, dict[str, float]]:
-    """Returns (projection, breakdown, clean_sheet_probability, raw_components) — the probability
-    and the ``raw_components`` dict (``p_clears_threshold``, ``expected_goals``,
-    ``expected_assists``, ``expected_bonus``) are surfaced separately since they aren't otherwise
-    recoverable from the breakdown alone (BUILD_PLAN 3.2's calibration check needs the raw
-    probability/quantity, not the points it converted to — ENGINE_IMPROVEMENTS_2.md A.4 extends
-    this from clean-sheet-only to every component)."""
+) -> _PlayerComponents:
+    """Runs every component (2.1-2.6) except bonus itself, and assembles the bonus regression's
+    own feature row (``build_features``) without yet calling ``bonus_model.predict`` on it, since
+    the caller batches that prediction and the fixture-level redistribution across the whole pool.
+    """
     expected_minutes = minutes_distribution.expected_minutes
 
     # ENGINE_IMPROVEMENTS_2.md B.2: thin-sample rate shrinkage, opt-in via
@@ -230,6 +274,7 @@ def _project_one_player(
         individual_weight=understat_effective_minutes,
         team_xg_per_90=row["team_xg_per_90"],
         shrinkage_k=fitted_constants.goals_shrinkage_k,
+        conversion_factor=fitted_constants.goal_conversion_factor_by_position.get(position, 1.0),
     )
     assists = project_assists(
         player_xa_per_90=row["xa_per_90"],
@@ -242,6 +287,7 @@ def _project_one_player(
         assist_share_of_team_xg=fitted_constants.assist_share_of_team_xg_by_position.get(
             position, DEFAULT_ASSIST_SHARE_OF_TEAM_XG
         ),
+        conversion_factor=fitted_constants.assist_conversion_factor_by_position.get(position, 1.0),
     )
     clean_sheet = project_clean_sheet(
         team_xg_per_90=row["team_xg_per_90"],
@@ -328,31 +374,176 @@ def _project_one_player(
         saves = None
         defensive_action_rate_for_bonus = row["dc_per_90"]
 
-    bonus_features = pd.DataFrame(
-        [
-            build_features(
-                expected_goals=goals.expected_goals,
-                expected_assists=assists.expected_assists,
-                clean_sheet_probability=clean_sheet.clean_sheet_probability,
-                defensive_action_rate=defensive_action_rate_for_bonus,
-                position=position,
-                expected_minutes=expected_minutes,
-            )
-        ]
+    bonus_features = build_features(
+        expected_goals=goals.expected_goals,
+        expected_assists=assists.expected_assists,
+        clean_sheet_probability=clean_sheet.clean_sheet_probability,
+        defensive_action_rate=defensive_action_rate_for_bonus,
+        position=position,
+        expected_minutes=expected_minutes,
     )
-    bonus = bonus_model.predict(bonus_features)[0]
 
+    return _PlayerComponents(
+        goals=goals,
+        assists=assists,
+        clean_sheet=clean_sheet,
+        cards=cards,
+        own_goals=own_goals,
+        defensive_contribution=defensive_contribution,
+        saves=saves,
+        p_clears_threshold=p_clears_threshold,
+        bonus_features=bonus_features,
+    )
+
+
+# ENGINE_IMPROVEMENTS_3.md D.2 / T-G: floor added to a fixture's raw BonusModel "strengths" before
+# they are handed to expected_bonus_from_fixture_strengths, matching backtest/diagnostics.py's own
+# rank_based_bonus_diagnostics precedent. Keeps a strength of exactly 0.0 (a player the minutes
+# model is confident won't play) from breaking the Plackett-Luce normalisation, while still leaving
+# that player a vanishingly small, not literally zero, chance of a top-3 finish.
+#
+# ENGINE_IMPROVEMENTS_5.md Tier 2.2: lowered from 0.01 to 1e-6 after measuring what it actually
+# cost. A fixture's contest spans both full squads, roughly 48 players, of whom only about 22 take
+# the pitch. At 0.01 the ~26 non-players each sat at a floor comparable to a real squad player's
+# strength, so *collectively* they absorbed 17.4% of every fixture's 6.0 points, against 0.0% of
+# real bonus. The floor only needs to be large enough to keep the normalisation well defined, not
+# large enough to compete. Dropping it alone cuts the leak to 15.8%; combined with the availability
+# weighting below it reaches 9.0%.
+_BONUS_STRENGTH_FLOOR = 1e-6
+
+# ENGINE_IMPROVEMENTS_5.md Tier 2.1: availability floor used when scaling a player's fixture bonus
+# allocation up to its "if they start" counterpart. Guards the division for a player the minutes
+# model is certain will not feature, whose conditional figure is a counterfactual about an event of
+# probability ~0 and so is not meaningfully estimable either way.
+_MIN_AVAILABILITY_FOR_CONDITIONAL = 0.02
+
+
+def _plays_60_counterfactual(distribution: MinutesDistribution) -> MinutesDistribution:
+    """The same player under "they definitely start and see out 60+ minutes"
+    (ENGINE_IMPROVEMENTS_5.md Tier 2.1). Feeding this back through the component chain gives
+    ``E[points | plays]``, the quantity a manager actually reasons about, as opposed to
+    ``expected_points``, which is that number already multiplied by the chance they feature.
+
+    A conditional expectation cannot be recovered by dividing the blended figure by ``p_60_plus``:
+    the components are gated in three different ways (appearance and clean sheet are step functions
+    of the 60-minute threshold, the rate components scale linearly with expected minutes, and
+    ``p_1_to_59`` contributes to some but not others), so a single divisor over-inflates. Measured
+    on the real 2025/26 walk-forward, de-gating appearance that way yields 3.35 points against a
+    hard maximum of 2.0. Re-running the chain is the only correct route.
+
+    ``expected_minutes_given_60_plus`` is carried through unchanged, so a player the model expects
+    to be substituted on 70 minutes when they do start keeps that, rather than being credited with
+    a flat 90.
+    """
+    return MinutesDistribution(
+        p_zero=0.0,
+        p_1_to_59=0.0,
+        p_60_plus=1.0,
+        expected_minutes_given_1_to_59=distribution.expected_minutes_given_1_to_59,
+        expected_minutes_given_60_plus=distribution.expected_minutes_given_60_plus,
+    )
+
+
+def _distribute_bonus_by_fixture(
+    players: pd.DataFrame,
+    raw_bonus_by_player_id: Mapping[int, float],
+    availability_by_player_id: Mapping[int, float] | None = None,
+) -> dict[int, float]:
+    """Turn BonusModel's independent per-player prediction into a true per-fixture 3/2/1
+    allocation (T-G). Real FPL bonus is winner-take-all across the ~22 players in one match, not
+    an absolute per-player threshold, so a linear regression clipped to [0, 3] and used directly as
+    points cannot reproduce that concentration (the whole gameweek's maximum was 0.61 against a
+    real elite match performance of roughly 1.0 to 1.5). BonusModel's raw prediction is kept as
+    each player's Plackett-Luce "strength", a proxy for who is most likely to top that fixture's
+    BPS, and :func:`~engine.models.bonus.expected_bonus_from_fixture_strengths` converts the whole
+    fixture's strengths into an expected 3/2/1 that sums to 6.0 per fixture by construction.
+
+    Grouping mirrors ``backtest/run_season.py``'s ``simulate_gameweek_pool``: fixtures are found
+    via ``(team, opponent_team_name)``, each team processed exactly once. When either column is
+    absent from ``players`` (for example a synthetic pool in a unit test with no fixture context,
+    or a horizon/backtest caller that hasn't supplied them) every player's raw prediction is
+    returned unchanged, the same silent-default convention as this module's other optional
+    columns, since there is no fixture to redistribute across. A team whose opponent doesn't also
+    appear in this pool (a data gap) is likewise left at its raw prediction rather than
+    redistributed across an incomplete fixture, which would misallocate the real match's full 6.0
+    across fewer than the ~22 players who actually contested it.
+
+    ``availability_by_player_id`` (ENGINE_IMPROVEMENTS_5.md Tier 2.2), if given, is each player's
+    ``P(60+ minutes)`` and multiplies their strength before the contest. The contest necessarily
+    spans both full *squads* (~48 players) because a lineup isn't known in advance, but only ~22
+    play, and an unweighted contest hands the other ~26 a real share: measured on the 2025/26
+    walk-forward, 17.4% of all predicted bonus landed on players who never appeared, against 0.0%
+    of actual bonus. Weighting by availability, together with the much smaller
+    :data:`_BONUS_STRENGTH_FLOOR`, cuts that to 9.0%, raises the played-60+ calibration ratio from
+    0.623 to 0.749, and increases the gap between a player who earned 3 bonus and one who earned
+    none from +0.117 to +0.173 points, with rank correlation against realised bonus holding at
+    0.240.
+
+    Deliberately *not* done by excluding the unlikely-to-play tail from the contest. Restricting to
+    the top 14 per side scores marginally better on leak and separation but assigns a hard 0.0 to
+    6,822 rows, requires an arbitrary cutoff, and measured *worse* on rank correlation (0.236). A
+    deep-squad player who unexpectedly starts and tops BPS should come out small, not impossible.
+    Omitted (the default), strengths are unweighted, exactly this function's pre-Tier-2.2 behaviour.
+    """
+    if "team" not in players.columns or "opponent_team_name" not in players.columns:
+        return dict(raw_bonus_by_player_id)
+
+    final_bonus = dict(raw_bonus_by_player_id)
+    processed_teams: set = set()
+    for team, group in players.groupby("team"):
+        if team in processed_teams:
+            continue
+        opponent = group["opponent_team_name"].iloc[0]
+        opponent_group = players[players["team"] == opponent]
+        processed_teams.add(team)
+        if opponent_group.empty:
+            continue
+        processed_teams.add(opponent)
+
+        fixture_player_ids = (
+            pd.concat([group["player_id"], opponent_group["player_id"]]).astype(int).to_numpy()
+        )
+        strengths = np.array(
+            [raw_bonus_by_player_id[pid] for pid in fixture_player_ids], dtype=float
+        ).clip(min=0.0)
+        if availability_by_player_id is not None:
+            strengths = strengths * np.array(
+                [availability_by_player_id[pid] for pid in fixture_player_ids], dtype=float
+            ).clip(min=0.0)
+        strengths = strengths + _BONUS_STRENGTH_FLOOR
+        expected = expected_bonus_from_fixture_strengths(strengths)
+        for player_id, value in zip(fixture_player_ids, expected, strict=True):
+            final_bonus[int(player_id)] = float(value)
+    return final_bonus
+
+
+def _finalize_player(
+    player_id: int,
+    position: str,
+    gameweek: int,
+    minutes_distribution,
+    components: _PlayerComponents,
+    bonus: BonusProjection,
+) -> tuple[PlayerGameweekProjection, ComponentBreakdown, float, dict[str, float]]:
+    """Combines one player's already-computed components with its final (post fixture
+    redistribution) bonus value into the aggregate breakdown and top-level projection. Returns
+    (projection, breakdown, clean_sheet_probability, raw_components). The probability and the
+    ``raw_components`` dict (``p_clears_threshold``, ``expected_goals``, ``expected_assists``,
+    ``expected_bonus``) are surfaced separately since they aren't otherwise recoverable from the
+    breakdown alone (BUILD_PLAN 3.2's calibration check needs the raw probability/quantity, not
+    the points it converted to. ENGINE_IMPROVEMENTS_2.md A.4 extends this from clean-sheet-only
+    to every component)."""
     breakdown = aggregate_gameweek(
         position,
         minutes_distribution,
-        goals,
-        assists,
-        clean_sheet,
+        components.goals,
+        components.assists,
+        components.clean_sheet,
         bonus,
-        cards,
-        defensive_contribution=defensive_contribution,
-        saves=saves,
-        own_goals=own_goals,
+        components.cards,
+        defensive_contribution=components.defensive_contribution,
+        saves=components.saves,
+        own_goals=components.own_goals,
     )
     projection = project_player_gameweek(
         player_id=player_id,
@@ -362,16 +553,18 @@ def _project_one_player(
         breakdown=breakdown,
     )
     raw_components = {
-        "p_clears_threshold": p_clears_threshold,
-        "expected_goals": goals.expected_goals,
-        "expected_assists": assists.expected_assists,
+        "p_clears_threshold": components.p_clears_threshold,
+        "expected_goals": components.goals.expected_goals,
+        "expected_assists": components.assists.expected_assists,
         "expected_bonus": bonus.expected_bonus,
         # NaN for outfield players (saves isn't modelled for them), mirroring p_clears_threshold's
         # own GK/outfield split above — Phase 3's saves calibration check needs the raw expected
         # count, not `breakdown.saves`'s already-floor-divided points.
-        "expected_saves": saves.expected_saves if saves is not None else float("nan"),
+        "expected_saves": (
+            components.saves.expected_saves if components.saves is not None else float("nan")
+        ),
     }
-    return projection, breakdown, clean_sheet.clean_sheet_probability, raw_components
+    return projection, breakdown, components.clean_sheet.clean_sheet_probability, raw_components
 
 
 def project_gameweek_pool(
@@ -402,6 +595,11 @@ def project_gameweek_pool(
     (silently defaulting to 0.0, i.e. disabled, when absent): ``team_expected_penalties`` and
     ``taker_share`` (see ``engine/models/goals.py``'s ``realized_penalty_goals``/
     ``fit_penalty_conversion_rates`` for how to derive these from real data).
+
+    ``bonus`` (and the raw ``expected_bonus`` column) is a true per-fixture 3/2/1 allocation, not
+    ``bonus_model``'s independent per-player prediction used directly (T-G, ENGINE_IMPROVEMENTS_3.md
+    D.2). See ``_distribute_bonus_by_fixture`` for how, and for the optional ``team``/
+    ``opponent_team_name`` columns that activate it.
     """
     if players.empty:
         raise ValueError("players must not be empty")
@@ -409,14 +607,91 @@ def project_gameweek_pool(
     fitted_constants = fitted_constants or FittedConstants()
 
     minutes_distributions = minutes_model.predict(players)
-    rows = []
+    player_ids: list[int] = []
+    positions: list[str] = []
+    components_by_player: dict[int, _PlayerComponents] = {}
+    minutes_by_player: dict[int, object] = {}
+    bonus_feature_rows: list[dict[str, float]] = []
+    # Tier 2.1: the same chain re-run under "they definitely play", giving E[points | plays]
+    # alongside the availability-weighted expected_points. See _plays_60_counterfactual.
+    conditional_components_by_player: dict[int, _PlayerComponents] = {}
+    conditional_minutes_by_player: dict[int, MinutesDistribution] = {}
     for (_, row), minutes_distribution in zip(
         players.iterrows(), minutes_distributions, strict=True
     ):
         player_id = int(row["player_id"])
         position = row["position"]
-        _projection, breakdown, clean_sheet_probability, raw_components = _project_one_player(
-            player_id, position, gameweek, row, minutes_distribution, bonus_model, fitted_constants
+        components = _compute_player_components(
+            player_id, position, row, minutes_distribution, fitted_constants
+        )
+        player_ids.append(player_id)
+        positions.append(position)
+        components_by_player[player_id] = components
+        minutes_by_player[player_id] = minutes_distribution
+        bonus_feature_rows.append(components.bonus_features)
+
+        conditional_minutes = _plays_60_counterfactual(minutes_distribution)
+        conditional_components = _compute_player_components(
+            player_id, position, row, conditional_minutes, fitted_constants
+        )
+        conditional_components_by_player[player_id] = conditional_components
+        conditional_minutes_by_player[player_id] = conditional_minutes
+
+    # Bonus is batched across the whole pool, not per player like every other component: it is
+    # the one component whose final value depends on other players in the same fixture (T-G).
+    raw_bonus = bonus_model.predict(pd.DataFrame(bonus_feature_rows))
+    raw_bonus_by_player = dict(
+        zip(player_ids, (projection.expected_bonus for projection in raw_bonus), strict=True)
+    )
+    # Tier 2.2: the contest spans both full squads, so it is weighted by each player's own
+    # P(60+ minutes) to stop the ~26 non-players per fixture absorbing a real share of its 6.0.
+    availability_by_player = {
+        player_id: float(distribution.p_60_plus)
+        for player_id, distribution in minutes_by_player.items()
+    }
+    final_bonus_by_player = _distribute_bonus_by_fixture(
+        players, raw_bonus_by_player, availability_by_player
+    )
+    # Tier 2.1: the conditional bonus is *not* a second fixture contest. A contest allocates one
+    # fixture's fixed 6.0 among players who are competing with each other, whereas the conditional
+    # figures are one mutually-exclusive counterfactual per player ("if this player starts"), so
+    # they carry no obligation to sum to 6.0 and forcing them to would be wrong.
+    #
+    # Within a contest, expected bonus is very nearly proportional to strength while any one
+    # player's strength is small next to the fixture total, so raising this player's availability
+    # weight from `p_60_plus` to 1.0 while leaving the other ~47 untouched scales their allocation
+    # by `1 / p_60_plus` to first order. That is what is applied here, clipped to the model's own
+    # MAX_BONUS. Running a genuine per-player contest instead would mean ~48 Plackett-Luce
+    # evaluations per fixture for a second-order correction to a component worth 6.6% of predicted
+    # points.
+    conditional_bonus_by_player = {
+        player_id: min(
+            MAX_BONUS,
+            final_bonus_by_player[player_id]
+            / max(float(minutes_by_player[player_id].p_60_plus), _MIN_AVAILABILITY_FOR_CONDITIONAL),
+        )
+        for player_id in player_ids
+    }
+
+    rows = []
+    for player_id, position in zip(player_ids, positions, strict=True):
+        minutes_distribution = minutes_by_player[player_id]
+        bonus = BonusProjection(expected_bonus=final_bonus_by_player[player_id])
+        _projection, breakdown, clean_sheet_probability, raw_components = _finalize_player(
+            player_id,
+            position,
+            gameweek,
+            minutes_distribution,
+            components_by_player[player_id],
+            bonus,
+        )
+        _, conditional_breakdown, _, _ = _finalize_player(
+            player_id,
+            position,
+            gameweek,
+            conditional_minutes_by_player[player_id],
+            conditional_components_by_player[player_id],
+            BonusProjection(expected_bonus=conditional_bonus_by_player[player_id]),
         )
         rows.append(
             {
@@ -424,6 +699,10 @@ def project_gameweek_pool(
                 "position": position,
                 "gameweek": gameweek,
                 "expected_points": breakdown.total,
+                # Tier 2.1: E[points | plays 60+]. `expected_points` is this multiplied by the
+                # chance the player features, which is the right number to sum over a squad but the
+                # wrong one to rank a shortlist by, since it conflates "good" with "nailed on".
+                "conditional_expected_points": conditional_breakdown.total,
                 "expected_minutes": minutes_distribution.expected_minutes,
                 "expected_minutes_given_1_to_59": (
                     minutes_distribution.expected_minutes_given_1_to_59
