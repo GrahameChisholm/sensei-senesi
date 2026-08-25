@@ -113,6 +113,7 @@ def build_live_horizon_from_feature_inputs(
     min_training_gameweeks: int = DEFAULT_MIN_TRAINING_GAMEWEEKS,
     n_simulation_runs: int = 200,
     seed: int | None = None,
+    live_availability: pd.DataFrame | None = None,
 ) -> LiveHorizonResult:
     """The disk-free core: given already-assembled ``feature_inputs`` (e.g. from
     :func:`~engine.data.live_adapter.snapshot_to_feature_inputs`, or built directly in a test the
@@ -122,6 +123,12 @@ def build_live_horizon_from_feature_inputs(
 
     Raises ``ValueError`` rather than letting ``fit_fn`` crash obscurely on a near-empty frame
     when fewer than ``min_training_gameweeks`` real gameweeks of history are available.
+
+    ``live_availability`` (T-F) forwards straight through to
+    :func:`~backtest.run_season.engineer_features`'s own parameter of the same name, see that
+    function's docstring for the full contract, and :func:`~engine.data.live_adapter.
+    build_live_availability` for building it from a live snapshot's ``elements`` table. ``None``
+    (the default) leaves every row at the "fully fit" placeholder, exactly as before.
     """
     from backtest.run_season import engineer_features, fit_fn
     from engine.horizon import build_horizon_predictions, build_horizon_projections
@@ -131,6 +138,7 @@ def build_live_horizon_from_feature_inputs(
         feature_inputs.teams,
         feature_inputs.team_histories,
         feature_inputs.player_histories,
+        live_availability=live_availability,
     )
     training_history = engineered[engineered["gameweek"] < current_gameweek]
     n_training_gameweeks = training_history["gameweek"].nunique()
@@ -162,6 +170,7 @@ def build_live_horizon(
     min_training_gameweeks: int = DEFAULT_MIN_TRAINING_GAMEWEEKS,
     n_simulation_runs: int = 200,
     seed: int | None = None,
+    live_availability: pd.DataFrame | None = None,
 ) -> LiveHorizonResult:
     """Load one live snapshot and produce a ``horizon_length``-gameweek planning horizon starting
     at ``current_gameweek`` (default: the current gameweek plus the next 2).
@@ -171,6 +180,12 @@ def build_live_horizon(
     of them from the one snapshot, then delegates to
     :func:`build_live_horizon_from_feature_inputs`. See that function and
     :func:`~engine.data.live_adapter.snapshot_to_feature_inputs` for what every argument does.
+
+    ``live_availability`` (T-F) is forwarded unchanged to
+    :func:`build_live_horizon_from_feature_inputs`; this wrapper does not build it automatically
+    from the snapshot, a caller with the snapshot's own ``elements`` table already in scope (e.g.
+    ``scripts/build_projections.py``) builds it via
+    :func:`~engine.data.live_adapter.build_live_availability` and supplies it here.
     """
     target_gameweeks = list(range(current_gameweek, current_gameweek + horizon_length))
     feature_inputs = snapshot_to_feature_inputs(
@@ -192,4 +207,5 @@ def build_live_horizon(
         min_training_gameweeks,
         n_simulation_runs,
         seed,
+        live_availability=live_availability,
     )

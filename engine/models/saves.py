@@ -184,7 +184,21 @@ def project_saves_from_own_rate(
 
     Shrinkage toward the league-average rate (same opt-in shape as
     :func:`engine.models.cards.project_cards`) only kicks in when ``individual_weight`` and
-    ``league_avg_save_rate_per_90`` are given and ``shrinkage_k`` is positive.
+    ``league_avg_save_rate_per_90`` are given, ``shrinkage_k`` is positive, and the prior itself is
+    a real, positive rate.
+
+    A goalkeeper always makes some saves over any real sample, so a ``league_avg_save_rate_per_90``
+    of exactly 0.0 is never a genuine "keepers make no saves" prior. It is the fitted constant's own
+    documented too-thin-training-data fallback (see
+    ``backtest.run_season._fit_league_avg_rate_by_position``'s ``min_rows`` guard), and real
+    measurement against the 2025-26 season found this fallback firing for the first several
+    gameweeks of any walk-forward window, before the position accumulates enough rows. Blending a
+    keeper's real per-90 rate toward that 0.0 placeholder, rather than skipping shrinkage
+    altogether the same as when no prior is supplied at all, silently understated every keeper's
+    saves for exactly as long as the fallback stayed active, worth roughly a third of the true rate
+    for a keeper with only one or two matches of individual history at that point. Treating a
+    non-positive prior the same as "no prior available" avoids anchoring toward a value that was
+    never a real estimate of anything.
     """
     if own_save_rate_per_90 < 0:
         raise ValueError("own_save_rate_per_90 must be non-negative")
@@ -194,6 +208,7 @@ def project_saves_from_own_rate(
     if (
         individual_weight is not None
         and league_avg_save_rate_per_90 is not None
+        and league_avg_save_rate_per_90 > 0
         and shrinkage_k > 0
     ):
         effective_rate = shrink_toward_prior(

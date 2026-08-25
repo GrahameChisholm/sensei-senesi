@@ -4,6 +4,7 @@ fitted engine state."""
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from backtest.run_season import engineer_features, fit_fn
 from engine.horizon import build_horizon_predictions, build_horizon_projections
@@ -147,6 +148,45 @@ def test_build_horizon_projections_merges_every_gameweek_per_player():
         assert horizon.horizon_total_points == sum(
             p.expected_points for p in horizon.gameweeks.values()
         )
+
+
+def test_projection_cache_and_prediction_log_agree_row_for_row():
+    """ENGINE_IMPROVEMENTS_5.md Tier 0.2. ``scripts/build_projections.py`` logs
+    ``horizon_result.predictions`` and serves ``horizon_result.projections``, so the two are the
+    same numbers reached by two code paths and must never disagree. In the real 2026-27 GW1 build
+    they disagreed on 1,191 of 1,215 rows, because the cache had been rebuilt by a later engine
+    while the log write silently no-opped on FileExistsError. That was invisible partly because
+    nothing asserted this invariant."""
+    engineered = _synthetic_season()
+    fitted_state = fit_fn(engineered[engineered["gameweek"] < 5])
+    predictions = build_horizon_predictions(
+        engineered, fitted_state, [5, 6, 7], n_simulation_runs=10, seed=1
+    )
+
+    projections = build_horizon_projections(predictions)
+
+    components = [
+        "appearance",
+        "goals",
+        "assists",
+        "clean_sheet",
+        "goals_conceded",
+        "defensive_contribution",
+        "saves",
+        "bonus",
+        "cards",
+        "penalty_misses",
+        "own_goals",
+    ]
+    assert len(predictions) > 0
+    for row in predictions.itertuples():
+        served = projections[row.player_id].gameweeks[row.gameweek]
+        assert served.expected_points == pytest.approx(row.expected_points)
+        assert served.minutes.p_60_plus == pytest.approx(row.p_60_plus)
+        for component in components:
+            assert getattr(served.breakdown, component) == pytest.approx(
+                getattr(row, component)
+            ), f"{component} diverged for player {row.player_id} GW{row.gameweek}"
 
 
 def test_build_horizon_predictions_empty_horizon_returns_empty_frame():

@@ -9,6 +9,7 @@ hindsight-adjusted guessing about whether a "tweak" actually helped (BUILD_PLAN 
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,6 +34,15 @@ def current_model_version(repo_root: Path | None = None) -> str:
     that tag with each logged prediction, so accuracy is always attributable to a specific model").
     Falls back to ``"unknown"`` outside a git repo (e.g. a packaged deployment with no ``.git``)
     rather than raising — a missing version tag shouldn't block logging a prediction.
+
+    ENGINE_IMPROVEMENTS_5.md Tier 0.2: when the working tree is dirty, a short hash of the tree's
+    own diff is appended, so the tag reads ``<describe>.<8 hex>`` rather than a bare ``...-dirty``.
+    ``git describe --dirty`` returns the *same* string for any two dirty trees, which made the tag
+    useless for exactly the case it exists to serve: two GW1 prediction runs four days apart, with
+    the engine modified in between, were both tagged ``e82629b-dirty`` and could not be told apart
+    from the log alone. The hash covers tracked modifications only (``git diff HEAD``), so an
+    untracked scratch file doesn't churn the version, and it degrades to the bare ``describe``
+    output if the diff can't be read.
     """
     try:
         result = subprocess.run(
@@ -42,9 +52,24 @@ def current_model_version(repo_root: Path | None = None) -> str:
             text=True,
             check=True,
         )
-        return result.stdout.strip()
+        version = result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "unknown"
+
+    if not version.endswith("-dirty"):
+        return version
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return version
+    digest = hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()[:8]
+    return f"{version}.{digest}"
 
 
 @dataclass(frozen=True)
@@ -62,10 +87,20 @@ def log_predictions(
     logged_at: datetime | None = None,
     log_dir: Path = DEFAULT_LOG_DIR,
 ) -> PredictionLogEntry:
-    """Write ``predictions`` immutably to ``log_dir``, stamped with ``gameweek``, ``model_version``,
-    and ``logged_at`` (defaults to now, UTC). Refuses to overwrite an existing log for the same
+    """Write ``predictions`` immutably to ``log_dir``, stamped with ``model_version`` and
+    ``logged_at`` (defaults to now, UTC). ``gameweek`` names the *decision* gameweek the run was
+    made for, and is used for the filename. Refuses to overwrite an existing log for the same
     (gameweek, model_version, timestamp) — a prediction log that could be silently replaced is
     worthless as an unbiased accuracy record.
+
+    **Each row keeps its own gameweek** (ENGINE_IMPROVEMENTS_5.md Tier 0.2). A caller logging a
+    multi-gameweek planning horizon (``scripts/build_projections.py`` passes
+    ``LiveHorizonResult.predictions``, which is one row per player *per horizon gameweek*) used to
+    have every row overwritten with the run's own ``gameweek``, so a 3-gameweek horizon was logged
+    as three anonymous copies of GW1 and the per-gameweek identity survived only in
+    ``simulator.horizon.build_horizon_predictions``' concatenation order, which nothing asserted.
+    Scoring GW1 from such a log means silently grading GW2 and GW3 predictions against GW1 results.
+    ``gameweek`` is now only filled in for a frame that doesn't already carry the column.
     """
     logged_at = logged_at or datetime.now(UTC)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -76,7 +111,9 @@ def log_predictions(
         raise FileExistsError(f"prediction log already exists and is immutable: {path}")
 
     to_write = predictions.copy()
-    to_write["gameweek"] = gameweek
+    if "gameweek" not in to_write.columns:
+        to_write["gameweek"] = gameweek
+    to_write["decision_gameweek"] = gameweek
     to_write["model_version"] = model_version
     to_write["logged_at"] = logged_at.isoformat()
     to_write.to_parquet(path, index=False)

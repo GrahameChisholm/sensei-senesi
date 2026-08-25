@@ -66,6 +66,9 @@ def _gk_rows() -> list[dict]:
 
 
 def _def_rows() -> list[dict]:
+    # defensive_contribution is a raw action count (tackles/interceptions/blocks/clearances), not
+    # an FPL points value -- 12 clears DEF's own threshold of 10 (engine.scoring
+    # .DEFENSIVE_CONTRIBUTION_THRESHOLD), so every row here should earn the flat bonus.
     rows = []
     for _ in range(8):
         rows.append(
@@ -75,7 +78,7 @@ def _def_rows() -> list[dict]:
                 minutes=90,
                 goals_scored=0,
                 assists=0,
-                defensive_contribution=2,
+                defensive_contribution=12,
                 clean_sheets=1,
             )
         )
@@ -84,6 +87,56 @@ def _def_rows() -> list[dict]:
 
 def _prior_merged_gw() -> pd.DataFrame:
     return pd.DataFrame(_mid_rows() + _gk_rows() + _def_rows())
+
+
+def _club_ranked_rows() -> list[dict]:
+    """Three players per club, all landing in the same £5.5m-£5.9m MID price bucket (55-59 in
+    tenths of a million; ``_price_bucket`` floors all three to 55), so every within-club rank tier
+    (1st, 2nd, 3rd-or-lower most expensive) is populated within one bucket. A clear real signal
+    separates them: the highest-priced player at each club plays full matches and returns
+    regularly, the cheapest of the three barely gets on the pitch. This is what lets
+    fit_cold_start_priors learn the within-club rank differentiator from real data rather than a
+    hand-picked multiplier.
+    """
+    rows = []
+    for team in ("Hull", "Coventry"):
+        for _ in range(15):
+            rows.append(
+                _row(
+                    "MID",
+                    value=59,
+                    minutes=88,
+                    goals_scored=1,
+                    assists=1,
+                    team=team,
+                    element=f"{team}-first",
+                )
+            )
+        for _ in range(15):
+            rows.append(
+                _row(
+                    "MID",
+                    value=57,
+                    minutes=60,
+                    goals_scored=0,
+                    assists=0,
+                    team=team,
+                    element=f"{team}-second",
+                )
+            )
+        for _ in range(15):
+            rows.append(
+                _row(
+                    "MID",
+                    value=55,
+                    minutes=5,
+                    goals_scored=0,
+                    assists=0,
+                    team=team,
+                    element=f"{team}-third",
+                )
+            )
+    return rows
 
 
 class TestFitColdStartPriors:
@@ -155,3 +208,53 @@ class TestBaselineProjection:
 
     def test_price_bucket_width_is_half_a_million(self):
         assert PRICE_BUCKET_WIDTH == 5
+
+
+class TestWithinClubRankDifferentiation:
+    """T-C: 190 real cold-start players collapsed into only 18 distinct expected-points values
+    because the prior varied only by (position, price bucket). These tests fit from a frame with
+    real club identity and assert two players sharing a position and price bucket, but different
+    within-club price rank, no longer collapse onto the same projection.
+    """
+
+    def test_priors_fit_a_rank_tier_cut_when_club_identity_is_present(self):
+        priors = fit_cold_start_priors(pd.DataFrame(_club_ranked_rows()))
+        assert ("MID", 55, "1") in priors.by_position_bucket_and_rank
+        assert ("MID", 55, "2") in priors.by_position_bucket_and_rank
+        assert ("MID", 55, "3+") in priors.by_position_bucket_and_rank
+
+    def test_no_rank_tier_cut_when_club_identity_is_absent(self):
+        # The existing club-less fixtures (no "team"/"element" columns) must keep behaving exactly
+        # as before this differentiator existed.
+        priors = fit_cold_start_priors(_prior_merged_gw())
+        assert priors.by_position_bucket_and_rank == {}
+
+    def test_same_bucket_different_rank_gives_different_projections(self):
+        priors = fit_cold_start_priors(pd.DataFrame(_club_ranked_rows()))
+        # 59 and 55 both floor to price bucket 55 (PRICE_BUCKET_WIDTH == 5) -- only the within-club
+        # rank differs between these two calls.
+        assert 59 // PRICE_BUCKET_WIDTH == 55 // PRICE_BUCKET_WIDTH
+        first_choice = baseline_projection(
+            101, "MID", 59, gameweek=1, priors=priors, within_club_position_rank=1
+        )
+        third_choice = baseline_projection(
+            102, "MID", 55, gameweek=1, priors=priors, within_club_position_rank=3
+        )
+        assert first_choice.expected_points != third_choice.expected_points
+        assert first_choice.expected_points > third_choice.expected_points
+
+    def test_rank_ignored_when_combination_was_never_observed_falls_back(self):
+        priors = fit_cold_start_priors(pd.DataFrame(_club_ranked_rows()))
+        # No prior-season rows for a MID priced at £20.0m at any rank -- must fall back to the
+        # position-only average rather than raising, exactly like the bucket fallback already does.
+        projection = baseline_projection(
+            103, "MID", 200, gameweek=1, priors=priors, within_club_position_rank=1
+        )
+        position_only = priors.by_position["MID"]
+        assert projection.expected_points == pytest.approx(position_only.breakdown.total)
+
+    def test_omitting_rank_uses_the_flatter_bucket_prior(self):
+        priors = fit_cold_start_priors(pd.DataFrame(_club_ranked_rows()))
+        no_rank = baseline_projection(104, "MID", 57, gameweek=1, priors=priors)
+        bucket_only = priors.by_position_and_bucket[("MID", 55)]
+        assert no_rank.expected_points == pytest.approx(bucket_only.breakdown.total)

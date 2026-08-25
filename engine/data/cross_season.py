@@ -57,6 +57,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pandas as pd
 
 from engine.data.live_adapter import MERGED_GW_COLUMNS
@@ -242,6 +243,20 @@ def prior_season_merged_gw(
     for column in ("value", "selected", "transfers_out", "transfers_balance"):
         if column not in df.columns:
             df[column] = 0
+
+    # T-A: a prior-season row is always real played history, never a synthesized target row, so
+    # this defaults to False -- matching MERGED_GW_COLUMNS' contract (see
+    # engine.data.live_adapter) without needing the real vaastav export to carry the column
+    # itself.
+    if "is_synthesized_target" not in df.columns:
+        df["is_synthesized_target"] = False
+
+    # T-K: penalties_order is a live-only squad-role snapshot with no retained per-gameweek
+    # history (see engine.data.live_adapter.MERGED_GW_COLUMNS' own comment). A prior-season row
+    # never carries one, so this defaults to NaN for the same column-contract reason
+    # is_synthesized_target defaults to False above.
+    if "penalties_order" not in df.columns:
+        df["penalties_order"] = np.nan
 
     missing = [c for c in MERGED_GW_COLUMNS if c not in df.columns]
     if missing:

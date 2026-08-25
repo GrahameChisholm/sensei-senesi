@@ -41,10 +41,30 @@ class PlayerGameweekProjection:
     minutes: MinutesDistribution
     breakdown: ComponentBreakdown
     simulation: PlayerSimulationSummary | None = None
+    # ENGINE_IMPROVEMENTS_5.md Tier 2.1: E[points | plays 60+], the same component chain re-run
+    # under "they definitely start" (``engine.pipeline._plays_60_counterfactual``). ``None`` when
+    # the producing path didn't compute it, e.g. a cold-start baseline or a hand-built test
+    # projection, matching how ``simulation`` is optional for the same reason.
+    conditional_expected_points: float | None = None
 
     @property
     def expected_points(self) -> float:
         return self.breakdown.total
+
+    @property
+    def points_if_they_play(self) -> float:
+        """``conditional_expected_points`` when it was computed, otherwise ``expected_points``.
+
+        Ranking a shortlist on this rather than on ``expected_points`` removes the availability
+        confound: ``expected_points`` is E[points | plays] multiplied by P(plays), so it scores a
+        merely-adequate certain starter above an excellent rotation risk, which is not the
+        comparison a manager is making once they have already decided to field someone. Falling
+        back rather than raising keeps a mixed pool (engine projections alongside cold-start
+        baselines) sortable on one key.
+        """
+        if self.conditional_expected_points is None:
+            return self.breakdown.total
+        return self.conditional_expected_points
 
 
 def project_player_gameweek(
@@ -54,10 +74,12 @@ def project_player_gameweek(
     minutes: MinutesDistribution,
     breakdown: ComponentBreakdown,
     simulation: PlayerSimulationSummary | None = None,
+    conditional_expected_points: float | None = None,
 ) -> PlayerGameweekProjection:
     """Combine one gameweek's minutes distribution and component breakdown (already computed by
     ``engine.aggregate.aggregate_gameweek``) into one player-facing projection, optionally
-    attaching that gameweek's simulated outcome distribution."""
+    attaching that gameweek's simulated outcome distribution and its conditional
+    ``E[points | plays]`` (Tier 2.1)."""
     if simulation is not None and simulation.player_id != player_id:
         raise ValueError(
             f"simulation.player_id ({simulation.player_id}) does not match player_id ({player_id})"
@@ -69,6 +91,7 @@ def project_player_gameweek(
         minutes=minutes,
         breakdown=breakdown,
         simulation=simulation,
+        conditional_expected_points=conditional_expected_points,
     )
 
 

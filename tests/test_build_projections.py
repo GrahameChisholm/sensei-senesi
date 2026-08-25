@@ -238,6 +238,53 @@ class TestMergeColdStartProjections:
         )
         assert set(result) == {1, 2}  # 3 correctly excluded (no fixture)
 
+    def test_within_club_rank_differentiates_two_same_bucket_cold_start_players(self):
+        # Prior season: two price tiers at the same club and position, so the rank-fitted prior
+        # in engine.data.cold_start has real signal to key off (mirrors
+        # tests/test_cold_start.py's own _club_ranked_rows fixture).
+        rows = []
+        for minutes, goals in ((88, 1), (10, 0)):
+            for _ in range(15):
+                rows.append(
+                    {
+                        "position": "MID",
+                        "value": 60,
+                        "minutes": minutes,
+                        "goals_scored": goals,
+                        "assists": 0,
+                        "clean_sheets": 0,
+                        "goals_conceded": 1,
+                        "defensive_contribution": 0,
+                        "saves": 0,
+                        "bonus": 0,
+                        "yellow_cards": 0,
+                        "red_cards": 0,
+                        "penalties_missed": 0,
+                        "own_goals": 0,
+                        "team": "Newclub",
+                        "element": "first" if minutes == 88 else "second",
+                    }
+                )
+        priors = fit_cold_start_priors(pd.DataFrame(rows))
+
+        live_elements = pd.DataFrame(
+            [
+                {"id": 101, "team": TEAM_A, "element_type": 3, "now_cost": 62},
+                {"id": 102, "team": TEAM_A, "element_type": 3, "now_cost": 58},
+            ]
+        )
+        team_id_by_player = {101: TEAM_A, 102: TEAM_A}
+        team_gws = {(TEAM_A, 1)}
+
+        result, cold_start_ids = merge_cold_start_projections(
+            live_elements, {}, priors, team_id_by_player, team_gws, [1]
+        )
+
+        assert cold_start_ids == {101, 102}
+        assert (
+            result[101].gameweeks[1].expected_points > result[102].gameweeks[1].expected_points
+        ), "the pricier (rank-1) player must outproject the cheaper (rank-2) one at the same bucket"
+
 
 class TestAssembleProjectionCache:
     def _cache(self):

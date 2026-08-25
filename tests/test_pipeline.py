@@ -425,3 +425,101 @@ def test_penalty_sub_model_activates_via_optional_row_columns(
         pd.DataFrame([_base_row(7, "FWD")]), 1, fitted_minutes_model, fitted_bonus_model
     ).set_index("player_id")
     assert predictions.loc[7, "goals"] > no_penalty_role.loc[7, "goals"]
+
+
+def test_bonus_is_redistributed_per_fixture_and_conserves_six_points(
+    fitted_minutes_model, fitted_bonus_model
+):
+    # T-G: FPL awards bonus 3/2/1 to exactly the top three BPS scorers in a match, an all-or-
+    # nothing per-fixture allocation. BonusModel's raw per-player regression prediction (clipped
+    # to [0, 3]) is too flat to reproduce that concentration on its own, so project_gameweek_pool
+    # must gather every player sharing a fixture (via the optional "team"/"opponent_team_name"
+    # columns) and redistribute with expected_bonus_from_fixture_strengths, whose Plackett-Luce
+    # probabilities always sum to exactly bonus_points.sum() == 6.0 for any fixture of 3+ players.
+    home_rows = []
+    for player_id, npxg in enumerate([1.2, 0.1, 0.05, 0.05, 0.02, 0.02], start=1):
+        row = _base_row(player_id, "FWD" if player_id == 1 else "MID")
+        row["npxg_per_90"] = npxg
+        row["xa_per_90"] = 0.05
+        row["team"] = "Home"
+        row["opponent_team_name"] = "Away"
+        home_rows.append(row)
+    away_rows = []
+    for player_id, npxg in enumerate([0.05, 0.05, 0.03, 0.02, 0.02, 0.01], start=7):
+        row = _base_row(player_id, "MID")
+        row["npxg_per_90"] = npxg
+        row["xa_per_90"] = 0.05
+        row["team"] = "Away"
+        row["opponent_team_name"] = "Home"
+        away_rows.append(row)
+    pool = pd.DataFrame(home_rows + away_rows)
+
+    predictions = project_gameweek_pool(pool, 1, fitted_minutes_model, fitted_bonus_model)
+
+    # The whole fixture's total bonus (both "bonus" points and the raw "expected_bonus" quantity,
+    # identical here since bonus has no separate points-conversion table) must conserve the real
+    # 6.0 exactly, not just approximately.
+    assert predictions["bonus"].sum() == pytest.approx(6.0, abs=1e-6)
+    assert predictions["expected_bonus"].sum() == pytest.approx(6.0, abs=1e-6)
+
+    # The standout player (id 1, far higher expected goals than anyone else in the fixture) must
+    # land near a real elite match performance (roughly 1.0 to 1.5), not the flat ~0.6 ceiling the
+    # audit found from using BonusModel's raw independent prediction directly.
+    by_player = predictions.set_index("player_id")
+    assert 1.0 <= by_player.loc[1, "expected_bonus"] <= 1.5
+    assert by_player.loc[1, "expected_bonus"] > by_player.drop(index=1)["expected_bonus"].max()
+
+
+def test_bonus_contest_is_weighted_by_availability_so_absentees_barely_share_it(
+    fitted_minutes_model, fitted_bonus_model
+):
+    """ENGINE_IMPROVEMENTS_5.md Tier 2.2. A fixture's contest has to span both full squads, since
+    the lineup isn't known in advance, but only ~22 of ~48 play. Unweighted, the ~26 who don't
+    absorbed 17.4% of every fixture's 6.0 points on the real 2025/26 walk-forward, against 0.0% of
+    actual bonus. Here 6 likely starters share a fixture with 6 players the minutes model is
+    confident will not feature; the latter must come out with a negligible share, but never a hard
+    zero, since a deep-squad player who unexpectedly starts and tops BPS should be unlikely rather
+    than impossible."""
+    rows = []
+    for player_id in range(1, 13):
+        team = "Home" if player_id <= 6 else "Away"
+        row = _base_row(player_id, "MID")
+        row["team"] = team
+        row["opponent_team_name"] = "Away" if team == "Home" else "Home"
+        row["npxg_per_90"] = 0.2
+        row["xa_per_90"] = 0.1
+        # Two of every three players per side are flagged unavailable, the one signal the minutes
+        # model reads directly rather than having to learn (minutes.KNOWN_UNAVAILABLE_P_ZERO).
+        benched = player_id % 3 != 1
+        if benched:
+            row["status_score"] = encode_status("i")
+            row["chance_of_playing_next_round"] = 0.0
+        rows.append(row)
+    pool = pd.DataFrame(rows)
+
+    predictions = project_gameweek_pool(
+        pool, 1, fitted_minutes_model, fitted_bonus_model
+    ).set_index("player_id")
+
+    # The per-fixture invariant still holds exactly -- weighting reallocates, it never leaks.
+    assert predictions["bonus"].sum() == pytest.approx(6.0, abs=1e-6)
+
+    likely = predictions.loc[[1, 4, 7, 10], "expected_bonus"]
+    unavailable = predictions.drop(index=[1, 4, 7, 10])["expected_bonus"]
+    assert unavailable.sum() / 6.0 < 0.05
+    assert likely.min() > unavailable.max() * 10
+    assert (unavailable > 0).all(), "an absentee must be unlikely to earn bonus, not unable"
+
+
+def test_bonus_unchanged_without_fixture_columns(
+    synthetic_pool, fitted_minutes_model, fitted_bonus_model
+):
+    # Without "team"/"opponent_team_name" there is no fixture to redistribute across, so this must
+    # reproduce the pre-T-G behavior unchanged: BonusModel's own clipped prediction taken as is,
+    # the same silent-default convention as this module's other optional columns. synthetic_pool
+    # (6 players, no fixture columns) is the same pool every other pipeline test already asserts
+    # sane per-player output against, so its total is not forced to the fixture invariant of 6.0.
+    predictions = project_gameweek_pool(synthetic_pool, 1, fitted_minutes_model, fitted_bonus_model)
+
+    assert predictions["expected_bonus"].between(0.0, 3.0).all()
+    assert predictions["expected_bonus"].sum() != pytest.approx(6.0, abs=1e-6)

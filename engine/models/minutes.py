@@ -15,6 +15,7 @@ scales by this model's output — get this wrong and nothing else can compensate
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -27,6 +28,8 @@ from sklearn.preprocessing import StandardScaler
 # Cross-validation folds for the isotonic calibration layer (see :func:`_make_classifier`). Fit
 # entirely within the training fold, so this stays point-in-time safe.
 CALIBRATION_FOLDS = 5
+
+logger = logging.getLogger(__name__)
 
 MINUTES_60_PLUS_THRESHOLD = 60
 
@@ -85,8 +88,11 @@ FEATURE_COLUMNS = [
 
 # FPL's `status` code -> a coarse numeric availability proxy. `news` free text is deliberately
 # NOT parsed into a feature (BUILD_PLAN 2.1: display flag only) — chance_of_playing_next_round
-# and status already carry the same information as a clean structured number.
-STATUS_SCORE = {"a": 1.0, "d": 0.75, "i": 0.0, "s": 0.0, "u": 0.0}
+# and status already carry the same information as a clean structured number. `n` (not in squad,
+# typically a player out on loan) is included alongside the five documented FPL codes so that a
+# loaned-out player scores as fully unavailable rather than crashing feature encoding, per the
+# 2026-08-20 engine audit (ENGINE_AUDIT_FIXES-implementation.md T-B).
+STATUS_SCORE = {"a": 1.0, "d": 0.75, "i": 0.0, "s": 0.0, "u": 0.0, "n": 0.0}
 
 # Fallback conditional-minutes estimates for a bucket with no fitted training examples (e.g. a
 # thin synthetic sample, or a position that never has sub-appearance rows in-sample). Rough
@@ -95,13 +101,36 @@ DEFAULT_MINUTES_60_PLUS = 80.0
 DEFAULT_MINUTES_STARTED_UNDER_60 = 45.0
 DEFAULT_MINUTES_SUB_APPEARANCE = 20.0
 
+# A player FPL's live data marks as definitely not playing (status_score 0.0, meaning status
+# i/s/u/n, or an explicit 0% chance_of_playing_next_round) gets their bucket probabilities
+# floored here, after the fitted model's own prediction, rather than trusting the model to have
+# learned this relationship. It could not have: chance_of_playing_next_round/status_score are
+# live-only fields with zero variance across every real historical training row (that data was
+# never retrospectively available, so every backtest row is hardcoded to "fully fit"), so a
+# model fit on that data learns essentially no weight for either feature (2026-08-20 engine
+# audit, ENGINE_AUDIT_FIXES-implementation.md T-F's verified finding). This floor is a no-op on
+# the backtest path, since status_score/chance_of_playing_next_round never take these values
+# there. Not floored all the way to exactly 0/1: a small residual probability is kept for the
+# rare late fitness reprieve, and to avoid a degenerate all-or-nothing distribution feeding a
+# division or log elsewhere downstream.
+KNOWN_UNAVAILABLE_P_ZERO = 0.98
+
 
 def encode_status(status: str) -> float:
-    """FPL `status` (a/d/i/s/u) -> numeric availability proxy for :data:`FEATURE_COLUMNS`."""
+    """FPL `status` (a/d/i/s/u/n) -> numeric availability proxy for :data:`FEATURE_COLUMNS`.
+
+    Decision (2026-08-20 engine audit, ENGINE_AUDIT_FIXES-implementation.md T-B): a status code not
+    in :data:`STATUS_SCORE` degrades to fully unavailable (0.0) with a logged warning rather than
+    raising. FPL has introduced new status codes before and will again, and this feature is only a
+    coarse numeric proxy, not the sole availability signal; a single unrecognised code should not be
+    able to take down a scheduled projection build. Callers that need to detect the degradation
+    should watch the `engine.models.minutes` logger rather than catching an exception.
+    """
     try:
         return STATUS_SCORE[status]
     except KeyError:
-        raise ValueError(f"unknown FPL status code: {status!r}") from None
+        logger.warning("unknown FPL status code %r, treating as unavailable (0.0)", status)
+        return 0.0
 
 
 @dataclass(frozen=True)
@@ -295,6 +324,9 @@ class MinutesModel:
 
         X = features[FEATURE_COLUMNS].to_numpy(dtype=float)
         n = X.shape[0]
+        known_unavailable = (features["status_score"].to_numpy(dtype=float) <= 0.0) | (
+            features["chance_of_playing_next_round"].to_numpy(dtype=float) <= 0.0
+        )
 
         p_start = self.start_classifier.positive_proba(X)
         p_not_start = 1.0 - p_start
@@ -344,14 +376,26 @@ class MinutesModel:
             else:
                 minutes_1_59 = 0.0
 
-            # Renormalize defensively against floating-point drift so probabilities sum to
-            # exactly 1 (MinutesDistribution enforces this strictly).
-            total = p_zero[i] + p_1_59[i] + p_60_plus[i]
+            if known_unavailable[i]:
+                # See KNOWN_UNAVAILABLE_P_ZERO's own comment: the fitted model never learned a
+                # real coefficient for this live-only signal, so it is applied here directly
+                # instead of trusting the model's own (near-zero-weighted) prediction.
+                row_p_zero = KNOWN_UNAVAILABLE_P_ZERO
+                row_p_1_59 = 1.0 - KNOWN_UNAVAILABLE_P_ZERO
+                row_p_60_plus = 0.0
+            else:
+                # Renormalize defensively against floating-point drift so probabilities sum to
+                # exactly 1 (MinutesDistribution enforces this strictly).
+                total = p_zero[i] + p_1_59[i] + p_60_plus[i]
+                row_p_zero = p_zero[i] / total
+                row_p_1_59 = p_1_59[i] / total
+                row_p_60_plus = p_60_plus[i] / total
+
             results.append(
                 MinutesDistribution(
-                    p_zero=p_zero[i] / total,
-                    p_1_to_59=p_1_59[i] / total,
-                    p_60_plus=p_60_plus[i] / total,
+                    p_zero=row_p_zero,
+                    p_1_to_59=row_p_1_59,
+                    p_60_plus=row_p_60_plus,
                     expected_minutes_given_1_to_59=minutes_1_59,
                     expected_minutes_given_60_plus=minutes_60_plus[i],
                 )

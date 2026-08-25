@@ -237,6 +237,7 @@ def project_goals(
     team_xg_per_90: float | None = None,
     shrinkage_k: float = 0.0,
     npxg_share_of_team_xg: float = DEFAULT_NPXG_SHARE_OF_TEAM_XG,
+    conversion_factor: float = 1.0,
 ) -> GoalProjection:
     """Top-level entry point: combine the open-play rate and the penalty sub-model into one
     :class:`GoalProjection` for a single player in a single gameweek.
@@ -246,7 +247,18 @@ def project_goals(
     omitting them uses the player's own npxG/90 rate unmodified, matching every existing caller
     and keeping this symmetric with ``engine.models.assists.project_assists``'s own opt-in
     shrinkage arguments.
+
+    ``conversion_factor`` (ENGINE_IMPROVEMENTS_5.md Tier 2.3) scales the open-play rate only, and
+    deliberately not the penalty sub-model, whose conversion rate is already an explicit,
+    separately-sourced parameter. Symmetric with
+    :func:`~engine.models.assists.project_assists`'s own argument, but for the opposite defect: the
+    engine's npxG-derived rate ran 18% *hot* against real 2025/26 outcomes when evaluated at each
+    row's actual minutes (predicted 1098.9 goals against 929 actual), and 24% hot on the all-rows
+    mean calibration. Fitted per position on training history only; 1.0 is the pre-Tier-2.3
+    behaviour.
     """
+    if conversion_factor < 0:
+        raise ValueError("conversion_factor must be non-negative")
     effective_npxg_per_90 = player_npxg_per_90
     if individual_weight is not None and team_xg_per_90 is not None and shrinkage_k > 0:
         effective_npxg_per_90 = shrunk_player_npxg_per_90(
@@ -263,7 +275,7 @@ def project_goals(
         team_expected_penalties, taker_share, penalty_conversion_rate
     )
     return GoalProjection(
-        non_penalty_goal_rate=non_penalty_rate,
+        non_penalty_goal_rate=non_penalty_rate * conversion_factor,
         expected_penalty_goals=penalty_outcome.expected_penalty_goals,
         expected_penalty_misses=penalty_outcome.expected_penalty_misses,
     )

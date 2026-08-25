@@ -8,6 +8,7 @@ import pytest
 
 from engine.models.minutes import (
     FEATURE_COLUMNS,
+    KNOWN_UNAVAILABLE_P_ZERO,
     MinutesDistribution,
     MinutesModel,
     encode_status,
@@ -19,9 +20,19 @@ def test_encode_status_known_codes():
     assert encode_status("i") == 0.0
 
 
-def test_encode_status_unknown_raises():
-    with pytest.raises(ValueError):
-        encode_status("x")
+def test_encode_status_not_in_squad_is_unavailable():
+    # "n" (not in squad, e.g. a player out on loan) must encode as fully unavailable rather than
+    # raise, per ENGINE_AUDIT_FIXES-implementation.md T-B.
+    assert encode_status("n") == 0.0
+
+
+def test_encode_status_unknown_code_degrades_to_unavailable_with_warning(caplog):
+    # An unrecognised future status code must degrade to unavailable (0.0) with a logged warning
+    # instead of raising, so one new FPL status code cannot take down a production build. See the
+    # decision documented on encode_status and ENGINE_AUDIT_FIXES-implementation.md T-B.
+    with caplog.at_level("WARNING", logger="engine.models.minutes"):
+        assert encode_status("x") == 0.0
+    assert any("x" in record.getMessage() for record in caplog.records)
 
 
 def test_minutes_distribution_rejects_probabilities_not_summing_to_one():
@@ -181,6 +192,78 @@ def test_minutes_model_high_fitness_high_start_rate_favours_60_plus():
 
     assert nailed_dist.p_60_plus > fringe_dist.p_60_plus
     assert nailed_dist.expected_minutes > fringe_dist.expected_minutes
+
+
+def test_minutes_model_floors_a_nailed_on_player_flagged_definitely_unavailable():
+    # Every OTHER feature here screams "nailed-on starter" -- only status_score/
+    # chance_of_playing_next_round say the player will not feature (e.g. a confirmed injury
+    # picked up after their last real appearance). The live-only availability floor
+    # (KNOWN_UNAVAILABLE_P_ZERO) must dominate regardless of what the model's own weak learned
+    # coefficient for those two features would otherwise predict.
+    features, started, minutes = _synthetic_training_data()
+    model = MinutesModel().fit(features, started, minutes)
+
+    nailed_but_ruled_out = pd.DataFrame(
+        [
+            {
+                "recent_start_rate": 1.0,
+                "recent_minutes_ewma": 90.0,
+                "fixture_congestion": 0.0,
+                "chance_of_playing_next_round": 0.0,
+                "status_score": 0.0,
+                "days_since_last_appearance": 0.0,
+                "zero_minute_streak_length": 0.0,
+                "start_rate_last_3": 1.0,
+                "start_rate_last_6": 1.0,
+                "start_rate_last_15": 1.0,
+                "team_rotation_propensity": 0.1,
+                "price": 9.0,
+                "ownership_log": 3.0,
+                "transfers_out_share": 0.01,
+                "transfers_balance_share": 0.0,
+                "is_goalkeeper": 0.0,
+            }
+        ]
+    )
+
+    dist = model.predict(nailed_but_ruled_out)[0]
+
+    assert dist.p_zero == pytest.approx(KNOWN_UNAVAILABLE_P_ZERO)
+    assert dist.p_60_plus == 0.0
+
+
+def test_minutes_model_doubtful_status_is_not_floored():
+    # status "d" (doubtful, status_score 0.75) and a nonzero chance_of_playing_next_round must
+    # NOT trigger the floor -- only a confirmed-unavailable reading should.
+    features, started, minutes = _synthetic_training_data()
+    model = MinutesModel().fit(features, started, minutes)
+
+    doubtful = pd.DataFrame(
+        [
+            {
+                "recent_start_rate": 1.0,
+                "recent_minutes_ewma": 90.0,
+                "fixture_congestion": 0.0,
+                "chance_of_playing_next_round": 75.0,
+                "status_score": 0.75,
+                "days_since_last_appearance": 0.0,
+                "zero_minute_streak_length": 0.0,
+                "start_rate_last_3": 1.0,
+                "start_rate_last_6": 1.0,
+                "start_rate_last_15": 1.0,
+                "team_rotation_propensity": 0.1,
+                "price": 9.0,
+                "ownership_log": 3.0,
+                "transfers_out_share": 0.01,
+                "transfers_balance_share": 0.0,
+                "is_goalkeeper": 0.0,
+            }
+        ]
+    )
+
+    dist = model.predict(doubtful)[0]
+
+    assert dist.p_zero != pytest.approx(KNOWN_UNAVAILABLE_P_ZERO)
 
 
 def test_minutes_model_zero_minute_streak_suppresses_p_60_plus():

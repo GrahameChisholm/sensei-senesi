@@ -16,6 +16,7 @@ import pytest
 
 from backtest.harness import run_walk_forward
 from backtest.run_season import (
+    SIMULATE_FALLBACK_OPPONENT_COUNT_ATTR,
     SeasonBacktestData,
     _composite_gameweek,
     _fit_league_avg_rate_by_position,
@@ -126,6 +127,43 @@ def test_compute_days_since_last_appearance_tracks_gaps_and_defaults_first_row()
     # Row 3's "last appearance" is still 2025-08-01 (the 08-08 row had 0 minutes, so it never
     # became a new last-appearance date) -- 21 days, not 14.
     assert list(days_since) == [60.0, 7.0, 21.0]
+
+
+def test_days_since_last_appearance_is_frozen_across_a_synthesized_horizon():
+    """ENGINE_IMPROVEMENTS_5.md Tier 1.4. Three not-yet-played horizon gameweeks a week apart. The
+    gap must not grow across them: nothing has happened to this player, and a growing gap reads to
+    the minutes model as an injury signal, which is what produced the systematic P(60+) decay the
+    further out the horizon looked."""
+    gw = _gw_frame(
+        [
+            {"player_id": 1, "kickoff_time": "2025-08-01", "minutes": 90},
+            {"player_id": 1, "kickoff_time": "2025-08-08", "minutes": 0},
+            {"player_id": 1, "kickoff_time": "2025-08-15", "minutes": 0},
+            {"player_id": 1, "kickoff_time": "2025-08-22", "minutes": 0},
+        ]
+    )
+    gw["is_synthesized_target"] = [False, True, True, True]
+
+    days_since = compute_days_since_last_appearance(gw, default_days=60.0)
+
+    # Row 1 is real history. Rows 2-4 are the horizon and all carry the first one's 7 days, rather
+    # than 7, 14, 21.
+    assert list(days_since) == [60.0, 7.0, 7.0, 7.0]
+
+
+def test_days_since_last_appearance_still_grows_across_real_absences():
+    # The freeze must apply only to synthesized rows. A player genuinely absent for weeks of real,
+    # played gameweeks must still accumulate the gap, since there it is a true injury signal.
+    gw = _gw_frame(
+        [
+            {"player_id": 1, "kickoff_time": "2025-08-01", "minutes": 90},
+            {"player_id": 1, "kickoff_time": "2025-08-08", "minutes": 0},
+            {"player_id": 1, "kickoff_time": "2025-08-15", "minutes": 0},
+        ]
+    )
+    gw["is_synthesized_target"] = [False, False, False]
+
+    assert list(compute_days_since_last_appearance(gw, default_days=60.0)) == [60.0, 7.0, 14.0]
 
 
 def test_compute_zero_minute_streak_length_resets_on_appearance():
@@ -314,10 +352,21 @@ def test_team_rate_asof_shrunk_barely_moves_a_deep_sample():
     assert shrunk > 1.375 - 1e-9 and shrunk < 1.5
 
 
-def test_team_rate_asof_shrunk_returns_nan_when_no_prior_history():
+def test_team_rate_asof_shrunk_falls_back_to_league_average_for_a_promoted_club():
+    # A newly-promoted club has zero top-flight matches, so its own raw rate is undefined. Rather
+    # than propagating that NaN (which would drop every opponent's fixture row for the club's
+    # first ever match via the required-columns dropna downstream), full shrinkage lands on the
+    # league-average rate, matching what shrink_toward_prior already does for a zero-weight
+    # individual rate everywhere else it's used.
     empty = pd.DataFrame(columns=["date", "xG", "xGA", "minutes", "is_home"])
     before = pd.Timestamp("2025-08-15", tz="UTC")
-    assert pd.isna(_team_rate_asof_shrunk(empty, "xG", before, league_avg=1.4))
+    assert _team_rate_asof_shrunk(empty, "xG", before, league_avg=1.4) == pytest.approx(1.4)
+
+
+def test_team_rate_asof_shrunk_returns_nan_when_league_average_itself_is_undefined():
+    empty = pd.DataFrame(columns=["date", "xG", "xGA", "minutes", "is_home"])
+    before = pd.Timestamp("2025-08-15", tz="UTC")
+    assert pd.isna(_team_rate_asof_shrunk(empty, "xG", before, league_avg=float("nan")))
 
 
 def test_league_venue_multipliers_reflects_a_real_home_advantage():
@@ -580,6 +629,37 @@ def test_simulate_gameweek_pool_produces_valid_floor_ceiling_for_a_real_fixture(
     assert result["prob_big_haul"].between(0.0, 1.0).all()
     # every real fixture in this synthetic season pairs exactly two teams -- both sides scored.
     assert (result["gameweek"] == gameweeks[-1]).all()
+    # both opponents are present in the pool, so no fixture needed the synthetic fallback.
+    assert result.attrs[SIMULATE_FALLBACK_OPPONENT_COUNT_ATTR] == 0
+
+
+def test_simulate_gameweek_pool_falls_back_to_synthetic_opponent_when_opponent_squad_missing():
+    # ENGINE_AUDIT_FIXES T-I: a newly promoted club's entire squad routes through cold start and
+    # is therefore absent from the engineered pool, which previously made simulate_gameweek_pool
+    # skip the fixture outright, leaving the *known* side with no floor/ceiling/prob_big_haul
+    # either even though its own players are fully engineered. It must now fall back to a
+    # synthetic league-average opponent instead, so the known side still gets a real simulation.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    gameweeks = sorted(engineered["gameweek"].unique())
+    training_history = engineered[engineered["gameweek"] < gameweeks[-1]]
+    fitted_state = fit_fn(training_history)
+    players_gw = engineered[engineered["gameweek"] == gameweeks[-1]]
+
+    # Drop Team B entirely, as if its whole squad were cold-start and dropped upstream -- Team A's
+    # rows remain in the pool, but their opponent no longer appears anywhere in it.
+    known_only = players_gw[players_gw["team"] == "Team A"]
+    assert not known_only.empty
+    assert (known_only["opponent_team_name"] == "Team B").all()
+
+    result = simulate_gameweek_pool(known_only, fitted_state, n_runs=200, seed=0)
+
+    assert set(result["player_id"]) == set(known_only["player_id"])
+    assert result["floor"].notna().all()
+    assert result["ceiling"].notna().all()
+    assert result["sim_mean"].notna().all()
+    assert (result["floor"] <= result["ceiling"]).all()
+    assert result.attrs[SIMULATE_FALLBACK_OPPONENT_COUNT_ATTR] == 1
 
 
 def test_simulate_gameweek_pool_empty_pool_returns_empty_frame():
@@ -906,10 +986,15 @@ def test_engineer_features_includes_goalkeepers_with_zeroed_npxg_xa():
 
 
 def test_engineer_features_live_availability_overrides_only_the_target_gameweek():
-    # A1: chance_of_playing_next_round/status are real, live-only fields -- overriding them for
-    # the current gameweek only (never a historical row, which must stay exactly as point-in-time
-    # as the backtest's own default) is the whole point of the live_availability parameter.
+    # A1/T-F: chance_of_playing_next_round/status are real, live-only fields -- overriding them
+    # for the synthesized target gameweek only (never a real played-history row, which must stay
+    # exactly as point-in-time as the backtest's own default) is the whole point of the
+    # live_availability parameter. `is_synthesized_target` (T-A), not gameweek == max(), is what
+    # marks that row -- set explicitly here since _synthetic_season() is an all-real-history frame
+    # with no synthesized rows of its own.
     merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    target_gameweek = merged_gw["GW"].max()
+    merged_gw["is_synthesized_target"] = merged_gw["GW"] == target_gameweek
     live_availability = pd.DataFrame(
         [{"player_id": 1, "chance_of_playing_next_round": 25.0, "status": "d"}]
     )
@@ -918,7 +1003,6 @@ def test_engineer_features_live_availability_overrides_only_the_target_gameweek(
         merged_gw, teams, team_histories, player_histories, live_availability=live_availability
     )
 
-    target_gameweek = engineered["gameweek"].max()
     player_1 = engineered[engineered["player_id"] == 1].set_index("gameweek")
 
     assert player_1.loc[target_gameweek, "chance_of_playing_next_round"] == pytest.approx(25.0)
@@ -930,6 +1014,8 @@ def test_engineer_features_live_availability_overrides_only_the_target_gameweek(
 
 def test_engineer_features_live_availability_leaves_unlisted_players_at_the_default():
     merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    target_gameweek = merged_gw["GW"].max()
+    merged_gw["is_synthesized_target"] = merged_gw["GW"] == target_gameweek
     live_availability = pd.DataFrame(
         [{"player_id": 1, "chance_of_playing_next_round": 0.0, "status": "i"}]
     )
@@ -938,12 +1024,45 @@ def test_engineer_features_live_availability_leaves_unlisted_players_at_the_defa
         merged_gw, teams, team_histories, player_histories, live_availability=live_availability
     )
 
-    target_gameweek = engineered["gameweek"].max()
     others = engineered[
         (engineered["gameweek"] == target_gameweek) & (engineered["player_id"] != 1)
     ]
     assert (others["chance_of_playing_next_round"] == 100.0).all()
     assert (others["status_score"] == encode_status("a")).all()
+
+
+def test_engineer_features_live_availability_patches_every_synthesized_target_row():
+    # T-F's actual bug fix: a multi-gameweek horizon (engine.data.live_adapter.build_merged_gw with
+    # a multi-element target_gameweeks) synthesizes one target row per horizon gameweek, all
+    # flagged is_synthesized_target. The old gw["gameweek"] == gw["gameweek"].max() check only ever
+    # patched the last of those, leaving every earlier horizon gameweek (the ones a manager
+    # actually picks for) silently holding the "fully fit" default. Simulate that here by flagging
+    # the last two gameweeks of the synthetic season as synthesized targets.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    all_gameweeks = sorted(merged_gw["GW"].unique())
+    target_gameweeks = all_gameweeks[-2:]
+    merged_gw["is_synthesized_target"] = merged_gw["GW"].isin(target_gameweeks)
+    live_availability = pd.DataFrame(
+        [{"player_id": 1, "chance_of_playing_next_round": 0.0, "status": "i"}]
+    )
+
+    engineered = engineer_features(
+        merged_gw, teams, team_histories, player_histories, live_availability=live_availability
+    )
+
+    player_1 = engineered[engineered["player_id"] == 1].set_index("gameweek")
+    for gw in target_gameweeks:
+        assert player_1.loc[gw, "chance_of_playing_next_round"] == pytest.approx(0.0)
+        assert player_1.loc[gw, "status_score"] == encode_status("i")
+    # GW1 has no prior history and is dropped by engineer_features' own dropna regardless of this
+    # fix (see test_engineer_features_drops_rows_with_no_prior_history_and_fills_expected_columns);
+    # only check the real, surviving, non-target gameweeks stayed at the "fully fit" default.
+    real_gameweeks = [
+        gw for gw in all_gameweeks if gw not in target_gameweeks and gw in player_1.index
+    ]
+    assert real_gameweeks
+    assert (player_1.loc[real_gameweeks, "chance_of_playing_next_round"] == 100.0).all()
+    assert (player_1.loc[real_gameweeks, "status_score"] == encode_status("a")).all()
 
 
 def test_engineer_features_without_live_availability_is_unchanged():
@@ -955,6 +1074,73 @@ def test_engineer_features_without_live_availability_is_unchanged():
     )
 
     pd.testing.assert_frame_equal(with_none, explicit_none)
+
+
+def test_engineer_features_seeds_taker_share_from_live_penalties_order_for_target_row():
+    # T-K: only 38 players recorded a real penalty attempt across the entire 2025-26 training
+    # window, so the realized-attempt EWMA gives a newly appointed or transferred-in penalty taker
+    # exactly zero taker_share until after they have already taken a live penalty for real. Player
+    # 1 here has zero penalty history of any kind (this fixture never records one), yet is the
+    # live bootstrap's designated primary taker (penalties_order == 1) on the synthesized target
+    # row. engine.data.live_adapter.build_merged_gw is what actually populates this column live,
+    # but engineer_features only needs the column and the is_synthesized_target flag it already
+    # reads for T-E/T-F, so this exercises it directly.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    target_gameweek = merged_gw["GW"].max()
+    merged_gw["is_synthesized_target"] = merged_gw["GW"] == target_gameweek
+    merged_gw["penalties_order"] = np.nan
+    merged_gw.loc[
+        (merged_gw["element"] == 1) & (merged_gw["GW"] == target_gameweek), "penalties_order"
+    ] = 1.0
+
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+
+    player_1 = engineered[engineered["player_id"] == 1].set_index("gameweek")
+    assert player_1.loc[target_gameweek, "taker_share"] == pytest.approx(1.0)
+    # Every other row, this player's own real history, and every other player's target row (no
+    # live rank at all), keeps the realized-attempt EWMA, which is 0.0 here since no player in
+    # this fixture ever records a penalty attempt.
+    earlier_gameweeks = player_1.index[player_1.index != target_gameweek]
+    assert (player_1.loc[earlier_gameweeks, "taker_share"] == 0.0).all()
+    other_players_target_row = engineered[
+        (engineered["gameweek"] == target_gameweek) & (engineered["player_id"] != 1)
+    ]
+    assert (other_players_target_row["taker_share"] == 0.0).all()
+
+
+def test_engineer_features_does_not_seed_taker_share_from_a_real_played_row():
+    # The seed must only ever apply to a synthesized target row. A stray penalties_order value
+    # on a real played-history row (which the live adapter itself never produces, see
+    # engine.data.live_adapter._played_rows_from_element_summaries) must not backdate today's
+    # squad role onto the past.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    merged_gw["is_synthesized_target"] = False
+    merged_gw["penalties_order"] = np.nan
+    merged_gw.loc[merged_gw["element"] == 1, "penalties_order"] = 1.0
+
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+
+    player_1 = engineered[engineered["player_id"] == 1]
+    assert (player_1["taker_share"] == 0.0).all()
+
+
+def test_engineer_features_without_penalties_order_column_is_unchanged():
+    # The backtest path (real vaastav merged_gw frames) never carries a penalties_order column at
+    # all. engineer_features must behave exactly as it did before T-K when the column is absent.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+
+    with_column_absent = engineer_features(merged_gw, teams, team_histories, player_histories)
+    with_column_all_nan = engineer_features(
+        merged_gw.assign(penalties_order=np.nan), teams, team_histories, player_histories
+    )
+
+    # The all-NaN column itself is allowed to survive onto the engineered frame (it is just
+    # another point-in-time input column at that point). Only every other column, in particular
+    # taker_share, must be byte-identical to the column-absent backtest path.
+    pd.testing.assert_frame_equal(
+        with_column_absent,
+        with_column_all_nan.drop(columns=["penalties_order"]),
+    )
 
 
 def test_fit_fn_and_predict_fn_wire_together_via_walk_forward():
@@ -1051,14 +1237,22 @@ def test_season_report_headline_summary_is_json_serializable_and_complete():
     assert set(reloaded["gate"]) == {
         "beats_baselines",
         "no_severe_bias",
+        # ENGINE_IMPROVEMENTS_5.md Tier 0.1 -- the two decision-relevant criteria.
+        "no_severe_conditional_bias",
         "calibration_acceptable",
+        "decision_set_ranking_acceptable",
         "predictions_logged",
         "trusted_by_user",
         "passed",
     }
+    # Tier 0.1: both headline figures the Model Performance screen needs alongside the pooled
+    # Spearman, so the screen can't report "ranks players well" off a number that mostly measures
+    # availability. Present (possibly NaN on a thin synthetic pool) and JSON-clean.
+    assert "shortlist_spearman" in reloaded
+    assert "conditional_played_60_plus_bias" in reloaded
 
 
-def test_score_season_played_only_mean_calibration_differs_from_all_rows_and_feeds_the_gate():
+def test_score_season_gate_reads_rate_calibration_not_the_confounded_played_rows_view():
     # B3: on a synthetic pool with real zero-minute rows, the all-rows and played-only goals
     # calibration must differ -- if they're identical the played-row filter isn't doing anything.
     # This also confirms the gate's mean_calibration_reports actually receives the played variant.
@@ -1095,7 +1289,12 @@ def test_score_season_played_only_mean_calibration_differs_from_all_rows_and_fee
 
     assert report.mean_calibrations["goals"].mean_actual < 1.0  # diluted by the zero-minute rows
     assert report.mean_calibrations_played["goals"].mean_actual == pytest.approx(1.0)
-    assert report.definition_of_done.mean_calibration_reports == report.mean_calibrations_played
+    # ENGINE_IMPROVEMENTS_5.md Tier 2.3: the gate reads the rate-level view now, not the
+    # played-rows one. The played-rows figure is retained as a diagnostic but is confounded by
+    # selecting on a realised outcome, which flipped the sign of the goals conclusion on real data.
+    assert report.rate_calibrations, "rate calibration must be computed when minutes are available"
+    assert report.definition_of_done.mean_calibration_reports == report.rate_calibrations
+    assert report.definition_of_done.mean_calibration_reports != report.mean_calibrations_played
 
 
 def test_score_season_computes_saves_mean_calibration_for_goalkeepers():
