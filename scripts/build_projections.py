@@ -40,6 +40,7 @@ from backtest.run_season import (
     fetch_vaastav_merged_gw,
     fetch_vaastav_teams,
 )
+from engine.data.availability_log import append_observations, build_availability_observations
 from engine.data.cold_start import ColdStartPriors, baseline_projection, fit_cold_start_priors
 from engine.data.cross_season import (
     fetch_vaastav_players_raw,
@@ -51,7 +52,11 @@ from engine.data.cross_season import (
 )
 from engine.data.fpl_client import FPLClient
 from engine.data.ingest import capture_current_gameweek
-from engine.data.live_adapter import DEFAULT_TOTAL_MANAGERS, snapshot_to_feature_inputs
+from engine.data.live_adapter import (
+    DEFAULT_TOTAL_MANAGERS,
+    build_live_availability,
+    snapshot_to_feature_inputs,
+)
 from engine.data.live_horizon import (
     augment_feature_inputs_with_prior_season,
     build_live_horizon_from_feature_inputs,
@@ -148,21 +153,43 @@ def merge_cold_start_projections(
 
     Returns ``(full_projections, cold_start_player_ids)`` -- the id set drives both the cache's own
     ``low_confidence``/``source`` fields and the build summary's own reporting.
+
+    Each player's price rank among their own club's *entire current squad* at the same position
+    (1 = the most expensive, so presumptively most nailed) is passed to
+    :func:`~engine.data.cold_start.baseline_projection` as ``within_club_position_rank``, so two
+    cold-start players who share a price bucket, such as a newly-promoted club's first- and
+    third-choice striker, no longer collapse onto the same projection. Ranked against the whole
+    squad rather than only its other cold-start players, since an established (non-cold-start)
+    incumbent at that position still correctly pushes a cold-start backup down a rank tier even
+    though the incumbent itself never calls into this function.
     """
     result = dict(engine_projections)
     cold_start_ids: set[int] = set()
+    position_by_player = {
+        int(row.id): ELEMENT_TYPE_TO_POSITION[int(row.element_type)]
+        for row in live_elements.itertuples()
+    }
+    price_rank_by_player: dict[int, int] = {}
+    for (_team_id, _position), group in live_elements.assign(
+        _position=live_elements["id"].map(position_by_player)
+    ).groupby([live_elements["team"], "_position"]):
+        ranks = group["now_cost"].rank(ascending=False, method="min").astype(int)
+        price_rank_by_player.update(zip(group["id"].astype(int), ranks, strict=True))
     for row in live_elements.itertuples():
         player_id = int(row.id)
         if player_id in result:
             continue
-        position = ELEMENT_TYPE_TO_POSITION[int(row.element_type)]
+        position = position_by_player[player_id]
         price = int(row.now_cost)
         team_id = team_id_by_player.get(player_id)
+        within_club_position_rank = price_rank_by_player.get(player_id)
         gameweeks: dict[int, PlayerGameweekProjection] = {}
         for gameweek in target_gameweeks:
             if team_id is None or (team_id, gameweek) not in team_gameweeks_with_fixture:
                 continue
-            gameweeks[gameweek] = baseline_projection(player_id, position, price, gameweek, priors)
+            gameweeks[gameweek] = baseline_projection(
+                player_id, position, price, gameweek, priors, within_club_position_rank
+            )
         if not gameweeks:
             continue
         result[player_id] = project_player_horizon(player_id, position, gameweeks)
@@ -214,6 +241,12 @@ def _serialize_gameweek_projection(projection: PlayerGameweekProjection) -> dict
         "breakdown": _serialize_breakdown(projection.breakdown),
         "minutes": _serialize_minutes(projection.minutes),
         "simulation": _serialize_simulation(projection.simulation),
+        # ENGINE_IMPROVEMENTS_5.md Tier 2.1: E[points | plays 60+]. The breakdown above already
+        # sums to the availability-weighted expected points, so this is the other half a manager
+        # needs and cannot derive from it (dividing by p_60_plus over-inflates badly, see
+        # engine.pipeline._plays_60_counterfactual). Null for a cold-start baseline, which has no
+        # component chain to re-run.
+        "conditional_expected_points": projection.conditional_expected_points,
     }
 
 
@@ -475,8 +508,31 @@ def build_projections(
         )
 
         # --- fit once, project every horizon gameweek ----------------------------------------
+        # T-F: live_elements is already loaded above (deadline lookup, cold-start fallback), so
+        # building the real chance_of_playing_next_round/status override here is free -- without
+        # it every player would keep engineer_features' "fully fit" default and injured/suspended
+        # players would rank as if fully available (ENGINE_AUDIT_FIXES-implementation.md T-F).
+        live_availability = build_live_availability(live_elements)
+        # ENGINE_IMPROVEMENTS_5.md Tier 1.1: record this snapshot's availability signals before the
+        # deadline, so a dataset the minutes model can actually learn from accumulates week by week.
+        # `chance_of_playing_next_round`/`status_score` are in that model's FEATURE_COLUMNS but have
+        # zero variance across every historical training row, so it currently learns no weight for
+        # either -- the binding constraint on the engine's largest available lever (perfect minutes
+        # knowledge would move pooled Spearman from 0.638 to 0.864). Writing this costs almost
+        # nothing per run and cannot be backfilled later, so it starts now rather than when the
+        # modelling work that consumes it begins.
+        append_observations(
+            build_availability_observations(live_elements, gameweek, captured_at),
+            gameweek,
+            captured_at,
+        )
         horizon_result = build_live_horizon_from_feature_inputs(
-            augmented, gameweek, target_gameweeks, n_simulation_runs=n_simulation_runs, seed=seed
+            augmented,
+            gameweek,
+            target_gameweeks,
+            n_simulation_runs=n_simulation_runs,
+            seed=seed,
+            live_availability=live_availability,
         )
 
         # --- cold-start fallback for every player the engine still couldn't cover -----------
@@ -498,14 +554,31 @@ def build_projections(
             target_gameweeks,
         )
 
-        # --- immutable prediction log (best-effort re-run guard, matching the deleted job) --
+        # --- immutable prediction log ------------------------------------------------------
+        # ENGINE_IMPROVEMENTS_5.md Tier 0.2: this used to swallow FileExistsError, which quietly
+        # broke the one guarantee the log exists to provide. Re-running against an already-logged
+        # snapshot still rewrote the projection cache the API serves, while leaving the log holding
+        # the *older* engine's numbers, so the "immutable accuracy record" no longer described the
+        # predictions anyone acted on. That is not hypothetical: 2026-27 gw01.json was rebuilt on
+        # 2026-08-24 from the 2026-08-20 snapshot and disagreed with the 2026-08-20 log on 1,191 of
+        # 1,215 rows (max 3.31 points), both tagged `e82629b-dirty`.
+        #
+        # A repeat run now writes a *new* log keyed by its own wall-clock time rather than the
+        # snapshot's capture time, so both runs are preserved and attributable, and the divergence
+        # is visible instead of silent. The snapshot's `captured_at` is still what the first log is
+        # stamped with, keeping the common single-run case unchanged.
         model_version = current_model_version()
         try:
             log_predictions(
                 horizon_result.predictions, gameweek, model_version, logged_at=captured_at
             )
         except FileExistsError:
-            pass
+            log_predictions(
+                horizon_result.predictions,
+                gameweek,
+                model_version,
+                logged_at=datetime.now(UTC),
+            )
 
         deadline_time = _deadline_time_for_gameweek(events, gameweek)
         deadline_passed = captured_at >= deadline_time
