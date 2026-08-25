@@ -90,7 +90,7 @@ from engine.models.goals import (
     realized_penalty_goals,
 )
 from engine.models.minutes import FEATURE_COLUMNS as MINUTES_FEATURE_COLUMNS
-from engine.models.minutes import MinutesModel, encode_status
+from engine.models.minutes import MinutesDistribution, MinutesModel, encode_status
 from engine.models.saves import (
     fit_away_shot_multiplier,
     fit_save_conversion_rate,
@@ -504,16 +504,46 @@ def compute_days_since_last_appearance(gw: pd.DataFrame, default_days: float = 6
     """Days since this player's last appearance (minutes > 0) strictly before this gameweek's
     kickoff — the strongest available proxy for the missing live injury/availability flags in
     historical data (ENGINE_IMPROVEMENTS.md 1.1). ``default_days`` covers a player's very first
-    row in the sample (no prior appearance to measure from)."""
+    row in the sample (no prior appearance to measure from).
+
+    T-E: a synthesized target row's own ``minutes`` is an unknown-outcome placeholder (0), never a
+    real appearance, so it must never update ``last_appearance`` for a later row in the same
+    player's horizon to read as real history, see this module's own T-E comment in
+    ``engineer_features`` for the full horizon-decay mechanism this guards against. A ``gw`` with
+    no ``is_synthesized_target`` column (a caller outside ``engineer_features``, which always adds
+    it first) is treated as entirely real history, matching this function's behaviour before T-E.
+
+    ENGINE_IMPROVEMENTS_5.md Tier 1.4 completes that guard: the value emitted for every synthesized
+    row in one horizon is frozen at the first such row's value, rather than growing with elapsed
+    calendar time. See the inline comment in ``_compute`` for the decay this removes.
+    """
+    if "is_synthesized_target" not in gw.columns:
+        gw = gw.assign(is_synthesized_target=False)
 
     def _compute(g: pd.DataFrame) -> pd.Series:
         last_appearance: pd.Timestamp | None = None
         values = []
-        for kickoff, minutes in zip(g["kickoff_time"], g["minutes"], strict=True):
-            values.append(
-                default_days if last_appearance is None else (kickoff - last_appearance).days
-            )
-            if minutes > 0:
+        first_synthesized_value: float | None = None
+        for kickoff, minutes, is_synthesized in zip(
+            g["kickoff_time"], g["minutes"], g["is_synthesized_target"], strict=True
+        ):
+            value = default_days if last_appearance is None else (kickoff - last_appearance).days
+            # ENGINE_IMPROVEMENTS_5.md Tier 1.4: hold this feature flat across a multi-gameweek
+            # horizon. T-E already stopped a synthesized row's placeholder minutes from *resetting*
+            # the clock, but the clock still ran: with no appearance ever recorded for a
+            # not-yet-played gameweek, the gap grows by ~7 days per horizon step, and the minutes
+            # model reads a growing gap as an injury signal. That produced a systematic decay in
+            # P(60+) the further out the horizon looked (0.292, 0.267, 0.252 across a three-gameweek
+            # horizon on the real 2026-27 GW1 build) with no footballing reason for playing time to
+            # fall. Freezing at the first horizon gameweek's value encodes the right assumption:
+            # when projecting GW3 we are asking "if the season proceeds normally", not "if this
+            # player has by then been absent for three more weeks".
+            if is_synthesized:
+                if first_synthesized_value is None:
+                    first_synthesized_value = value
+                value = first_synthesized_value
+            values.append(value)
+            if not is_synthesized and minutes > 0:
                 last_appearance = kickoff
         return pd.Series(values, dtype=float)
 
@@ -522,14 +552,26 @@ def compute_days_since_last_appearance(gw: pd.DataFrame, default_days: float = 6
 
 def compute_zero_minute_streak_length(gw: pd.DataFrame) -> pd.Series:
     """Consecutive prior gameweeks (strictly before this one) with zero minutes — directly
-    separates "deep squad / unavailable" from "rotation risk" (ENGINE_IMPROVEMENTS.md 1.1)."""
+    separates "deep squad / unavailable" from "rotation risk" (ENGINE_IMPROVEMENTS.md 1.1).
+
+    T-E: a synthesized target row's ``minutes`` placeholder (0) is not a real zero-minute
+    gameweek, so it must not extend the streak that a later target row in the same horizon reads,
+    see ``engineer_features``' own T-E comment for the full horizon-decay mechanism this guards
+    against. The streak value emitted for a synthesized row itself is still the real streak as of
+    that gameweek, just never advanced by that row's own fake outcome. A ``gw`` with no
+    ``is_synthesized_target`` column (a caller outside ``engineer_features``, which always adds it
+    first) is treated as entirely real history, matching this function's behaviour before T-E.
+    """
+    if "is_synthesized_target" not in gw.columns:
+        gw = gw.assign(is_synthesized_target=False)
 
     def _compute(g: pd.DataFrame) -> pd.Series:
         streak = 0
         values = []
-        for minutes in g["minutes"]:
+        for minutes, is_synthesized in zip(g["minutes"], g["is_synthesized_target"], strict=True):
             values.append(float(streak))
-            streak = 0 if minutes > 0 else streak + 1
+            if not is_synthesized:
+                streak = 0 if minutes > 0 else streak + 1
         return pd.Series(values, dtype=float)
 
     return _per_player_series(gw, _compute)
@@ -671,9 +713,15 @@ def _team_rate_asof_shrunk(
     noise (~0.87 std) — ~10 same-venue matches per team is too thin to estimate a team-specific
     venue split, even though the league-wide venue effect itself is real (see
     :func:`_league_venue_multipliers`, applied afterward in :func:`build_fixture_rate_frame`).
+
+    A newly-promoted club has zero prior top-flight matches, so its own raw rate is NaN with
+    zero weight. :func:`shrink_toward_prior` already returns the prior outright in that case, so
+    the result here is the full league-average rate rather than a missing value, closing a gap
+    where an established team's very first fixture against a debutant club would otherwise get
+    a NaN opponent rate and be dropped entirely by the required-columns dropna downstream.
     """
     raw = _team_rate_asof(team_history, stat_col, before)
-    if pd.isna(raw) or pd.isna(league_avg):
+    if pd.isna(league_avg):
         return raw
     n_prior = _team_prior_match_count(team_history, before)
     return shrink_toward_prior(raw, float(n_prior), league_avg, shrinkage_k)
@@ -1081,13 +1129,31 @@ def _any_column_na(gw: pd.DataFrame, columns: Sequence[str]) -> pd.Series:
 
 
 def _apply_live_availability(gw: pd.DataFrame, live_availability: pd.DataFrame) -> pd.DataFrame:
-    """Overwrite ``chance_of_playing_next_round``/``status_score`` on the target gameweek's rows
-    only — see :func:`engineer_features`'s own docstring for why. ``live_availability`` carries
-    ``player_id``/``chance_of_playing_next_round``/``status`` (the raw FPL status code, encoded
-    here via the same :func:`~engine.models.minutes.encode_status` the backtest default uses, so a
-    caller passes the live field as-is rather than pre-encoding it).
+    """Overwrite ``chance_of_playing_next_round``/``status_score`` on every synthesized target row
+    only, never a real played-history row, see :func:`engineer_features`'s own docstring for why.
+    ``live_availability`` carries ``player_id``/``chance_of_playing_next_round``/``status`` (the
+    raw FPL status code, encoded here via the same :func:`~engine.models.minutes.encode_status`
+    the backtest default uses, so a caller passes the live field as-is rather than pre-encoding it).
+
+    Keys off ``is_synthesized_target`` rather than ``gameweek == gw["gameweek"].max()``. With a
+    single-gameweek horizon the two are identical, but a multi-gameweek horizon built in one pass
+    (T-A/T-F, ENGINE_AUDIT_FIXES-implementation.md) synthesizes one target row per horizon
+    gameweek, and the old maximum-gameweek check only ever patched the last one, leaving earlier
+    target gameweeks (the ones a manager actually picks for) silently holding the fully fit
+    default.
+
+    KNOWN SIMPLIFICATION, documented deliberately rather than picked silently:
+    ``chance_of_playing_next_round`` is semantically about the very next match only, yet this
+    function applies the same live reading, unchanged, to every target row in the horizon (GW1,
+    GW2 and GW3 alike). It is not decayed toward "recovered" nor zeroed out further out. This is
+    wrong in both directions, a genuinely short-term knock stays pessimistic past a real recovery,
+    and a fresh injury or return that happens after this snapshot is not reflected at all, but
+    inventing a recovery-decay curve with no real data to calibrate it against would fabricate
+    false precision. Holding today's reading flat across the horizon is the safer default for a
+    first implementation; replacing it with a calibrated decay is real, separate follow-up work,
+    not attempted here.
     """
-    is_target = gw["gameweek"] == gw["gameweek"].max()
+    is_target = gw["is_synthesized_target"].astype(bool)
     availability = live_availability.set_index("player_id")
 
     chance = gw["player_id"].map(availability["chance_of_playing_next_round"])
@@ -1122,32 +1188,55 @@ def engineer_features(
     rows specifically rather than the NaN an unmatched *outfield* player correctly gets (which must
     still be dropped, not defaulted, per ENGINE_IMPROVEMENTS_2.md C.1/C.2).
 
-    ``live_availability`` (A1) — real ``chance_of_playing_next_round``/``status`` are FPL
+    ``live_availability`` (A1, T-F) real ``chance_of_playing_next_round``/``status`` are FPL
     live-only fields with no retained history, so the backtest hardcodes them to "fully fit"
     below for every row, past and present alike. Live, they are exactly the two fields FPL itself
     surfaces as its own injury/rotation signal, and B.3's crowd features (`transfers_out_share`
     especially) were only ever a retrospectively-available *proxy* for them. Supplying a frame
     with ``player_id``/``chance_of_playing_next_round``/``status`` columns overrides those two
-    columns for this call's **target gameweek only** (``gw["gameweek"].max()`` — never a historical
-    row, since "today's status" has no meaning applied retroactively and doing so would leak
-    today's knowledge into training rows that must stay exactly as point-in-time as the backtest's
-    own). A player in ``merged_gw`` but missing from ``live_availability`` keeps the "fully fit"
-    default rather than raising — a snapshot gap here is a data-quality issue to alert on
-    upstream, not a reason to fail projection for every other player. ``None`` (the default)
-    reproduces today's backtest-only behaviour exactly.
+    columns on every synthesized target row (``is_synthesized_target``, T-A), never a real
+    played-history row, since "today's status" has no meaning applied retroactively and doing so
+    would leak today's knowledge into training rows that must stay exactly as point-in-time as the
+    backtest's own. With a multi-gameweek horizon this means every horizon gameweek gets patched,
+    not only the last one, see :func:`_apply_live_availability` for that function's own known
+    simplification about applying one live reading unchanged across the whole horizon. A player in
+    ``merged_gw`` but missing from ``live_availability`` keeps the "fully fit" default rather than
+    raising, a snapshot gap here is a data-quality issue to alert on upstream, not a reason to fail
+    projection for every other player. ``None`` (the default) reproduces today's backtest-only
+    behaviour exactly.
     """
     gw = merged_gw[merged_gw["position"].isin([GK, DEF, MID, FWD])].copy()
     gw["kickoff_time"] = pd.to_datetime(gw["kickoff_time"], utc=True)
     gw = gw.rename(columns={"element": "player_id", "GW": "gameweek"})
 
+    # T-A: real vaastav merged_gw frames (the backtest path) carry no is_synthesized_target
+    # column at all, since every one of their rows is real played history. Default it to False
+    # there so the column contract matches the live path's (see engine.data.live_adapter's
+    # MERGED_GW_COLUMNS), and so it survives this function's own merges/collapse_double_gameweeks
+    # untouched below. T-E reads this column further down to keep a synthesized target row out of
+    # another target row's lagged per-player feature windows.
+    if "is_synthesized_target" not in gw.columns:
+        gw["is_synthesized_target"] = False
+
     team_id_to_name = dict(zip(teams["id"], teams["name"], strict=True))
     gw["opponent_team_name"] = gw["opponent_team"].map(team_id_to_name)
 
     # --- Tier 1.1: minutes-model features -------------------------------------------------------
+    # T-E: a horizon built in one pass (engine.data.live_adapter.build_merged_gw) synthesizes one
+    # placeholder row per player per target gameweek, with minutes/starts filled with 0 since the
+    # real outcome isn't known yet. Every lagged per-player feature below is computed with
+    # .shift(1) over this player's own chronologically-sorted rows, so without correction a later
+    # target gameweek's window would find an earlier target gameweek's placeholder row sitting
+    # inside it and read the fake 0 as "this player was just benched", decaying the minutes model's
+    # confidence purely as an artifact of horizon length rather than any real signal (see
+    # ENGINE_AUDIT_FIXES-implementation.md T-E). Masking a synthesized row's own value to NaN
+    # before shifting means the pandas ewm/rolling mean below skips it: the lagged feature carried
+    # into a later target row is the last *real* observation, not a fabricated zero.
     gw["recent_start_rate"] = _per_player_series(
         gw,
         lambda g: g["starts"]
         .astype(float)
+        .mask(g["is_synthesized_target"].astype(bool), np.nan)
         .shift(1)
         .ewm(halflife=DEFAULT_HALFLIFE, adjust=True)
         .mean(),
@@ -1156,6 +1245,7 @@ def engineer_features(
         gw,
         lambda g: g["minutes"]
         .astype(float)
+        .mask(g["is_synthesized_target"].astype(bool), np.nan)
         .shift(1)
         .ewm(halflife=DEFAULT_HALFLIFE, adjust=True)
         .mean(),
@@ -1170,7 +1260,12 @@ def engineer_features(
     for window in (3, 6, 15):
         gw[f"start_rate_last_{window}"] = _per_player_series(
             gw,
-            lambda g, w=window: g["starts"].astype(float).shift(1).rolling(w, min_periods=1).mean(),
+            lambda g, w=window: g["starts"]
+            .astype(float)
+            .mask(g["is_synthesized_target"].astype(bool), np.nan)
+            .shift(1)
+            .rolling(w, min_periods=1)
+            .mean(),
         )
     gw["team_rotation_propensity"] = compute_team_rotation_propensity(gw)
     # ENGINE_IMPROVEMENTS_3.md Phase 3: see engine.models.minutes.FEATURE_COLUMNS' own comment for
@@ -1302,6 +1397,22 @@ def engineer_features(
         0.0,
     )
     gw = gw.drop(columns=["_player_expected_penalty_attempts"])
+    # T-K: only 38 players recorded a real penalty attempt across the entire 2025-26 training
+    # window, so the EWMA above gives a newly appointed or transferred-in penalty taker exactly
+    # zero taker_share until after they have already taken a live penalty for real. FPL's live
+    # bootstrap penalties_order rank has no replayable per-gameweek history to backfill a backtest
+    # with (engine/models/goals.py's own docstring already explains why), so this seeds coverage on
+    # the live path only: a synthesized target row (engine.data.live_adapter.build_merged_gw) whose
+    # penalties_order is exactly 1, the designated primary taker, gets a full 1.0 taker_share on
+    # that row alone, regardless of how thin (or nonexistent) their own realized-attempt history
+    # is. Every other rank, and every row with no live rank at all (every real played-history row,
+    # and the entire backtest path, where the column is absent), keeps the realized-attempt EWMA
+    # computed above unchanged.
+    if "penalties_order" in gw.columns:
+        is_live_primary_taker = gw["is_synthesized_target"].astype(bool) & (
+            gw["penalties_order"] == 1
+        )
+        gw.loc[is_live_primary_taker, "taker_share"] = 1.0
 
     # --- team/opponent xG rates for goals/assists/clean-sheets, + bonus's training-only input ---
     fixtures = build_fixture_rate_frame(gw, team_histories)
@@ -1373,6 +1484,53 @@ class FittedEngineState:
     minutes_model: MinutesModel
     bonus_model: BonusModel
     fitted_constants: FittedConstants
+
+
+def _fit_rate_conversion_factor_by_position(
+    training_history: pd.DataFrame,
+    rate_col: str,
+    count_col: str,
+    min_rows: int = 200,
+    positions: tuple[str, ...] = (DEF, MID, FWD, GK),
+) -> dict[str, float]:
+    """Point-in-time multiplier turning an xG/xA-derived per-90 rate into the quantity FPL actually
+    awards (ENGINE_IMPROVEMENTS_5.md Tier 2.3), fitted per position on ``training_history`` alone
+    and refit every gameweek by the walk-forward harness, the same discipline as every other
+    constant here.
+
+    The rate is evaluated at each row's **realised** minutes, not its modelled expected minutes.
+    That is the key methodological point: it removes the minutes model from the comparison, and it
+    removes the selection effect that makes the gate's played-rows calibration misleading (see
+    ``score_season``). What is left is the rate model's own accuracy against real outcomes.
+
+    Real 2025/26 numbers this was built from, evaluated exactly this way: goals predicted 1098.9
+    against 929 actual (factor 0.845), assists predicted 772.4 against 864 actual (factor 1.119).
+    The assist gap is definitional rather than a modelling error, since FPL credits the final pass
+    however the goal arrived while an xA model does not; FPL's own realised xA shows the same
+    under-count, at 1.360.
+
+    Falls back to 1.0 (a no-op) for a position with too few rows or no predicted mass, so an early
+    gameweek with thin history leaves the component exactly as it was rather than applying a wild
+    multiplier fitted on a handful of matches.
+    """
+    fixture_adjustment = (
+        training_history["opponent_xga_per_90"] / training_history["league_avg_xga_per_90"]
+    )
+    realised_minutes_share = training_history["minutes"].astype(float) / 90.0
+    predicted_at_realised_minutes = (
+        training_history[rate_col] * fixture_adjustment * realised_minutes_share
+    )
+
+    factors: dict[str, float] = {}
+    for position in positions:
+        mask = training_history["position"] == position
+        subset_predicted = float(predicted_at_realised_minutes[mask].sum())
+        subset_actual = float(training_history.loc[mask, count_col].astype(float).sum())
+        if int(mask.sum()) < min_rows or subset_predicted <= 0:
+            factors[position] = 1.0
+            continue
+        factors[position] = subset_actual / subset_predicted
+    return factors
 
 
 def _fit_league_avg_rate_by_position(
@@ -1489,6 +1647,13 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
             subset["assists"], subset["team_xg_per_90"], subset["minutes"]
         )
 
+    # Tier 2.3: xG/xA-rate -> FPL-awarded-quantity conversion, per position, training history only.
+    goal_conversion_factor = _fit_rate_conversion_factor_by_position(
+        training_history, "npxg_per_90", "goals_scored"
+    )
+    assist_conversion_factor = _fit_rate_conversion_factor_by_position(
+        training_history, "xa_per_90", "assists"
+    )
     league_avg_yellow_card_rate = _fit_league_avg_rate_by_position(training_history, "yellow_cards")
     league_avg_red_card_rate = _fit_league_avg_rate_by_position(training_history, "red_cards")
     league_avg_own_goal_rate = _fit_league_avg_rate_by_position(training_history, "own_goals")
@@ -1516,6 +1681,8 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
         own_goal_shrinkage_k=OWN_GOAL_SHRINKAGE_K,
         league_avg_save_rate_per_90=league_avg_save_rate,
         save_rate_shrinkage_k=SAVE_RATE_SHRINKAGE_K,
+        goal_conversion_factor_by_position=goal_conversion_factor,
+        assist_conversion_factor_by_position=assist_conversion_factor,
     )
     return FittedEngineState(
         minutes_model=minutes_model, bonus_model=bonus_model, fitted_constants=fitted_constants
@@ -1625,6 +1792,51 @@ def _build_team_match_inputs(
     return TeamMatchInputs(players=players, team_expected_penalties=team_expected_penalties)
 
 
+# Sentinel player_id for the synthetic league-average opponent built by
+# ``_synthetic_league_average_opponent`` (ENGINE_AUDIT_FIXES T-I). Never a real FPL player_id
+# (those are positive), so it can be filtered back out of a fixture's simulated summaries without
+# risk of colliding with an actual player.
+_SYNTHETIC_OPPONENT_PLAYER_ID = -1
+
+# DataFrame.attrs key ``simulate_gameweek_pool`` uses to surface how many fixtures in this
+# gameweek's pool fell back to a synthetic opponent, rather than degrading silently (this repo's
+# stated discipline, per e.g. ``engine/data/cold_start.py``'s own low-confidence flagging).
+SIMULATE_FALLBACK_OPPONENT_COUNT_ATTR = "fallback_opponent_fixture_count"
+
+
+def _synthetic_league_average_opponent(known_group: pd.DataFrame) -> TeamMatchInputs:
+    """A one-"player" stand-in for an opponent whose entire squad is absent from the engineered
+    pool (ENGINE_AUDIT_FIXES T-I) -- almost always a newly promoted club whose players have no
+    engine features yet and were therefore dropped by ``engineer_features``'s required-columns
+    ``dropna``, taking every fixture against them down with it.
+
+    Rather than skip the fixture and leave the *known* side with ``simulation=None``, give that
+    side a real opponent lambda to play against: a single full-90-minute attacker whose goal rate
+    is this gameweek's ``league_avg_xga_per_90`` (already a column on every real pool row, so it
+    needs no extra fetch). That figure is the point-in-time league average of team-level expected
+    goals *conceded*, which by construction equals the league average of goals *scored* (every
+    league goal is scored by one team and conceded by another), so it is a reasonable proxy for
+    "an average Premier League team's attack" with no information at all about the actual missing
+    club. This is used only to produce a plausible drawn scoreline for the known side's clean sheet
+    and goals-conceded components; the synthetic side's own summary is discarded.
+    """
+    league_avg_rate = float(known_group["league_avg_xga_per_90"].iloc[0])
+    synthetic_player = PlayerMatchInputs(
+        player_id=_SYNTHETIC_OPPONENT_PLAYER_ID,
+        position=MID,
+        minutes_distribution=MinutesDistribution(
+            p_zero=0.0,
+            p_1_to_59=0.0,
+            p_60_plus=1.0,
+            expected_minutes_given_1_to_59=0.0,
+            expected_minutes_given_60_plus=90.0,
+        ),
+        adjusted_goal_rate_per_90=league_avg_rate,
+        adjusted_assist_rate_per_90=0.0,
+    )
+    return TeamMatchInputs(players=[synthetic_player])
+
+
 def simulate_gameweek_pool(
     players_gw: pd.DataFrame,
     fitted_state: FittedEngineState,
@@ -1635,9 +1847,15 @@ def simulate_gameweek_pool(
     (ENGINE_IMPROVEMENTS_2.md D.3) and return one row per player: ``floor``, ``ceiling``,
     ``prob_big_haul``, plus the simulation's own ``sim_mean``/``sim_median`` for comparison against
     the point-estimate ``expected_points``. Fixtures are found by grouping on
-    ``(team, opponent_team_name)`` — each team processed exactly once — and a team whose opponent
-    doesn't also appear in this gameweek's pool (a data gap, not expected in practice) is skipped
-    rather than guessed at.
+    ``(team, opponent_team_name)`` — each team processed exactly once. A team whose opponent
+    doesn't also appear in this gameweek's pool (ENGINE_AUDIT_FIXES T-I: almost always because the
+    opponent's entire squad routed through the cold-start fallback and was dropped by
+    ``engineer_features``) is simulated against a synthetic league-average opponent
+    (:func:`_synthetic_league_average_opponent`) instead of being skipped, so the known side still
+    gets a real floor/ceiling/prob_big_haul rather than ``None``. How many fixtures needed this
+    fallback is counted and attached to the returned frame's
+    ``attrs[SIMULATE_FALLBACK_OPPONENT_COUNT_ATTR]``, so degradation stays visible rather than
+    silent.
     """
     columns = [
         "player_id",
@@ -1649,24 +1867,36 @@ def simulate_gameweek_pool(
         "prob_big_haul",
     ]
     if players_gw.empty:
-        return pd.DataFrame(columns=columns)
+        result = pd.DataFrame(columns=columns)
+        result.attrs[SIMULATE_FALLBACK_OPPONENT_COUNT_ATTR] = 0
+        return result
 
     rows: list[dict[str, float]] = []
     processed_teams: set[str] = set()
+    fallback_opponent_fixture_count = 0
     for team, group in players_gw.groupby("team"):
         if team in processed_teams:
             continue
         opponent = group["opponent_team_name"].iloc[0]
         opponent_group = players_gw[players_gw["team"] == opponent]
-        if opponent_group.empty:
-            continue
-        processed_teams.add(team)
-        processed_teams.add(opponent)
-
         is_home = bool(group["was_home"].iloc[0])
-        home_group, away_group = (group, opponent_group) if is_home else (opponent_group, group)
-        home_inputs = _build_team_match_inputs(home_group, fitted_state)
-        away_inputs = _build_team_match_inputs(away_group, fitted_state)
+        known_player_ids: set[int] | None = None
+
+        if opponent_group.empty:
+            processed_teams.add(team)
+            fallback_opponent_fixture_count += 1
+            known_player_ids = set(group["player_id"].astype(int))
+            known_inputs = _build_team_match_inputs(group, fitted_state)
+            synthetic_inputs = _synthetic_league_average_opponent(group)
+            home_inputs, away_inputs = (
+                (known_inputs, synthetic_inputs) if is_home else (synthetic_inputs, known_inputs)
+            )
+        else:
+            processed_teams.add(team)
+            processed_teams.add(opponent)
+            home_group, away_group = (group, opponent_group) if is_home else (opponent_group, group)
+            home_inputs = _build_team_match_inputs(home_group, fitted_state)
+            away_inputs = _build_team_match_inputs(away_group, fitted_state)
 
         result = simulate_fixture(
             home_inputs,
@@ -1678,6 +1908,8 @@ def simulate_gameweek_pool(
         )
         gameweek = int(group["gameweek"].iloc[0])
         for player_id, summary in result.player_summaries.items():
+            if known_player_ids is not None and player_id not in known_player_ids:
+                continue
             rows.append(
                 {
                     "player_id": player_id,
@@ -1689,7 +1921,9 @@ def simulate_gameweek_pool(
                     "prob_big_haul": summary.prob_big_haul,
                 }
             )
-    return pd.DataFrame(rows, columns=columns)
+    output = pd.DataFrame(rows, columns=columns)
+    output.attrs[SIMULATE_FALLBACK_OPPONENT_COUNT_ATTR] = fallback_opponent_fixture_count
+    return output
 
 
 def make_simulate_predict_fn(
@@ -1810,6 +2044,16 @@ class SeasonReport:
     bias_by_price_tier: metrics.BiasReport | None = None
     team_clean_sheet_calibration: metrics.CalibrationReport | None = None
     brier_reports: dict[str, metrics.BrierComparisonReport] = field(default_factory=dict)
+    # ENGINE_IMPROVEMENTS_5.md Tier 0.1 — the decision-relevant siblings of `rank_correlation` and
+    # `bias_by_position`/`bias_by_price_tier` above. Reported alongside them rather than replacing
+    # them: the pooled/unconditional figures answer "does the engine understand the whole pool",
+    # these answer "can it be acted on", and the two diverge sharply (see score_season's own note).
+    # Tier 2.3: goals/assists rate calibration at realised minutes -- the gate's component
+    # instrument, and the only one of the three views free of both confounds.
+    rate_calibrations: dict[str, metrics.MeanCalibrationReport] = field(default_factory=dict)
+    decision_set_rank: metrics.DecisionSetRankReport | None = None
+    conditional_bias_by_position: metrics.BiasReport | None = None
+    conditional_bias_by_price_tier: metrics.BiasReport | None = None
 
     def summary(self) -> str:
         lines = [
@@ -1897,12 +2141,25 @@ class SeasonReport:
                 for name, report in self.mean_calibrations.items()
             ],
             "",
-            "Mean calibration, played rows only (B3 -- this is what the gate checks):",
+            "Mean calibration, played rows only (B3 -- retained as a diagnostic; NOT the gate's "
+            "instrument since Tier 2.3, it is confounded by selecting on a realised outcome):",
             *(
                 [
                     f"  {name}: predicted={report.mean_predicted:.4f} "
                     f"actual={report.mean_actual:.4f} relative_gap={report.relative_gap:.2%}"
                     for name, report in self.mean_calibrations_played.items()
+                ]
+                or ["  not computed (no minutes column on ground_truth)"]
+            ),
+            "",
+            "Rate calibration at REALISED minutes (Tier 2.3 -- this is what the gate checks. Free "
+            "of the minutes model and of the played-rows selection effect, so it measures the rate "
+            "model itself):",
+            *(
+                [
+                    f"  {name}: predicted={report.mean_predicted:.4f} "
+                    f"actual={report.mean_actual:.4f} relative_gap={report.relative_gap:.2%}"
+                    for name, report in self.rate_calibrations.items()
                 ]
                 or ["  not computed (no minutes column on ground_truth)"]
             ),
@@ -1949,6 +2206,39 @@ class SeasonReport:
                 "the premium tier):",
                 self.bias_by_price_tier.by_group.to_string(index=False),
             ]
+        if self.decision_set_rank is not None:
+            d = self.decision_set_rank
+            lines = lines + [
+                "",
+                f"Shortlist ranking (ENGINE_IMPROVEMENTS_5.md Tier 0.1 — Spearman *within* each "
+                f"gameweek's own top {d.top_n} by predicted points, then averaged across "
+                f"gameweeks; this is the ordering a manager acts on, and it is a different "
+                f"quantity from the pooled Spearman above, which is dominated by who plays):",
+                f"  mean Spearman:   {d.mean_spearman:.4f}  (gate needs "
+                f">= {gate.DEFAULT_MIN_DECISION_SET_SPEARMAN})",
+                f"  median Spearman: {d.median_spearman:.4f}",
+                f"  std / share of gameweeks positive: {d.std_spearman:.4f} / "
+                f"{d.share_positive:.1%} of {d.n_gameweeks}",
+                f"  MAE / bias within the shortlist: {d.mean_absolute_error:.4f} / "
+                f"{d.mean_bias:+.4f}",
+            ]
+        if self.conditional_bias_by_position is not None:
+            lines = lines + [
+                "",
+                "Bias of E[points | plays] among players who actually played 60+ minutes (Tier "
+                "2.1 — scored against conditional_expected_points, NOT expected_points. Scoring "
+                "the unconditional prediction here reads about -1.0, but an oracle that knows "
+                "P(plays) and E[points|plays] exactly scores -1.31 on the same statistic, so that "
+                "number measures the act of conditioning on a realised outcome rather than any "
+                "defect):",
+                self.conditional_bias_by_position.by_group.to_string(index=False),
+            ]
+            if self.conditional_bias_by_price_tier is not None:
+                lines = lines + [
+                    "",
+                    "  ... same, by price tier:",
+                    self.conditional_bias_by_price_tier.by_group.to_string(index=False),
+                ]
         if self.coverage is not None:
             lines = ["Sample coverage:", self.coverage.summary(), ""] + lines
         return "\n".join(lines)
@@ -1986,12 +2276,26 @@ class SeasonReport:
                 for name, report in self.mean_calibrations_played.items()
             },
             "captaincy_hit_rate": self.captaincy.raw_hit_rate if self.captaincy else None,
+            # Tier 0.1: reported next to `pooled_spearman` deliberately. On its own the pooled
+            # figure reads as "the engine ranks players well" when it mostly ranks availability;
+            # these two say whether it can be acted on.
+            "shortlist_spearman": (
+                self.decision_set_rank.mean_spearman if self.decision_set_rank else None
+            ),
+            # Tier 2.1: the bias of E[points | plays], not of expected_points. See score_season.
+            "conditional_played_60_plus_bias": (
+                float(self.conditional_bias_by_position.by_group["mean_residual"].mean())
+                if self.conditional_bias_by_position is not None
+                else None
+            ),
             "gate": {
                 "beats_baselines": gate.beats_baselines,
                 "no_severe_bias": gate.no_severe_bias,
+                "no_severe_conditional_bias": gate.no_severe_conditional_bias,
                 "calibration_acceptable": (
                     gate.calibration_acceptable and gate.mean_calibration_acceptable
                 ),
+                "decision_set_ranking_acceptable": gate.decision_set_ranking_acceptable,
                 "predictions_logged": gate.predictions_logged,
                 "trusted_by_user": gate.trusted_by_user,
                 "passed": gate.passed,
@@ -2158,17 +2462,40 @@ def score_season(
         ),
         "bonus": metrics.mean_calibration(mean_rows["expected_bonus"], mean_rows["actual_bonus"]),
     }
+    # ENGINE_IMPROVEMENTS_5.md Tier 2.3: the rate model scored at each row's REALISED minutes.
+    #
+    # This is the instrument the two views below cannot provide. The all-rows figure is dominated by
+    # the minutes model; the played-rows figure is confounded by selection, because
+    # `expected_goals`/`expected_assists` are unconditional expectations and restricting to rows
+    # where the player played selects the branch on which they were always going to look low. That
+    # confound does not merely add noise, it flips conclusions: played-rows reported goals 5.7% over
+    # and assists 22.2% under, while this view reports goals 18% over and assists 12% under. The
+    # all-rows view agrees with this one (goals 24% over, assists 8% under), not with played-rows.
+    rate_calibrations = None
+    if "minutes" in ground_truth.columns:
+        rate_rows = mean_rows.merge(
+            ground_truth[["player_id", "gameweek", "minutes"]], on=["player_id", "gameweek"]
+        )
+        if not rate_rows.empty:
+            rate_calibrations = {
+                "goals": metrics.rate_calibration_at_realised_minutes(
+                    rate_rows["expected_goals"],
+                    rate_rows["expected_minutes"],
+                    rate_rows["minutes"],
+                    rate_rows["actual_goals_scored"],
+                ),
+                "assists": metrics.rate_calibration_at_realised_minutes(
+                    rate_rows["expected_assists"],
+                    rate_rows["expected_minutes"],
+                    rate_rows["minutes"],
+                    rate_rows["actual_assists"],
+                ),
+            }
+
     # B3: the same components scored on rows where the player actually appeared.
     #
-    # The all-rows figure above is not a measurement of these components at all — it is dominated
-    # by the minutes model. Measured on the real 2025/26 walk-forward, goals score +24.9% over all
-    # rows, +6.2% over played rows, and -9.0% over 60+ minute rows: the headline "25%
-    # over-prediction" is almost entirely predicted goals sitting on players who never appeared,
-    # and on the population that actually drives decisions the component *under*-predicts. This is
-    # the same apples-to-oranges error as ENGINE_IMPROVEMENTS.md Correction 1 (team-level
-    # clean-sheet probability compared against 60-minute-gated actual clean sheets), in a
-    # different component. The gate reads the played-only figures; the all-rows ones stay for
-    # continuity with the previous documents' numbers.
+    # Retained as a diagnostic, but NOT the gate's instrument any more (Tier 2.3): see the
+    # selection-effect note immediately above for why it disagreed with both other views.
     if "minutes" in ground_truth.columns:
         played_rows = mean_rows.merge(
             ground_truth[["player_id", "gameweek", "minutes"]], on=["player_id", "gameweek"]
@@ -2317,13 +2644,63 @@ def score_season(
     if bias_by_price_tier is not None:
         bias_reports_for_gate["price_tier"] = bias_by_price_tier
 
+    # --- ENGINE_IMPROVEMENTS_5.md Tier 0.1 / 2.1: the quantities a manager actually acts on ------
+    # Within-shortlist ranking, and the bias of E[points | plays] on players who did play.
+    #
+    # Tier 2.1 correction: this check originally scored `expected_points` on played-60+ rows and
+    # read -0.990, which was reported as a large hidden bias. It is not. `expected_points` is
+    # P(plays) * E[points | plays], so selecting only rows where the player *did* play selects the
+    # branch on which an unconditional expectation was always going to look low. A simulated model
+    # that knows P(plays) and E[points | plays] exactly scores -1.31 on the same statistic, i.e.
+    # worse than the engine, so the number measures the conditioning, not a defect, and no
+    # correctly-calibrated model could ever pass it.
+    #
+    # The meaningful check is the *conditional* prediction against the same rows, which is what
+    # `conditional_expected_points` (Tier 2.1) is for. On this walk-forward it reads -0.088 against
+    # an actual mean of 3.87, so calibration on players who play is in fact good. Falls back to a
+    # no-op when the column is absent (a frame produced before Tier 2.1) rather than silently
+    # reinstating the meaningless version.
+    conditional_bias_reports_for_gate: dict[str, metrics.BiasReport] = {}
+    conditional_bias_by_position = None
+    conditional_bias_by_price_tier = None
+    if "conditional_expected_points" in predictions.columns:
+        conditional_predictions = predictions.assign(
+            expected_points=predictions["conditional_expected_points"]
+        )
+        conditional_bias_by_position = metrics.bias_by_group(
+            conditional_predictions, ground_truth, group_col="position", minutes_col="minutes"
+        )
+        conditional_bias_reports_for_gate["position_played_60_plus"] = conditional_bias_by_position
+        if "value" in ground_truth.columns:
+            conditional_bias_by_price_tier = metrics.bias_by_group(
+                conditional_predictions,
+                price_tier_actuals,
+                group_col="price_tier",
+                min_relative_effect=0.0,
+                minutes_col="minutes",
+            )
+            conditional_bias_reports_for_gate["price_tier_played_60_plus"] = (
+                conditional_bias_by_price_tier
+            )
+
+    decision_set_rank = metrics.decision_set_rank_correlation(
+        predictions, ground_truth, top_n=gate.DEFAULT_DECISION_SET_TOP_N
+    )
+
     definition_of_done = gate.evaluate_definition_of_done(
         baseline_results=baseline_results,
         bias_reports=bias_reports_for_gate,
         calibration_reports=calibration_reports_for_gate,
         predictions_logged=True,
         trusted_by_user=False,
-        mean_calibration_reports=mean_calibrations_played,
+        # Tier 2.3: gate on the rate-level view, which is free of both the minutes model and the
+        # played-rows selection effect. Falls back to the played-rows view when ground_truth
+        # carries no minutes column, so a minimal frame still gets *some* component check.
+        mean_calibration_reports=(
+            rate_calibrations if rate_calibrations is not None else mean_calibrations_played
+        ),
+        decision_set_rank_report=decision_set_rank,
+        conditional_bias_reports=conditional_bias_reports_for_gate,
     )
 
     # --- D.1: captaincy hit-rate, via a stand-in squad (see build_stand_in_squad_starting_xi) ---
@@ -2374,6 +2751,10 @@ def score_season(
         bias_by_price_tier=bias_by_price_tier,
         team_clean_sheet_calibration=team_clean_sheet_calibration,
         brier_reports=brier_reports,
+        rate_calibrations=rate_calibrations or {},
+        decision_set_rank=decision_set_rank,
+        conditional_bias_by_position=conditional_bias_by_position,
+        conditional_bias_by_price_tier=conditional_bias_by_price_tier,
     )
 
 

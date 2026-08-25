@@ -11,11 +11,13 @@ from backtest.metrics import (
     brier_vs_constant,
     captaincy_hit_rate,
     component_calibration,
+    decision_set_rank_correlation,
     floor_ceiling_coverage,
     mean_calibration,
     minutes_model_diagnostics,
     player_accuracy,
     rank_correlation,
+    rate_calibration_at_realised_minutes,
     top_n_mean_actual,
 )
 
@@ -545,3 +547,260 @@ def test_floor_ceiling_coverage_fraction_within_bounds():
 def test_floor_ceiling_coverage_mismatched_lengths_raises():
     with pytest.raises(ValueError):
         floor_ceiling_coverage(pd.Series([0.0]), pd.Series([1.0, 2.0]), pd.Series([0.5, 0.5]))
+
+
+# =================================================================================================
+# ENGINE_IMPROVEMENTS_5.md Tier 0.1 — the decision-relevant metrics
+# =================================================================================================
+
+
+def test_bias_by_group_conditional_and_unconditional_diverge_when_errors_offset():
+    """The finding that motivated ``minutes_col``: an engine can look unbiased overall while being
+    badly biased on exactly the players a manager fields. Here the two zero-minute rows are
+    over-predicted by +3 each and the two 60+ rows under-predicted by -3 each, so the unconditional
+    mean residual is 0.0 while the played-60+ residual is -3.0. The real 2025/26 walk-forward shows
+    the same structure at +0.008 against -0.990."""
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "position": ["MID"] * 4,
+            "gameweek": [1, 1, 1, 1],
+            "expected_points": [3.0, 3.0, 4.0, 4.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 1, 1],
+            "total_points": [0.0, 0.0, 7.0, 7.0],
+            "minutes": [0, 0, 90, 90],
+        }
+    )
+
+    unconditional = bias_by_group(predictions, actuals, group_col="position")
+    conditional = bias_by_group(predictions, actuals, group_col="position", minutes_col="minutes")
+
+    assert unconditional.by_group["mean_residual"].iloc[0] == pytest.approx(0.0)
+    assert conditional.by_group["mean_residual"].iloc[0] == pytest.approx(-3.0)
+    assert conditional.by_group["n"].iloc[0] == 2
+
+
+def test_bias_by_group_without_minutes_col_ignores_minutes_entirely():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2],
+            "position": ["MID", "MID"],
+            "gameweek": [1, 1],
+            "expected_points": [5.0, 3.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2],
+            "gameweek": [1, 1],
+            "total_points": [4.0, 2.0],
+            "minutes": [0, 0],
+        }
+    )
+
+    # Every row has 0 minutes, so a conditional read would be empty. The default must not filter.
+    report = bias_by_group(predictions, actuals, group_col="position")
+
+    assert report.by_group["n"].iloc[0] == 2
+    assert report.by_group["mean_residual"].iloc[0] == pytest.approx(1.0)
+
+
+def test_bias_by_group_min_minutes_threshold_is_respected():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3],
+            "position": ["MID"] * 3,
+            "gameweek": [1, 1, 1],
+            "expected_points": [2.0, 2.0, 2.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3],
+            "gameweek": [1, 1, 1],
+            "total_points": [2.0, 2.0, 2.0],
+            "minutes": [0, 30, 90],
+        }
+    )
+
+    any_minutes = bias_by_group(
+        predictions, actuals, group_col="position", minutes_col="minutes", min_minutes=1.0
+    )
+    sixty_plus = bias_by_group(
+        predictions, actuals, group_col="position", minutes_col="minutes", min_minutes=60.0
+    )
+
+    assert any_minutes.by_group["n"].iloc[0] == 2
+    assert sixty_plus.by_group["n"].iloc[0] == 1
+
+
+def test_decision_set_rank_correlation_perfect_within_shortlist():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 1, 2, 3],
+            "position": ["MID"] * 6,
+            "gameweek": [1, 1, 1, 2, 2, 2],
+            "expected_points": [9.0, 5.0, 1.0, 8.0, 4.0, 1.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 1, 2, 3],
+            "gameweek": [1, 1, 1, 2, 2, 2],
+            "total_points": [10.0, 2.0, 99.0, 12.0, 3.0, 99.0],
+        }
+    )
+
+    report = decision_set_rank_correlation(predictions, actuals, top_n=2)
+
+    assert report.top_n == 2
+    assert report.n_gameweeks == 2
+    assert report.mean_spearman == pytest.approx(1.0)
+    assert report.share_positive == pytest.approx(1.0)
+    # Player 3 scored 99 but was never shortlisted, so must not enter the correlation at all.
+    assert set(report.by_gameweek["n"]) == {2}
+
+
+def test_decision_set_rank_correlation_is_averaged_per_gameweek_not_pooled():
+    """Pooling shortlist rows across gameweeks would let a high-scoring gameweek's weak pick
+    outrank a low-scoring gameweek's strong pick, a comparison no single decision ever spans. Each
+    gameweek here is internally inverted (Spearman -1), while the pooled ordering looks positive
+    purely because gameweek 2 scores higher across the board."""
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "position": ["MID"] * 4,
+            "gameweek": [1, 1, 2, 2],
+            "expected_points": [2.0, 1.0, 4.0, 3.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3, 4],
+            "gameweek": [1, 1, 2, 2],
+            "total_points": [1.0, 2.0, 30.0, 40.0],
+        }
+    )
+
+    report = decision_set_rank_correlation(predictions, actuals, top_n=2)
+
+    assert report.mean_spearman == pytest.approx(-1.0)
+    assert report.share_positive == pytest.approx(0.0)
+
+
+def test_decision_set_rank_correlation_reports_error_and_bias_within_shortlist():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2],
+            "position": ["MID", "MID"],
+            "gameweek": [1, 1],
+            "expected_points": [5.0, 4.0],
+        }
+    )
+    actuals = pd.DataFrame({"player_id": [1, 2], "gameweek": [1, 1], "total_points": [2.0, 2.0]})
+
+    report = decision_set_rank_correlation(predictions, actuals, top_n=2)
+
+    assert report.mean_absolute_error == pytest.approx(2.5)
+    assert report.mean_bias == pytest.approx(2.5)
+
+
+def test_decision_set_rank_correlation_skips_gameweeks_with_tied_actuals():
+    # Every actual ties, so a rank correlation is undefined. That gameweek must not count as
+    # scored, rather than contributing a NaN that poisons the mean.
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2],
+            "position": ["MID", "MID"],
+            "gameweek": [1, 1],
+            "expected_points": [5.0, 4.0],
+        }
+    )
+    actuals = pd.DataFrame({"player_id": [1, 2], "gameweek": [1, 1], "total_points": [3.0, 3.0]})
+
+    report = decision_set_rank_correlation(predictions, actuals, top_n=2)
+
+    assert report.n_gameweeks == 0
+    assert np.isnan(report.mean_spearman)
+
+
+def test_rate_calibration_strips_the_minutes_model_out():
+    """Two players with identical true per-90 rates, one of whom the minutes model badly
+    misjudged. The rate view must score them identically, since the rate model is not at fault."""
+    # Both imply 1.0 per 90. Player A was expected to play 90 and did; player B was expected to
+    # play 45 but played 90.
+    report = rate_calibration_at_realised_minutes(
+        predicted_quantity=pd.Series([1.0, 0.5]),
+        predicted_minutes=pd.Series([90.0, 45.0]),
+        realised_minutes=pd.Series([90.0, 90.0]),
+        realised_count=pd.Series([1.0, 1.0]),
+    )
+
+    assert report.mean_predicted == pytest.approx(1.0)
+    assert report.mean_actual == pytest.approx(1.0)
+    assert report.relative_gap == pytest.approx(0.0)
+
+
+def test_rate_calibration_contributes_zero_for_a_player_who_did_not_play():
+    # A row nobody played must not be dropped (that would condition on the outcome) and must not
+    # contribute predicted mass either, since the rate was never given a chance to express itself.
+    report = rate_calibration_at_realised_minutes(
+        predicted_quantity=pd.Series([1.0, 0.4]),
+        predicted_minutes=pd.Series([90.0, 40.0]),
+        realised_minutes=pd.Series([90.0, 0.0]),
+        realised_count=pd.Series([1.0, 0.0]),
+    )
+
+    assert report.mean_predicted == pytest.approx(0.5)  # (1.0 + 0.0) / 2
+    assert report.mean_actual == pytest.approx(0.5)
+    assert report.relative_gap == pytest.approx(0.0)
+
+
+def test_rate_calibration_detects_a_genuinely_hot_rate():
+    report = rate_calibration_at_realised_minutes(
+        predicted_quantity=pd.Series([1.2, 1.2]),
+        predicted_minutes=pd.Series([90.0, 90.0]),
+        realised_minutes=pd.Series([90.0, 90.0]),
+        realised_count=pd.Series([1.0, 1.0]),
+    )
+
+    assert report.mean_predicted == pytest.approx(1.2)
+    assert report.relative_gap == pytest.approx(0.2)
+
+
+def test_rate_calibration_tolerates_zero_expected_minutes_without_dividing_by_zero():
+    report = rate_calibration_at_realised_minutes(
+        predicted_quantity=pd.Series([0.0]),
+        predicted_minutes=pd.Series([0.0]),
+        realised_minutes=pd.Series([90.0]),
+        realised_count=pd.Series([0.0]),
+    )
+
+    assert report.mean_predicted == pytest.approx(0.0)
+
+
+def test_rate_calibration_mismatched_lengths_raises():
+    with pytest.raises(ValueError, match="same length"):
+        rate_calibration_at_realised_minutes(
+            pd.Series([1.0]), pd.Series([90.0]), pd.Series([90.0]), pd.Series([1.0, 2.0])
+        )
+
+
+def test_decision_set_rank_correlation_rejects_unrankable_top_n():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1],
+            "position": ["MID"],
+            "gameweek": [1],
+            "expected_points": [5.0],
+        }
+    )
+    actuals = pd.DataFrame({"player_id": [1], "gameweek": [1], "total_points": [5.0]})
+
+    with pytest.raises(ValueError, match="at least 2"):
+        decision_set_rank_correlation(predictions, actuals, top_n=1)

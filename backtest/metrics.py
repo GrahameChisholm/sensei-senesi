@@ -6,11 +6,21 @@ group (residual analysis, not just average error), per-component probability cal
 the model says 40% clean sheet, do clean sheets actually happen ~40% of the time?"), and the
 single most decision-relevant metric — captaincy hit-rate, tracked as two side-by-side variants so
 a bad pick and a good pick undone by an in-game injury don't collapse into one number.
+
+It also carries a family of aggregate, per-fixture and pool-wide plausibility checks (T-J,
+``planning/ENGINE_AUDIT_FIXES-implementation.md``): every check above scores per-player accuracy,
+none of them sum or average across a fixture or the whole pool, which is exactly how a real audit
+found several defects (minutes mass on the pitch well short of 22 per fixture, bonus not summing
+to a real match's 6 points, pool-wide minutes-bucket shares far from the prior season's empirical
+split, understated goalkeeper saves, and a spurious horizon decay) that no per-player metric here
+ever caught. These checks report raw measurements only, the same split as :class:`CalibrationReport`
+carrying MACE while ``backtest.gate`` owns the acceptance threshold; they do not embed a pass/fail
+verdict themselves.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -42,6 +52,9 @@ __all__ = [
     "top_n_mean_actual",
     "RankCorrelationReport",
     "rank_correlation",
+    "DecisionSetRankReport",
+    "decision_set_rank_correlation",
+    "rate_calibration_at_realised_minutes",
     "floor_ceiling_coverage",
     "MeanCalibrationReport",
     "mean_calibration",
@@ -49,6 +62,16 @@ __all__ = [
     "minutes_model_diagnostics",
     "BrierComparisonReport",
     "brier_vs_constant",
+    "FixtureMinutesCoverageReport",
+    "fixture_minutes_coverage",
+    "FixtureBonusTotalReport",
+    "fixture_bonus_total",
+    "MinutesBucketShareReport",
+    "minutes_bucket_pool_shares",
+    "GoalkeeperSavesReport",
+    "goalkeeper_saves_plausibility",
+    "HorizonMonotonicityReport",
+    "horizon_minutes_monotonicity",
 ]
 
 
@@ -129,6 +152,8 @@ def bias_by_group(
     severity_p_threshold: float = 0.01,
     min_absolute_effect: float = 0.25,
     min_relative_effect: float = 0.10,
+    minutes_col: str | None = None,
+    min_minutes: float = 60.0,
 ) -> BiasReport:
     """``min_absolute_effect`` (points) and ``min_relative_effect`` (fraction of the group's mean
     actual points) jointly set the effect-size floor a group's mean residual must clear — whichever
@@ -141,8 +166,26 @@ def bias_by_group(
     ``group_col`` may live in ``predictions`` (e.g. "position", already on every prediction row) or
     only in ``actuals`` (e.g. a price tier derived from ground truth) — it's merged in from
     ``actuals`` automatically when not already present in ``predictions``.
+
+    ``minutes_col`` (ENGINE_IMPROVEMENTS_5.md Tier 0.1), if given, restricts the residual to rows
+    where that column in ``actuals`` is at least ``min_minutes`` before grouping.
+
+    **Only pass a conditional prediction alongside it** (Tier 2.1 correction). Restricting to rows
+    where the player played and then scoring an *unconditional* prediction measures the act of
+    conditioning, not the model: since ``expected_points`` is P(plays) times E[points | plays],
+    selecting the rows where they played selects the branch on which it was always going to look
+    low. A simulated model handed P(plays) and E[points | plays] exactly scores **-1.31** on that
+    statistic, worse than the engine's -0.96, so it is unpassable by construction. Scored against
+    ``conditional_expected_points`` (``engine.pipeline``, Tier 2.1) the same rows read -0.088, which
+    is a real and informative check. Left as ``None`` (the default) this function behaves exactly as
+    it did before either finding, so existing callers are unaffected.
     """
     merged = _merge_predictions_and_actuals(predictions, actuals, predicted_col, actual_col)
+    if minutes_col is not None:
+        merged = merged.merge(
+            actuals[[PLAYER_ID_COL, GAMEWEEK_COL, minutes_col]], on=[PLAYER_ID_COL, GAMEWEEK_COL]
+        )
+        merged = merged[merged[minutes_col] >= min_minutes]
     if group_col not in merged.columns:
         merged = merged.merge(
             actuals[[PLAYER_ID_COL, GAMEWEEK_COL, group_col]], on=[PLAYER_ID_COL, GAMEWEEK_COL]
@@ -461,6 +504,139 @@ def rank_correlation(
     )
 
 
+def rate_calibration_at_realised_minutes(
+    predicted_quantity: pd.Series,
+    predicted_minutes: pd.Series,
+    realised_minutes: pd.Series,
+    realised_count: pd.Series,
+) -> MeanCalibrationReport:
+    """Calibration of a component's underlying *rate*, with both the minutes model and the
+    played-rows selection effect removed (ENGINE_IMPROVEMENTS_5.md Tier 2.3).
+
+    Each row's implied per-90 rate is recovered as ``predicted_quantity / (predicted_minutes / 90)``
+    and re-evaluated at the minutes the player actually played. A row the model expected to sit and
+    who then did sit contributes 0 to both sides rather than being dropped, so nothing is
+    conditioned on.
+
+    This exists because neither existing instrument can isolate a rate model. Scored across all
+    rows, :func:`mean_calibration` is dominated by the minutes model. Scored on played rows only,
+    it is confounded by selection: ``predicted_quantity`` is an unconditional expectation, so
+    restricting to rows where the player did play selects the branch on which it was always going
+    to look low, which *masks* an over-prediction and *exaggerates* an under-prediction. On the real
+    2025/26 walk-forward the played-rows view reported goals 5.7% over and assists 22.2% under,
+    while this view reported goals **18% over** and assists **12% under** — and the all-rows view
+    agreed with this one (24% over, 8% under), not with the played-rows one.
+    """
+    if not (
+        len(predicted_quantity)
+        == len(predicted_minutes)
+        == len(realised_minutes)
+        == len(realised_count)
+    ):
+        raise ValueError("all four series must be the same length")
+    predicted_minutes_arr = np.asarray(predicted_minutes, dtype=float)
+    quantity = np.asarray(predicted_quantity, dtype=float)
+    implied_rate_per_90 = np.divide(
+        quantity,
+        predicted_minutes_arr / 90.0,
+        out=np.zeros_like(quantity),
+        where=predicted_minutes_arr > 0,
+    )
+    predicted_at_realised = implied_rate_per_90 * (np.asarray(realised_minutes, dtype=float) / 90.0)
+    return mean_calibration(
+        pd.Series(predicted_at_realised), pd.Series(np.asarray(realised_count, dtype=float))
+    )
+
+
+@dataclass(frozen=True)
+class DecisionSetRankReport:
+    """Rank correlation measured *within one gameweek's own shortlist* — the top ``top_n`` players
+    by predicted points in that gameweek, scored against what they actually returned, then averaged
+    across gameweeks (ENGINE_IMPROVEMENTS_5.md Tier 0.1).
+
+    This exists because every pooled ranking metric in this module, including
+    :class:`RankCorrelationReport`'s starters-only variant, answers a question no manager asks. A
+    manager never sorts 600 players; they pick between the 15 or 20 the tool already surfaced. On
+    the real 2025/26 walk-forward the engine scores pooled Spearman 0.636, starters-only 0.355,
+    played-60+ 0.188, and **+0.049 within the top 20 it recommended** — and the pooled figure is
+    matched by ``1 - p_zero`` alone (0.643), so it measures availability prediction rather than
+    points prediction. A gate built on pooled numbers cannot fail on the shortlist being unordered,
+    which is the engine's actual deficit, and so cannot reward fixing it.
+
+    ``mean_spearman`` is the average of the per-gameweek within-shortlist correlations, not a
+    correlation computed on the pooled shortlist rows: pooling across gameweeks would reintroduce
+    between-gameweek variance (a high-scoring gameweek's mid-table player outscoring a low-scoring
+    gameweek's best) that no single decision ever spans.
+
+    ``share_positive`` guards against reading skill into noise. With a mean of 0.049, a standard
+    deviation of 0.224 and only 22 of 35 gameweeks positive, the honest description is near-zero
+    true skill at this resolution rather than a skilled model having a bad run.
+    """
+
+    top_n: int
+    mean_spearman: float
+    median_spearman: float
+    std_spearman: float
+    share_positive: float
+    mean_absolute_error: float
+    mean_bias: float
+    n_gameweeks: int
+    by_gameweek: pd.DataFrame  # columns: gameweek, spearman, mae, bias, n
+
+
+def decision_set_rank_correlation(
+    predictions: pd.DataFrame,
+    actuals: pd.DataFrame,
+    top_n: int = 20,
+    predicted_col: str = PREDICTED_COL,
+    actual_col: str = ACTUAL_COL,
+) -> DecisionSetRankReport:
+    """Per gameweek, take the ``top_n`` highest-predicted players and correlate their predicted
+    points against their realised points, then summarise across gameweeks. See
+    :class:`DecisionSetRankReport` for why this is scored per gameweek and then averaged rather
+    than pooled.
+
+    A gameweek contributing fewer than 2 shortlist rows, or one where every realised outcome ties
+    (so a rank correlation is undefined), is skipped for the correlation but still contributes its
+    error and bias, matching :func:`_spearman_or_nan`'s own degrade-rather-than-raise contract.
+    """
+    if top_n < 2:
+        raise ValueError(f"top_n must be at least 2 to rank within a shortlist, got {top_n}")
+    merged = _merge_predictions_and_actuals(predictions, actuals, predicted_col, actual_col)
+
+    rows = []
+    for gameweek, group in merged.groupby(GAMEWEEK_COL):
+        shortlist = group.nlargest(top_n, predicted_col)
+        if shortlist.empty:
+            continue
+        residuals = shortlist[predicted_col] - shortlist[actual_col]
+        rows.append(
+            {
+                GAMEWEEK_COL: gameweek,
+                "spearman": _spearman_or_nan(shortlist[predicted_col], shortlist[actual_col]),
+                "mae": float(residuals.abs().mean()),
+                "bias": float(residuals.mean()),
+                "n": len(shortlist),
+            }
+        )
+
+    by_gameweek = pd.DataFrame(rows, columns=[GAMEWEEK_COL, "spearman", "mae", "bias", "n"])
+    scored = by_gameweek["spearman"].dropna()
+    return DecisionSetRankReport(
+        top_n=top_n,
+        mean_spearman=float(scored.mean()) if len(scored) else float("nan"),
+        median_spearman=float(scored.median()) if len(scored) else float("nan"),
+        std_spearman=float(scored.std(ddof=1)) if len(scored) > 1 else float("nan"),
+        share_positive=float((scored > 0).mean()) if len(scored) else float("nan"),
+        mean_absolute_error=(
+            float(by_gameweek["mae"].mean()) if len(by_gameweek) else float("nan")
+        ),
+        mean_bias=float(by_gameweek["bias"].mean()) if len(by_gameweek) else float("nan"),
+        n_gameweeks=int(len(scored)),
+        by_gameweek=by_gameweek,
+    )
+
+
 def floor_ceiling_coverage(floor: pd.Series, ceiling: pd.Series, actual: pd.Series) -> float:
     """Fraction of rows where the realised outcome fell within ``[floor, ceiling]`` — checks
     whether the simulation layer's (``engine/simulate.py``, BUILD_PLAN 2.9) spread is honest, not
@@ -661,3 +837,206 @@ def _zero_minute_mass_by_component(
         }
     )
     return frame.sort_values("mass", ascending=False).reset_index(drop=True)
+
+
+@dataclass(frozen=True)
+class FixtureMinutesCoverageReport:
+    """Per-fixture sum of ``p_60_plus`` across both squads (ENGINE_AUDIT_FIXES T-J item 1).
+
+    A real match has 22 players on the pitch at the hour mark, before injury substitutions, so the
+    minutes model's own bucket probabilities should sum close to 22 within any one fixture. No
+    per-player accuracy metric above can see this: each scores one row at a time and never sums
+    across the ~22 rows that share a match, which is exactly how the current shortfall (measured
+    at 18.2) went unnoticed."""
+
+    by_fixture: pd.DataFrame  # columns: <fixture_id_col>, sum_p_60_plus, n_players, gap
+    mean_absolute_gap: float
+    max_absolute_gap: float
+
+
+def fixture_minutes_coverage(
+    predictions: pd.DataFrame,
+    fixture_id_col: str = "fixture_id",
+    p_60_plus_col: str = "p_60_plus",
+    target_sum: float = 22.0,
+) -> FixtureMinutesCoverageReport:
+    """``fixture_id_col`` must identify one real match shared by every player from both squads
+    (e.g. a ``(team, opponent, gameweek)`` composite). This function only needs one column value
+    common to everyone on the pitch that match, however the caller derives it."""
+    if predictions.empty:
+        raise ValueError("predictions must not be empty")
+    by_fixture = (
+        predictions.groupby(fixture_id_col)[p_60_plus_col]
+        .agg(sum_p_60_plus="sum", n_players="count")
+        .reset_index()
+    )
+    by_fixture["gap"] = by_fixture["sum_p_60_plus"] - target_sum
+    return FixtureMinutesCoverageReport(
+        by_fixture=by_fixture,
+        mean_absolute_gap=float(by_fixture["gap"].abs().mean()),
+        max_absolute_gap=float(by_fixture["gap"].abs().max()),
+    )
+
+
+@dataclass(frozen=True)
+class FixtureBonusTotalReport:
+    """Per-fixture total expected bonus (ENGINE_AUDIT_FIXES T-J item 2).
+
+    FPL awards exactly 3 + 2 + 1 = 6 bonus points per match, so total expected bonus summed across
+    both squads in one fixture should land close to 6.0. Aggregate expected bonus can look roughly
+    conserved (60.70 across 10 GW1 fixtures, close to the true 60) while still being badly wrong
+    fixture by fixture and player by player, which is why this checks the per-fixture total rather
+    than trusting the pool-wide sum alone."""
+
+    by_fixture: pd.DataFrame  # columns: <fixture_id_col>, sum_bonus, n_players, gap
+    mean_absolute_gap: float
+    max_absolute_gap: float
+
+
+def fixture_bonus_total(
+    predictions: pd.DataFrame,
+    fixture_id_col: str = "fixture_id",
+    bonus_col: str = "bonus",
+    target_sum: float = 6.0,
+) -> FixtureBonusTotalReport:
+    """``bonus_col`` defaults to the points-scale bonus column (``breakdown.bonus`` in
+    ``engine/pipeline.py``'s output), the quantity that actually sums to 6 per real match, not the
+    pre-allocation raw regression output."""
+    if predictions.empty:
+        raise ValueError("predictions must not be empty")
+    by_fixture = (
+        predictions.groupby(fixture_id_col)[bonus_col]
+        .agg(sum_bonus="sum", n_players="count")
+        .reset_index()
+    )
+    by_fixture["gap"] = by_fixture["sum_bonus"] - target_sum
+    return FixtureBonusTotalReport(
+        by_fixture=by_fixture,
+        mean_absolute_gap=float(by_fixture["gap"].abs().mean()),
+        max_absolute_gap=float(by_fixture["gap"].abs().max()),
+    )
+
+
+@dataclass(frozen=True)
+class MinutesBucketShareReport:
+    """Pool-wide mean minutes-bucket probabilities against the prior season's real empirical
+    shares (ENGINE_AUDIT_FIXES T-J item 3).
+
+    Three per-row probabilities that each individually look plausible can still be collectively
+    wrong across the whole player pool. Pool-wide ``p_1_to_59`` was measured at 2.00x the real
+    2025-26 rate of 0.124 even though no single row's bucket split looks obviously broken. The
+    empirical shares are supplied by the caller (see ``backtest.gate``'s documented 2025-26
+    constants) rather than hardcoded here, so this function has no dependency on any particular
+    season's cache."""
+
+    predicted_shares: dict[str, float]
+    empirical_shares: dict[str, float]
+    absolute_gaps: dict[str, float]
+
+
+def minutes_bucket_pool_shares(
+    predictions: pd.DataFrame,
+    empirical_shares: Mapping[str, float],
+    p_zero_col: str = "p_zero",
+    p_1_to_59_col: str = "p_1_to_59",
+    p_60_plus_col: str = "p_60_plus",
+) -> MinutesBucketShareReport:
+    """``empirical_shares`` must supply ``"p_zero"``, ``"p_1_to_59"`` and ``"p_60_plus"`` keys."""
+    if predictions.empty:
+        raise ValueError("predictions must not be empty")
+    predicted_shares = {
+        "p_zero": float(predictions[p_zero_col].mean()),
+        "p_1_to_59": float(predictions[p_1_to_59_col].mean()),
+        "p_60_plus": float(predictions[p_60_plus_col].mean()),
+    }
+    absolute_gaps = {
+        bucket: abs(predicted_shares[bucket] - float(empirical_shares[bucket]))
+        for bucket in predicted_shares
+    }
+    return MinutesBucketShareReport(
+        predicted_shares=predicted_shares,
+        empirical_shares={bucket: float(value) for bucket, value in empirical_shares.items()},
+        absolute_gaps=absolute_gaps,
+    )
+
+
+@dataclass(frozen=True)
+class GoalkeeperSavesReport:
+    """Mean predicted saves for goalkeepers the minutes model itself rates likely to play 60+
+    minutes, against the prior season's real per-match rate (ENGINE_AUDIT_FIXES T-J item 4).
+
+    Real goalkeepers playing 60+ minutes in 2025-26 made 2.78 saves on average; the own-rate
+    fallback in ``engine/models/saves.py`` currently implies 1.63 per 90, a defect a per-player MAE
+    check never isolates because it is swamped by every other component's error."""
+
+    mean_predicted_saves: float
+    empirical_saves_per_match: float
+    absolute_gap: float
+    relative_gap: float  # abs gap / empirical_saves_per_match
+    n_players: int
+
+
+def goalkeeper_saves_plausibility(
+    predictions: pd.DataFrame,
+    empirical_saves_per_match: float,
+    position_col: str = "position",
+    saves_col: str = "expected_saves",
+    p_60_plus_col: str = "p_60_plus",
+    p_60_plus_threshold: float = 0.5,
+) -> GoalkeeperSavesReport:
+    """Restricted to goalkeeper rows with ``p_60_plus`` at or above ``p_60_plus_threshold``, the
+    closest proxy for "played 60+" a predictions-only frame (no ground-truth minutes required) can
+    offer. ``saves_col`` defaults to the raw expected-save count
+    (``raw_components["expected_saves"]`` in ``engine/pipeline.py``'s output), not the
+    floor-divided saves-points column, since the empirical reference is a save count, not a
+    points value."""
+    gk_rows = predictions[
+        (predictions[position_col] == "GK") & (predictions[p_60_plus_col] >= p_60_plus_threshold)
+    ]
+    if gk_rows.empty:
+        raise ValueError(
+            "no goalkeeper rows with p_60_plus at or above p_60_plus_threshold to score"
+        )
+    mean_predicted_saves = float(gk_rows[saves_col].mean())
+    absolute_gap = abs(mean_predicted_saves - empirical_saves_per_match)
+    relative_gap = (
+        absolute_gap / abs(empirical_saves_per_match) if empirical_saves_per_match else float("nan")
+    )
+    return GoalkeeperSavesReport(
+        mean_predicted_saves=mean_predicted_saves,
+        empirical_saves_per_match=empirical_saves_per_match,
+        absolute_gap=absolute_gap,
+        relative_gap=relative_gap,
+        n_players=len(gk_rows),
+    )
+
+
+@dataclass(frozen=True)
+class HorizonMonotonicityReport:
+    """Mean ``p_60_plus`` per gameweek across a multi-gameweek horizon (ENGINE_AUDIT_FIXES T-J
+    item 5).
+
+    Carries only the raw per-gameweek means. There is no footballing reason projected playing time
+    should systematically fall the further out a horizon looks, but deciding what counts as
+    "decaying" versus ordinary week-to-week noise is a tolerance judgement left to the caller (see
+    ``backtest.gate``'s own decay check), the same split as :class:`CalibrationReport` carrying MACE
+    while the gate owns the acceptance threshold."""
+
+    by_gameweek: pd.DataFrame  # columns: gameweek, mean_p_60_plus, n_players
+
+
+def horizon_minutes_monotonicity(
+    predictions: pd.DataFrame,
+    gameweek_col: str = "gameweek",
+    p_60_plus_col: str = "p_60_plus",
+) -> HorizonMonotonicityReport:
+    if predictions.empty:
+        raise ValueError("predictions must not be empty")
+    by_gameweek = (
+        predictions.groupby(gameweek_col)[p_60_plus_col]
+        .agg(mean_p_60_plus="mean", n_players="count")
+        .reset_index()
+        .sort_values(gameweek_col)
+        .reset_index(drop=True)
+    )
+    return HorizonMonotonicityReport(by_gameweek=by_gameweek)
