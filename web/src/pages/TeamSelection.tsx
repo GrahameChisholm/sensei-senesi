@@ -174,6 +174,7 @@ export function TeamSelection() {
           void squadState.discardDraft();
           setRemovingIds([]);
         }}
+        onWipeSquad={() => setRemovingIds(teamState.squad.map((p) => p.player_id))}
       />
 
       <ChipBar squad={squad} previewChip={previewChip} onPreview={setPreviewChip} onPlay={(chip) => void handlePlayChip(chip)} />

@@ -11,6 +11,12 @@ interface GameweekHeaderProps {
   editing: boolean;
   onOptimise: () => void;
   onResetTeam: () => void;
+  /** Marks every squad member for removal at once -- the same purely-local "hover the x" intent
+   * `Pitch` already supports per-card, just applied to all 15 in one click. Nothing is actually
+   * removed from the real squad until each slot is filled with a replacement in the Player Panel
+   * (a squad can never hold fewer than 15 players), so this is reversible with "Cancel all"
+   * right up until the first replacement is picked. */
+  onWipeSquad: () => void;
 }
 
 export function GameweekHeader({
@@ -22,6 +28,7 @@ export function GameweekHeader({
   editing,
   onOptimise,
   onResetTeam,
+  onWipeSquad,
 }: GameweekHeaderProps) {
   const teamState = squad.draft?.working_state ?? squad.committed;
   const transfersMade = squad.draft?.transfers_made ?? 0;
@@ -67,6 +74,9 @@ export function GameweekHeader({
             Reset team
           </button>
         )}
+        <button className="danger" onClick={onWipeSquad} title="Mark every player for removal so the squad can be rebuilt from scratch">
+          Wipe squad
+        </button>
         <button className="btn-primary" onClick={onOptimise}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18" />
