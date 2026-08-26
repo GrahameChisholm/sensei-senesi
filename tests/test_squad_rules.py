@@ -122,6 +122,11 @@ class TestValidateSquad:
         violations = validate_squad(squad, _team_id_by_player())
         assert not any(v.code == "budget" for v in violations)
 
+    def test_check_budget_false_skips_the_budget_check(self):
+        squad = tuple(_player(p.player_id, p.position, purchase_price=100) for p in _squad())
+        violations = validate_squad(squad, _team_id_by_player(), check_budget=False)
+        assert not any(v.code == "budget" for v in violations)
+
     def test_reports_every_violation_not_just_the_first(self):
         team_ids = _team_id_by_player()
         for pid in DEF_IDS[:4]:
@@ -271,6 +276,26 @@ class TestTransfer:
             team_id_by_player=team_ids,
         )
         assert new_state.bank == state.bank  # sold for 50, bought for 50 -- unchanged
+
+    def test_total_spend_over_initial_budget_via_price_rise_profit_is_allowed(self):
+        # A squad that has legitimately grown past INITIAL_BUDGET's nominal spend via banked
+        # price-rise profit is legal -- only new_bank >= 0 governs an in-flight transfer.
+        squad = list(_squad())
+        # Bought at 40, risen to 100 -- sells for 40 + (100-40)//2 = 70 profit-halved.
+        squad[-1] = _player(FWD_IDS[2], FWD, purchase_price=40, current_price=100)
+        state = _base_state(squad=tuple(squad), bank=400)
+        team_ids = _team_id_by_player()
+        team_ids[9001] = 9001
+        new_state = transfer(
+            state,
+            out_id=FWD_IDS[2],
+            in_id=9001,
+            in_price=470,
+            in_position=FWD,
+            team_id_by_player=team_ids,
+        )
+        assert new_state.bank == 0
+        assert sum(p.purchase_price for p in new_state.squad) == 1030
 
     def test_buying_beyond_bank_plus_sell_price_raises(self):
         state = _base_state(bank=0)

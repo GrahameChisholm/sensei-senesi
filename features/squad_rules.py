@@ -79,13 +79,22 @@ def _first_or_raise(violations: tuple[RuleViolation, ...]) -> None:
 
 
 def validate_squad(
-    squad: Sequence[SquadPlayer], team_id_by_player: Mapping[int, int]
+    squad: Sequence[SquadPlayer],
+    team_id_by_player: Mapping[int, int],
+    *,
+    check_budget: bool = True,
 ) -> tuple[RuleViolation, ...]:
     """Every full-squad legality rule: exactly :data:`POSITION_QUOTA` per position, at most
-    :data:`MAX_PER_CLUB` from any one club, and total spend (the sum of each player's own
-    ``purchase_price`` — the price actually paid, not FPL's own profit-halved sell price) within
-    :data:`INITIAL_BUDGET`. Returns every violation found, not just the first, so a caller building
-    a squad from scratch can show every problem at once rather than one at a time.
+    :data:`MAX_PER_CLUB` from any one club, and, if ``check_budget``, total spend (the sum of each
+    player's own ``purchase_price`` — the price actually paid, not FPL's own profit-halved sell
+    price) within :data:`INITIAL_BUDGET`. Returns every violation found, not just the first, so a
+    caller building a squad from scratch can show every problem at once rather than one at a time.
+
+    ``check_budget=False`` is for any squad whose spend is no longer meaningfully bounded by a
+    fresh £100m — an in-flight squad (see :func:`transfer`, which already enforces the only budget
+    rule that matters there, ``bank >= 0``) or one imported from a real manager's own transfer
+    history (see ``features.squad_draft.confirm_imported_squad``), where total spend can
+    legitimately exceed :data:`INITIAL_BUDGET` via banked price-rise profit.
     """
     violations: list[RuleViolation] = []
 
@@ -123,17 +132,18 @@ def validate_squad(
                 )
             )
 
-    total_spend = sum(player.purchase_price for player in squad)
-    if total_spend > INITIAL_BUDGET:
-        violations.append(
-            RuleViolation(
-                code="budget",
-                message=(
-                    f"squad costs {total_spend / 10:.1f}m, over the "
-                    f"{INITIAL_BUDGET / 10:.1f}m budget"
-                ),
+    if check_budget:
+        total_spend = sum(player.purchase_price for player in squad)
+        if total_spend > INITIAL_BUDGET:
+            violations.append(
+                RuleViolation(
+                    code="budget",
+                    message=(
+                        f"squad costs {total_spend / 10:.1f}m, over the "
+                        f"{INITIAL_BUDGET / 10:.1f}m budget"
+                    ),
+                )
             )
-        )
 
     return tuple(violations)
 
@@ -258,7 +268,10 @@ def transfer(
     )
     new_squad = tuple(new_player if p.player_id == out_id else p for p in state.squad)
 
-    _first_or_raise(validate_squad(new_squad, team_id_by_player))
+    # Budget legality here is entirely governed by new_bank >= 0, already checked above -- a
+    # squad that has grown past INITIAL_BUDGET's nominal spend via banked price-rise profit is
+    # legitimate, not a violation.
+    _first_or_raise(validate_squad(new_squad, team_id_by_player, check_budget=False))
 
     new_xi = tuple(in_id if pid == out_id else pid for pid in state.starting_xi)
     new_bench = tuple(in_id if pid == out_id else pid for pid in state.bench_order)
