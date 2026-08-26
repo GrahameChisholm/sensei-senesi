@@ -250,6 +250,68 @@ class TestBuildMode:
         assert response.status_code == 400
 
 
+class TestWipeSquad:
+    """The sandbox reset (overriding TEAM_PAGE_PLAN D21 by explicit product direction) -- discards
+    a committed squad and returns to the empty-budget build screen, with no sell-price economics
+    involved at all."""
+
+    def _committed_client(self, client) -> TestClient:
+        _build_full_squad(client)
+        _confirm_build(client)
+        return client
+
+    def test_wipes_a_committed_squad_back_to_the_build_screen(self, client):
+        self._committed_client(client)
+        response = client.post("/squad/wipe")
+        body = response.json()
+        assert response.status_code == 200
+        assert body["is_complete"] is False
+        assert body["committed"] is None
+        assert body["build_picks"] == []
+
+    def test_full_budget_is_available_after_wiping(self, client):
+        self._committed_client(client)
+        client.post("/squad/wipe")
+        response = client.post(
+            "/squad/build/players", json={"player_id": 999, "position": FWD, "price": 130}
+        )
+        # £13.0m is well beyond any real sell price this squad's players could have produced --
+        # only reachable if the wipe actually restored the full £100m budget, not squad value.
+        assert response.status_code == 200
+
+    def test_wiping_an_already_empty_squad_is_a_harmless_no_op(self, client):
+        response = client.post("/squad/wipe")
+        assert response.status_code == 200
+        assert response.json()["is_complete"] is False
+
+    def test_discards_any_pending_draft_too(self, client):
+        self._committed_client(client)
+        client.post("/squad/draft")
+        assert client.get("/squad").json()["draft"] is not None
+        response = client.post("/squad/wipe")
+        assert response.json()["draft"] is None
+
+    def test_clears_chip_usage(self, client):
+        self._committed_client(client)
+        client.post("/squad/draft")
+        client.post("/squad/draft/chip", json={"chip": "bench_boost"})
+        client.post("/squad/draft/confirm")
+        assert "bench_boost" not in client.get("/squad").json()["chips_available"]
+
+        client.post("/squad/wipe")
+        _build_full_squad(client)
+        body = _confirm_build(client)
+        assert "bench_boost" in body["chips_available"]
+
+    def test_can_rebuild_and_confirm_a_fresh_squad_after_wiping(self, client):
+        self._committed_client(client)
+        client.post("/squad/wipe")
+        _build_full_squad(client)
+        body = _confirm_build(client)
+        assert body["is_complete"] is True
+        assert len(body["committed"]["squad"]) == 15
+
+
 class TestEditDraftLifecycle:
     def _committed_client(self, client) -> TestClient:
         _build_full_squad(client)
@@ -551,9 +613,7 @@ class TestPersistenceAcrossRestart:
         assert body["draft"]["transfers_made"] == 1
 
     def test_build_picks_survive_a_simulated_restart(self, client):
-        client.post(
-            "/squad/build/players", json={"player_id": GK1, "position": GK, "price": 40}
-        )
+        client.post("/squad/build/players", json={"player_id": GK1, "position": GK, "price": 40})
 
         db_path = state_module._db_path
         app_state = state_module.get_app_state()

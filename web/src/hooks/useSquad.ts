@@ -67,5 +67,6 @@ export function useSquad() {
     setDraftChip: (chip: string | null) => run(() => api.setDraftChip(chip)),
     confirmDraft: () => run(() => api.confirmDraft()),
     optimiseXi: () => run(() => api.optimiseXi()),
+    wipeSquad: () => run(() => api.wipeSquad()),
   };
 }

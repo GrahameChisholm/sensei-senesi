@@ -11,11 +11,11 @@ interface GameweekHeaderProps {
   editing: boolean;
   onOptimise: () => void;
   onResetTeam: () => void;
-  /** Marks every squad member for removal at once -- the same purely-local "hover the x" intent
-   * `Pitch` already supports per-card, just applied to all 15 in one click. Nothing is actually
-   * removed from the real squad until each slot is filled with a replacement in the Player Panel
-   * (a squad can never hold fewer than 15 players), so this is reversible with "Cancel all"
-   * right up until the first replacement is picked. */
+  /** Discards the squad entirely and drops back to the empty-£100m build screen (POST
+   * /squad/wipe) -- a sandbox reset, not a real transfer: no sell prices involved, just the
+   * classic budget/quota/club-limit rules a fresh squad has to satisfy on rebuild. Immediate and
+   * irreversible from here (unlike a marked-for-removal slot, there's no "Cancel all" once this
+   * has been sent). */
   onWipeSquad: () => void;
 }
 

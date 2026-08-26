@@ -319,6 +319,7 @@ export const api = {
     request<SquadOut>("/squad/draft/chip", { method: "POST", body: JSON.stringify({ chip }) }),
   confirmDraft: () => request<SquadOut>("/squad/draft/confirm", { method: "POST" }),
   optimiseXi: () => request<SquadOut>("/squad/optimise-xi", { method: "POST" }),
+  wipeSquad: () => request<SquadOut>("/squad/wipe", { method: "POST" }),
 
   getSquadPoints: (chip?: string | null, horizon: number = 1, source: "draft" | "committed" = "draft") =>
     request<SquadPointsOut>(`/squad/points${query({ chip: chip ?? undefined, horizon, source })}`),

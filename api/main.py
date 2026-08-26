@@ -30,6 +30,7 @@ from features.differentials import DEFAULT_WINDOW_GAMEWEEKS, build_differentials
 from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
 from features.squad_draft import (
+    CommittedSquad,
     apply_optimise_xi_to_draft,
     apply_reorder_bench_to_draft,
     apply_set_captain_to_draft,
@@ -206,6 +207,29 @@ def _squad_out(last_hit_cost: int | None = None) -> schemas.SquadOut:
 
 @app.get("/squad", response_model=schemas.SquadOut)
 def get_squad() -> schemas.SquadOut:
+    return _squad_out()
+
+
+@app.post("/squad/wipe", response_model=schemas.SquadOut)
+def wipe_squad() -> schemas.SquadOut:
+    """Sandbox reset, by explicit product direction overriding TEAM_PAGE_PLAN D21 ("a full wipe
+    is just repeated free transfers within a Wildcard/Free Hit draft, not a separate action").
+    D21 modelled this page as a faithful simulation of FPL's real transfer economy, where a
+    squad's value is only ever realised at real sell prices, one swap at a time. The team
+    selection page is instead meant to work as a sandbox for exploring squad ideas, constrained
+    only by the classic legality rules (£100m budget, 2/5/5/3 quota, max 3 per club --
+    :func:`~features.squad_rules.validate_squad`), not by what the current squad happens to be
+    worth.
+
+    Discards the committed squad, any pending draft, and every build pick, dropping straight back
+    to the empty-budget build screen (D6) as if no squad had ever been confirmed -- the same
+    state :func:`~api.state.get_squad_state` already produces for a manager who has never built
+    one, so this reuses that exact path rather than adding a new "empty squad" representation.
+    Chip usage resets too, since a fresh squad has no history to have spent a chip against.
+    """
+    app_state = get_app_state()
+    set_squad_state(CommittedSquad(team_state=None, committed_gameweek=app_state.gameweek), None)
+    set_build_picks([])
     return _squad_out()
 
 
