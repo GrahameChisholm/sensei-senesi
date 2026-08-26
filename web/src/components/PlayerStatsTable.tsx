@@ -104,7 +104,11 @@ function formatStat(value: number, column: StatColumn, perNinety: boolean): stri
   return value.toFixed(decimals);
 }
 
-type SortKey = "name" | "price" | "apps" | "minutes" | "selected_by_percent" | StatKey;
+type SortKey = "name" | "price" | "apps" | "minutes" | "selected_by_percent" | "horizon_points" | StatKey;
+
+function horizonPoints(row: PlayerStatsRowOut): number {
+  return row.fixtures.reduce((total, fixture) => total + (fixture.expected_points ?? 0), 0);
+}
 
 function sortValue(row: PlayerStatsRowOut, sortKey: SortKey, perNinety: boolean): number | string {
   if (sortKey === "name") return row.name.toLowerCase();
@@ -112,6 +116,7 @@ function sortValue(row: PlayerStatsRowOut, sortKey: SortKey, perNinety: boolean)
   if (sortKey === "apps") return row.actuals.apps;
   if (sortKey === "minutes") return row.actuals.minutes;
   if (sortKey === "selected_by_percent") return row.actuals.selected_by_percent ?? 0;
+  if (sortKey === "horizon_points") return horizonPoints(row);
   const column = STAT_COLUMNS.find((c) => c.key === sortKey);
   return column ? statValue(row, column, perNinety) : 0;
 }
@@ -197,7 +202,13 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
             <th className="sortable" onClick={() => toggleSort("selected_by_percent")}>
               Own%{sortIndicator("selected_by_percent")}
             </th>
-            <th colSpan={3}>Next 3 GWs</th>
+            <th
+              colSpan={3}
+              className="sortable"
+              onClick={() => toggleSort("horizon_points")}
+            >
+              Next 3 GWs{sortIndicator("horizon_points")}
+            </th>
           </tr>
         </thead>
         <tbody>
