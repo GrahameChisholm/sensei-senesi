@@ -70,7 +70,7 @@ def _projection(
 
 
 def _squad_player(player_id: int, position: str = "MID") -> SquadPlayer:
-    return SquadPlayer(player_id=player_id, position=position, purchase_price=50, current_price=50)
+    return SquadPlayer(player_id=player_id, position=position, price=50)
 
 
 def _team(owned_ids: list[int], starting_ids: list[int]) -> MyTeamState:
@@ -85,9 +85,6 @@ def _team(owned_ids: list[int], starting_ids: list[int]) -> MyTeamState:
         bench_order=bench,
         captain_id=starting_ids[0],
         vice_captain_id=starting_ids[1],
-        bank=0,
-        free_transfers=1,
-        chips_remaining=frozenset(),
     )
 
 

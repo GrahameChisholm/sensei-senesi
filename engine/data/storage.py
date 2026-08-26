@@ -133,46 +133,24 @@ class AppSettings(Base):
 
 
 class SavedSquad(Base):
-    """The team-selection page's persisted squad (D17/G6): a single row (``id`` is always 1 —
-    this is a single-user local tool) holding both the real, confirmed
-    ``features.squad_draft.CommittedSquad`` and any unconfirmed ``PendingDraft`` (so an in-progress
-    edit survives a refresh or closed tab, per D17), each serialised to JSON. A single JSON column
-    per concept rather than a normalised schema: both objects are always read and written whole,
-    and their shape is still evolving alongside the rest of the team-selection page.
+    """The team-selection page's persisted squad: a single row (``id`` is always 1 — this is a
+    single-user local tool) holding the one permanently-live sandbox squad (0 to 15 players, no
+    confirm step, no transfer economy). ``budget_ceiling`` is the personal budget ceiling checked
+    on every add/remove/optimize call — the classic £100m by default, or a higher figure recorded
+    at import time for a real squad whose current value exceeds it.
     """
 
     __tablename__ = "saved_squads"
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     season: Mapped[str] = mapped_column(String, nullable=False)
-    committed_gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
-    committed_state_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    chip_usage_json: Mapped[str] = mapped_column(String, nullable=False)
-    active_chip: Mapped[str | None] = mapped_column(String, nullable=True)
-    active_chip_gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    free_hit_snapshot_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    free_hit_snapshot_gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    pending_draft_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    # The hits already charged for `committed_gameweek` specifically
-    # (features.squad_draft.CommittedSquad.gameweek_hit_cost).
-    gameweek_hit_cost: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
-    )
-
-
-class SavedBuildPicks(Base):
-    """The team-selection page's in-progress initial-build squad (0 to 15 picks, D6/D23), stored
-    separately from :class:`SavedSquad` since it isn't a real ``MyTeamState`` and shouldn't block
-    that table's schema. A single row (``id`` is always 1), since this is a single-user local
-    tool.
-    """
-
-    __tablename__ = "saved_build_picks"
-
-    id: Mapped[int] = mapped_column(primary_key=True, default=1)
-    season: Mapped[str] = mapped_column(String, nullable=False)
-    picks_json: Mapped[str] = mapped_column(String, nullable=False)
+    squad_json: Mapped[str] = mapped_column(String, nullable=False)
+    starting_xi_json: Mapped[str] = mapped_column(String, nullable=False)
+    bench_order_json: Mapped[str] = mapped_column(String, nullable=False)
+    captain_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    vice_captain_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mini_league_ids: Mapped[str] = mapped_column(String, default="")
+    budget_ceiling: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )

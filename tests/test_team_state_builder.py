@@ -1,19 +1,34 @@
 """Tests for engine.data.team_state_builder — assembling a real MyTeamState from FPL manager
-(entry) API responses (A3). All synthetic; no network."""
+(entry) API responses. All synthetic; no network.
+
+Positions (element_type: 1=GK, 2=DEF, 3=MID, 4=FWD): id 1 + 12 are GK, ids 2-5 + 13 are DEF, ids
+6-9 + 14 are MID, ids 10-11 + 15 are FWD -- a legal 2/5/5/3 squad with a legal starting XI
+(1 GK, 4 DEF, 4 MID, 2 FWD, slots 1-11) and bench (slots 12-15).
+"""
 
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
-from engine.data.team_state_builder import (
-    DEFAULT_FIRST_HALF_LAST_GAMEWEEK,
-    build_my_team_state,
-    compute_chips_remaining,
-    compute_free_transfers,
-    compute_purchase_prices,
-)
-from features.team_state import CHIPS
+from engine.data.team_state_builder import build_my_team_state
+
+_ELEMENT_TYPE_BY_ID = {
+    1: 1,
+    12: 1,  # GK
+    2: 2,
+    3: 2,
+    4: 2,
+    5: 2,
+    13: 2,  # DEF
+    6: 3,
+    7: 3,
+    8: 3,
+    9: 3,
+    14: 3,  # MID
+    10: 4,
+    11: 4,
+    15: 4,  # FWD
+}
 
 
 def _pick(
@@ -29,123 +44,51 @@ def _pick(
 
 
 def _picks_payload() -> dict:
-    picks = [_pick(i, i, is_captain=(i == 1), is_vice_captain=(i == 2)) for i in range(1, 12)]
+    picks = [_pick(i, i, is_captain=(i == 6), is_vice_captain=(i == 7)) for i in range(1, 12)]
     picks += [_pick(i, i) for i in range(12, 16)]
     return {"active_chip": None, "picks": picks}
 
 
 def _elements() -> pd.DataFrame:
-    # Mostly MID (element_type 3) for simplicity; now_cost varies so purchase-price fallback is
-    # distinguishable from the transfer-derived price.
-    return pd.DataFrame([{"id": i, "element_type": 3, "now_cost": 50 + i} for i in range(1, 16)])
-
-
-def test_compute_purchase_prices_uses_most_recent_transfer_in():
-    picks = [{"element": 1}, {"element": 2}]
-    transfers = [
-        {"element_in": 1, "element_in_cost": 55, "event": 3},
-        {"element_in": 1, "element_in_cost": 60, "event": 7},  # later -> this one wins
-    ]
-    now_cost = {1: 65, 2: 52}
-
-    prices = compute_purchase_prices(picks, transfers, now_cost)
-
-    assert prices[1] == 60
-    assert prices[2] == 52  # never transferred in -- falls back to current price
-
-
-def test_compute_purchase_prices_raises_on_unknown_player():
-    with pytest.raises(KeyError):
-        compute_purchase_prices([{"element": 99}], [], {1: 50})
-
-
-def test_compute_free_transfers_accrues_and_consumes():
-    # Baseline 1 -> gw1 (0 transfers): consume none, accrue to 2 -> gw2 (2 transfers): consume
-    # both down to 0, accrue to 1 -> gw3 (0 transfers): consume none, accrue to 2.
-    history = [{"event_transfers": 0}, {"event_transfers": 2}, {"event_transfers": 0}]
-    assert compute_free_transfers(history) == 2
-
-
-def test_compute_free_transfers_caps_at_max():
-    history = [{"event_transfers": 0}] * 10
-    assert compute_free_transfers(history, max_free_transfers=5) == 5
-
-
-def test_compute_free_transfers_defaults_to_one_with_no_history():
-    assert compute_free_transfers([]) == 1
-
-
-def test_compute_chips_remaining_excludes_chips_played_this_half():
-    chips_played = [{"name": "wildcard", "event": 5}]
-    remaining = compute_chips_remaining(chips_played, current_gameweek=10)
-    assert remaining == frozenset(CHIPS) - {"wildcard"}
-
-
-def test_compute_chips_remaining_translates_fpl_raw_chip_codes():
-    # FPL's own API uses "freehit"/"3xc"/"bboost", not this repo's "free_hit"/"triple_captain"/
-    # "bench_boost" -- these must still be excluded, not silently ignored.
-    chips_played = [
-        {"name": "freehit", "event": 3},
-        {"name": "3xc", "event": 5},
-        {"name": "bboost", "event": 7},
-    ]
-    remaining = compute_chips_remaining(chips_played, current_gameweek=10)
-    assert remaining == frozenset(CHIPS) - {"free_hit", "triple_captain", "bench_boost"}
-
-
-def test_compute_chips_remaining_resets_after_the_half_boundary():
-    chips_played = [{"name": "wildcard", "event": 5}]  # played in the first half
-    remaining = compute_chips_remaining(
-        chips_played, current_gameweek=20, first_half_last_gameweek=DEFAULT_FIRST_HALF_LAST_GAMEWEEK
+    return pd.DataFrame(
+        [
+            {"id": i, "element_type": _ELEMENT_TYPE_BY_ID[i], "now_cost": 50 + i}
+            for i in range(1, 16)
+        ]
     )
-    assert remaining == frozenset(CHIPS)  # reset -- wildcard usable again in the second half
+
+
+def _team_id_by_player() -> dict[int, int]:
+    return {i: i for i in range(1, 16)}
 
 
 def test_build_my_team_state_assembles_a_valid_squad():
     state = build_my_team_state(
-        picks=_picks_payload(),
-        entry={"last_deadline_bank": 5},
-        transfers=[],
-        history={"current": [], "chips": []},
-        elements=_elements(),
-        current_gameweek=1,
+        picks=_picks_payload(), elements=_elements(), team_id_by_player=_team_id_by_player()
     )
 
     assert len(state.squad) == 15
     assert state.starting_xi == tuple(range(1, 12))
     assert set(state.bench_order) == {12, 13, 14, 15}
-    assert state.captain_id == 1
-    assert state.vice_captain_id == 2
-    assert state.bank == 5
-    assert state.free_transfers == 1
-    assert state.chips_remaining == frozenset(CHIPS)
+    assert state.captain_id == 6
+    assert state.vice_captain_id == 7
 
 
-def test_build_my_team_state_uses_explicit_free_transfers_override():
+def test_build_my_team_state_uses_current_price_for_every_player():
     state = build_my_team_state(
-        picks=_picks_payload(),
-        entry={"last_deadline_bank": 0},
-        transfers=[],
-        history={"current": [{"event_transfers": 0}] * 3, "chips": []},
-        elements=_elements(),
-        current_gameweek=1,
-        free_transfers=3,
+        picks=_picks_payload(), elements=_elements(), team_id_by_player=_team_id_by_player()
     )
+    assert state.player(1).price == 51
+    assert state.player(15).price == 65
 
-    assert state.free_transfers == 3
 
-
-def test_build_my_team_state_reflects_a_real_transfer():
-    picks = _picks_payload()
-    transfers = [{"element_in": 1, "element_in_cost": 999, "event": 2}]
-
+def test_build_my_team_state_allows_a_squad_over_the_classic_budget_ceiling():
+    # now_cost sums well past £100m (1000) here -- a real squad's current value can legitimately
+    # exceed the classic ceiling through price-rise profit, so this must not raise.
+    elements = pd.DataFrame(
+        [{"id": i, "element_type": _ELEMENT_TYPE_BY_ID[i], "now_cost": 200} for i in range(1, 16)]
+    )
     state = build_my_team_state(
-        picks=picks,
-        entry={"last_deadline_bank": 0},
-        transfers=transfers,
-        history={"current": [], "chips": []},
-        elements=_elements(),
-        current_gameweek=1,
+        picks=_picks_payload(), elements=elements, team_id_by_player=_team_id_by_player()
     )
-
-    assert state.player(1).purchase_price == 999
+    assert sum(p.price for p in state.squad) == 3000

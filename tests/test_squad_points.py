@@ -59,9 +59,7 @@ def _horizon(player_id: int, position: str, points_by_gw: dict[int, float]):
 
 
 def _player(player_id: int, position: str, price: int = 40) -> SquadPlayer:
-    return SquadPlayer(
-        player_id=player_id, position=position, purchase_price=price, current_price=price
-    )
+    return SquadPlayer(player_id=player_id, position=position, price=price)
 
 
 def _squad() -> tuple[SquadPlayer, ...]:
@@ -79,9 +77,6 @@ def _state(**overrides) -> MyTeamState:
         bench_order=(DEF_IDS[4], MID_IDS[4], FWD_IDS[2], GK2),
         captain_id=MID_IDS[0],
         vice_captain_id=MID_IDS[1],
-        bank=0,
-        free_transfers=1,
-        chips_remaining=frozenset({"wildcard", "free_hit", "bench_boost", "triple_captain"}),
     )
     defaults.update(overrides)
     return MyTeamState(**defaults)
@@ -176,22 +171,6 @@ class TestTripleCaptain:
         assert result.bench_points == 0.0
 
 
-class TestWildcardAndFreeHitHaveNoScoringEffect:
-    def test_wildcard_scores_identically_to_no_chip(self):
-        state = _state()
-        projections = _flat_projections([1], points=4.0)
-        baseline = projected_points(state, projections, [1])
-        with_chip = projected_points(state, projections, [1], chip="wildcard")
-        assert with_chip.total == pytest.approx(baseline.total)
-
-    def test_free_hit_scores_identically_to_no_chip(self):
-        state = _state()
-        projections = _flat_projections([1], points=4.0)
-        baseline = projected_points(state, projections, [1])
-        with_chip = projected_points(state, projections, [1], chip="free_hit")
-        assert with_chip.total == pytest.approx(baseline.total)
-
-
 class TestMultiGameweek:
     def test_sums_across_gameweeks_per_player(self):
         state = _state()
@@ -250,3 +229,17 @@ class TestInvalidChip:
         projections = _flat_projections([1], points=4.0)
         with pytest.raises(ValueError, match="unknown chip"):
             projected_points(state, projections, [1], chip="not_a_real_chip")
+
+    def test_wildcard_no_longer_exists_and_raises(self):
+        # Wildcard and Free Hit are gone from the sandbox model -- previewing either now raises
+        # rather than silently scoring as a no-op chip.
+        state = _state()
+        projections = _flat_projections([1], points=4.0)
+        with pytest.raises(ValueError, match="unknown chip"):
+            projected_points(state, projections, [1], chip="wildcard")
+
+    def test_free_hit_no_longer_exists_and_raises(self):
+        state = _state()
+        projections = _flat_projections([1], points=4.0)
+        with pytest.raises(ValueError, match="unknown chip"):
+            projected_points(state, projections, [1], chip="free_hit")

@@ -1,4 +1,5 @@
-"""Tests for features.squad_rules -- full FPL squad legality and its mutations (D2/G3)."""
+"""Tests for features.squad_rules -- full FPL squad legality and its mutations, sandbox model
+(no confirm step, no transfer economy)."""
 
 from __future__ import annotations
 
@@ -9,13 +10,17 @@ from features.squad_rules import (
     INITIAL_BUDGET,
     SQUAD_SIZE,
     SquadRuleError,
+    add_player,
+    assemble_team_state,
+    build_team_state,
     optimise_xi,
+    remove_player,
     reorder_bench,
     set_captain,
     set_vice_captain,
     substitute,
     transfer,
-    transfer_hit_cost,
+    validate_partial_squad,
     validate_squad,
     validate_xi,
 )
@@ -27,27 +32,15 @@ MID_IDS = [21, 22, 23, 24, 25]
 FWD_IDS = [31, 32, 33]
 
 
-def _player(
-    player_id: int, position: str, purchase_price: int = 40, current_price: int | None = None
-) -> SquadPlayer:
-    return SquadPlayer(
-        player_id=player_id,
-        position=position,
-        purchase_price=purchase_price,
-        current_price=current_price if current_price is not None else purchase_price,
-    )
+def _player(player_id: int, position: str, price: int = 40) -> SquadPlayer:
+    return SquadPlayer(player_id=player_id, position=position, price=price)
 
 
-def _squad(**price_overrides: dict[int, int]) -> tuple[SquadPlayer, ...]:
-    players = []
-    players.append(_player(GK1, GK))
-    players.append(_player(GK2, GK))
-    for pid in DEF_IDS:
-        players.append(_player(pid, DEF))
-    for pid in MID_IDS:
-        players.append(_player(pid, MID))
-    for pid in FWD_IDS:
-        players.append(_player(pid, FWD))
+def _squad() -> tuple[SquadPlayer, ...]:
+    players = [_player(GK1, GK), _player(GK2, GK)]
+    players += [_player(pid, DEF) for pid in DEF_IDS]
+    players += [_player(pid, MID) for pid in MID_IDS]
+    players += [_player(pid, FWD) for pid in FWD_IDS]
     return tuple(players)
 
 
@@ -75,9 +68,6 @@ def _base_state(**overrides) -> MyTeamState:
         bench_order=bench_order,
         captain_id=MID_IDS[0],
         vice_captain_id=MID_IDS[1],
-        bank=100,
-        free_transfers=1,
-        chips_remaining=frozenset({"wildcard", "free_hit", "bench_boost", "triple_captain"}),
     )
     defaults.update(overrides)
     return MyTeamState(**defaults)
@@ -112,19 +102,25 @@ class TestValidateSquad:
         assert not any(v.code == "club_limit" for v in violations)
 
     def test_over_budget_is_flagged(self):
-        squad = tuple(_player(p.player_id, p.position, purchase_price=100) for p in _squad())
+        squad = tuple(_player(p.player_id, p.position, price=100) for p in _squad())
         violations = validate_squad(squad, _team_id_by_player())
         assert any(v.code == "budget" for v in violations)
 
     def test_exactly_at_budget_is_legal(self):
         per_player = INITIAL_BUDGET // SQUAD_SIZE
-        squad = tuple(_player(p.player_id, p.position, purchase_price=per_player) for p in _squad())
+        squad = tuple(_player(p.player_id, p.position, price=per_player) for p in _squad())
         violations = validate_squad(squad, _team_id_by_player())
         assert not any(v.code == "budget" for v in violations)
 
     def test_check_budget_false_skips_the_budget_check(self):
-        squad = tuple(_player(p.player_id, p.position, purchase_price=100) for p in _squad())
+        squad = tuple(_player(p.player_id, p.position, price=100) for p in _squad())
         violations = validate_squad(squad, _team_id_by_player(), check_budget=False)
+        assert not any(v.code == "budget" for v in violations)
+
+    def test_custom_budget_ceiling_is_respected(self):
+        # A real imported squad's personal ceiling can exceed the classic 100m.
+        squad = tuple(_player(p.player_id, p.position, price=100) for p in _squad())
+        violations = validate_squad(squad, _team_id_by_player(), budget=1500)
         assert not any(v.code == "budget" for v in violations)
 
     def test_reports_every_violation_not_just_the_first(self):
@@ -137,40 +133,156 @@ class TestValidateSquad:
         assert len(violations) >= 2
 
 
-class TestValidateXi:
-    def test_legal_formation_has_no_violations(self):
-        xi = (GK1, *DEF_IDS[:4], *MID_IDS[:4], *FWD_IDS[:2])
-        assert validate_xi(xi, _position_by_player()) == ()
+class TestValidatePartialSquad:
+    def test_empty_squad_has_no_violations(self):
+        assert validate_partial_squad((), _team_id_by_player()) == ()
 
-    def test_wrong_size_is_rejected(self):
-        xi = (GK1, *DEF_IDS[:4], *MID_IDS[:4])  # 9 players
-        violations = validate_xi(xi, _position_by_player())
-        assert violations[0].code == "xi_shape"
+    def test_under_quota_is_legal(self):
+        squad = (_player(GK1, GK),)
+        assert validate_partial_squad(squad, _team_id_by_player()) == ()
 
-    def test_zero_goalkeepers_is_rejected(self):
-        xi = (*DEF_IDS[:5], *MID_IDS[:4], *FWD_IDS[:2])  # 11 outfielders, no GK
-        violations = validate_xi(xi, _position_by_player())
-        assert violations[0].code == "xi_shape"
-        assert "goalkeeper" in violations[0].message
+    def test_exceeding_position_quota_is_flagged(self):
+        squad = (_player(GK1, GK), _player(GK2, GK), _player(9001, GK))
+        team_ids = {**_team_id_by_player(), 9001: 9001}
+        violations = validate_partial_squad(squad, team_ids)
+        assert any(v.code == "quota" for v in violations)
 
-    def test_two_goalkeepers_is_rejected(self):
-        xi = (GK1, GK2, *DEF_IDS[:3], *MID_IDS[:4], *FWD_IDS[:2])  # 2 GK, 3 DEF, 4 MID, 2 FWD = 11
-        violations = validate_xi(xi, _position_by_player())
-        assert violations[0].code == "xi_shape"
+    def test_exceeding_club_limit_is_flagged(self):
+        team_ids = _team_id_by_player()
+        for pid in DEF_IDS[:4]:
+            team_ids[pid] = 999
+        squad = tuple(_player(pid, DEF) for pid in DEF_IDS[:4])
+        violations = validate_partial_squad(squad, team_ids)
+        assert any(v.code == "club_limit" for v in violations)
 
-    def test_illegal_formation_shape_is_rejected(self):
-        # 2 DEF / 6 MID / 2 FWD outfield -- 2 DEF is below the 3-DEF floor.
-        xi = (GK1, *DEF_IDS[:2], *MID_IDS, *FWD_IDS[:2], MID_IDS[0])
-        # build a genuinely-too-few-defenders XI of the right size instead
-        xi = (GK1, DEF_IDS[0], DEF_IDS[1], *MID_IDS, FWD_IDS[0])
-        violations = validate_xi(xi, _position_by_player())
-        assert violations[0].code == "xi_shape"
+    def test_over_budget_is_flagged(self):
+        squad = (_player(GK1, GK, price=1500),)
+        violations = validate_partial_squad(squad, _team_id_by_player())
+        assert any(v.code == "budget" for v in violations)
 
-    def test_every_valid_formation_shape_is_accepted(self):
-        # 4-4-2 and 3-5-2 and 5-3-2 are all legal; spot-check 3-5-2 using available ids.
-        pos = _position_by_player()
-        xi = (GK1, *DEF_IDS[:3], *MID_IDS, FWD_IDS[0], FWD_IDS[1])
-        assert validate_xi(xi, pos) == ()
+
+class TestAddPlayer:
+    def test_adds_to_empty_squad(self):
+        new_squad = add_player((), _player(GK1, GK), _team_id_by_player())
+        assert new_squad == (_player(GK1, GK),)
+
+    def test_duplicate_player_raises(self):
+        squad = (_player(GK1, GK),)
+        with pytest.raises(SquadRuleError) as exc_info:
+            add_player(squad, _player(GK1, GK), _team_id_by_player())
+        assert exc_info.value.violation.code == "duplicate"
+
+    def test_full_squad_raises(self):
+        with pytest.raises(SquadRuleError) as exc_info:
+            add_player(_squad(), _player(9001, GK), {**_team_id_by_player(), 9001: 9001})
+        assert exc_info.value.violation.code == "squad_full"
+
+    def test_violating_quota_raises(self):
+        squad = (_player(GK1, GK), _player(GK2, GK))
+        with pytest.raises(SquadRuleError) as exc_info:
+            add_player(squad, _player(9001, GK), {**_team_id_by_player(), 9001: 9001})
+        assert exc_info.value.violation.code == "quota"
+
+    def test_violating_budget_raises(self):
+        with pytest.raises(SquadRuleError) as exc_info:
+            add_player((), _player(GK1, GK, price=1500), _team_id_by_player())
+        assert exc_info.value.violation.code == "budget"
+
+    def test_custom_budget_ceiling_is_respected(self):
+        new_squad = add_player((), _player(GK1, GK, price=1200), _team_id_by_player(), budget=1500)
+        assert new_squad == (_player(GK1, GK, price=1200),)
+
+
+class TestRemovePlayer:
+    def test_removes_from_squad(self):
+        squad = (_player(GK1, GK), _player(GK2, GK))
+        new_squad = remove_player(squad, GK1)
+        assert new_squad == (_player(GK2, GK),)
+
+    def test_unknown_player_raises(self):
+        with pytest.raises(SquadRuleError) as exc_info:
+            remove_player((_player(GK1, GK),), 9999)
+        assert exc_info.value.violation.code == "unknown_player"
+
+
+class TestBuildTeamState:
+    def test_promotes_a_caller_specified_arrangement_verbatim(self):
+        state = build_team_state(
+            squad=_squad(),
+            starting_xi=(GK1, *DEF_IDS[:4], *MID_IDS[:4], *FWD_IDS[:2]),
+            bench_order=(DEF_IDS[4], MID_IDS[4], FWD_IDS[2], GK2),
+            captain_id=MID_IDS[0],
+            vice_captain_id=MID_IDS[1],
+            team_id_by_player=_team_id_by_player(),
+        )
+        assert state.captain_id == MID_IDS[0]
+        assert state.starting_xi == (GK1, *DEF_IDS[:4], *MID_IDS[:4], *FWD_IDS[:2])
+
+    def test_illegal_squad_raises(self):
+        squad = tuple(_player(p.player_id, p.position, price=100) for p in _squad())
+        with pytest.raises(SquadRuleError):
+            build_team_state(
+                squad=squad,
+                starting_xi=(GK1, *DEF_IDS[:4], *MID_IDS[:4], *FWD_IDS[:2]),
+                bench_order=(DEF_IDS[4], MID_IDS[4], FWD_IDS[2], GK2),
+                captain_id=MID_IDS[0],
+                vice_captain_id=MID_IDS[1],
+                team_id_by_player=_team_id_by_player(),
+            )
+
+    def test_check_budget_false_allows_a_squad_over_the_classic_ceiling(self):
+        squad = tuple(_player(p.player_id, p.position, price=100) for p in _squad())
+        state = build_team_state(
+            squad=squad,
+            starting_xi=(GK1, *DEF_IDS[:4], *MID_IDS[:4], *FWD_IDS[:2]),
+            bench_order=(DEF_IDS[4], MID_IDS[4], FWD_IDS[2], GK2),
+            captain_id=MID_IDS[0],
+            vice_captain_id=MID_IDS[1],
+            team_id_by_player=_team_id_by_player(),
+            check_budget=False,
+        )
+        assert sum(p.price for p in state.squad) == 1500
+
+    def test_bench_shape_mismatch_raises(self):
+        with pytest.raises(SquadRuleError) as exc_info:
+            build_team_state(
+                squad=_squad(),
+                starting_xi=(GK1, *DEF_IDS[:4], *MID_IDS[:4], *FWD_IDS[:2]),
+                bench_order=(DEF_IDS[4], MID_IDS[4], FWD_IDS[2], GK1),  # GK1 is in the XI already
+                captain_id=MID_IDS[0],
+                vice_captain_id=MID_IDS[1],
+                team_id_by_player=_team_id_by_player(),
+            )
+        assert exc_info.value.violation.code == "xi_shape"
+
+
+class TestAssembleTeamState:
+    def test_auto_derives_best_xi_and_captain(self):
+        expected_points = {pid: float(pid) for pid in _team_id_by_player()}
+        state = assemble_team_state(_squad(), expected_points, _team_id_by_player())
+        assert validate_xi(state.starting_xi, _position_by_player()) == ()
+        ranked = sorted(state.starting_xi, key=lambda pid: expected_points[pid], reverse=True)
+        assert state.captain_id == ranked[0]
+        assert state.vice_captain_id == ranked[1]
+
+    def test_preferred_captain_is_kept_if_still_eligible(self):
+        expected_points = dict.fromkeys(_team_id_by_player(), 1.0)
+        state = assemble_team_state(
+            _squad(),
+            expected_points,
+            _team_id_by_player(),
+            preferred_captain_id=MID_IDS[0],
+            preferred_vice_captain_id=MID_IDS[1],
+        )
+        assert MID_IDS[0] in state.starting_xi  # tied EV, guaranteed to be picked by some formation
+        assert state.captain_id == MID_IDS[0]
+        assert state.vice_captain_id == MID_IDS[1]
+
+    def test_illegal_squad_raises(self):
+        squad = tuple(_player(p.player_id, p.position, price=100) for p in _squad())
+        expected_points = {pid: 1.0 for pid in _team_id_by_player()}
+        with pytest.raises(SquadRuleError):
+            assemble_team_state(squad, expected_points, _team_id_by_player())
 
 
 class TestSubstitute:
@@ -201,8 +313,6 @@ class TestSubstitute:
         assert exc_info.value.violation.code == "unknown_player"
 
     def test_swapping_only_goalkeeper_out_for_an_outfielder_is_rejected(self):
-        # Bench has no reserve GK in this scenario's swap target -- try to swap starting GK for
-        # the bench defender directly, which would leave the XI with zero goalkeepers.
         state = _base_state()
         with pytest.raises(SquadRuleError) as exc_info:
             substitute(
@@ -225,13 +335,12 @@ class TestSubstitute:
         )
         assert new_state.captain_id == FWD_IDS[2]
 
-    def test_never_changes_squad_or_bank(self):
+    def test_never_changes_squad(self):
         state = _base_state()
         new_state = substitute(
             state, out_id=FWD_IDS[1], in_id=FWD_IDS[2], position_by_player=_position_by_player()
         )
         assert new_state.squad == state.squad
-        assert new_state.bank == state.bank
 
     def test_does_not_mutate_the_input_state(self):
         state = _base_state()
@@ -243,74 +352,57 @@ class TestSubstitute:
 
 
 class TestTransfer:
-    def test_swaps_a_squad_player_and_updates_bank(self):
+    def test_swaps_a_squad_player(self):
         state = _base_state()
         team_ids = _team_id_by_player()
         team_ids[9001] = 9001
         new_state = transfer(
             state,
             out_id=FWD_IDS[2],
-            in_id=9001,
-            in_price=45,
-            in_position=FWD,
+            in_player=_player(9001, FWD, price=45),
             team_id_by_player=team_ids,
         )
         assert 9001 in new_state.player_ids
         assert FWD_IDS[2] not in new_state.player_ids
-        # sold at current_price (40, no profit) minus bought at 45 -> bank drops by 5.
-        assert new_state.bank == state.bank - 5
 
-    def test_sell_price_reflects_real_fpl_profit_rule(self):
-        squad = list(_squad())
-        # FWD_IDS[2] bought at 40, now worth 60 -- sells for 40 + (60-40)//2 = 50.
-        squad[-1] = _player(FWD_IDS[2], FWD, purchase_price=40, current_price=60)
-        state = _base_state(squad=tuple(squad))
+    def test_is_always_free_regardless_of_price(self):
+        # No hit cost or free-transfer count exists in the sandbox -- only legality matters.
+        state = _base_state()
         team_ids = _team_id_by_player()
         team_ids[9001] = 9001
         new_state = transfer(
             state,
             out_id=FWD_IDS[2],
-            in_id=9001,
-            in_price=50,
-            in_position=FWD,
+            in_player=_player(9001, FWD, price=1),
             team_id_by_player=team_ids,
         )
-        assert new_state.bank == state.bank  # sold for 50, bought for 50 -- unchanged
+        assert 9001 in new_state.player_ids
 
-    def test_total_spend_over_initial_budget_via_price_rise_profit_is_allowed(self):
-        # A squad that has legitimately grown past INITIAL_BUDGET's nominal spend via banked
-        # price-rise profit is legal -- only new_bank >= 0 governs an in-flight transfer.
-        squad = list(_squad())
-        # Bought at 40, risen to 100 -- sells for 40 + (100-40)//2 = 70 profit-halved.
-        squad[-1] = _player(FWD_IDS[2], FWD, purchase_price=40, current_price=100)
-        state = _base_state(squad=tuple(squad), bank=400)
-        team_ids = _team_id_by_player()
-        team_ids[9001] = 9001
-        new_state = transfer(
-            state,
-            out_id=FWD_IDS[2],
-            in_id=9001,
-            in_price=470,
-            in_position=FWD,
-            team_id_by_player=team_ids,
-        )
-        assert new_state.bank == 0
-        assert sum(p.purchase_price for p in new_state.squad) == 1030
-
-    def test_buying_beyond_bank_plus_sell_price_raises(self):
-        state = _base_state(bank=0)
+    def test_exceeding_budget_raises(self):
+        state = _base_state()
         team_ids = _team_id_by_player()
         team_ids[9001] = 9001
         with pytest.raises(SquadRuleError) as exc_info:
             transfer(
                 state,
                 out_id=FWD_IDS[2],
-                in_id=9001,
-                in_price=1000,
-                in_position=FWD,
+                in_player=_player(9001, FWD, price=2000),
                 team_id_by_player=team_ids,
             )
         assert exc_info.value.violation.code == "budget"
+
+    def test_custom_budget_ceiling_is_respected(self):
+        state = _base_state()
+        team_ids = _team_id_by_player()
+        team_ids[9001] = 9001
+        new_state = transfer(
+            state,
+            out_id=FWD_IDS[2],
+            in_player=_player(9001, FWD, price=2000),
+            team_id_by_player=team_ids,
+            budget=5000,
+        )
+        assert 9001 in new_state.player_ids
 
     def test_buying_a_player_already_in_the_squad_raises(self):
         state = _base_state()
@@ -318,9 +410,7 @@ class TestTransfer:
             transfer(
                 state,
                 out_id=FWD_IDS[2],
-                in_id=MID_IDS[0],
-                in_price=40,
-                in_position=MID,
+                in_player=_player(MID_IDS[0], MID),
                 team_id_by_player=_team_id_by_player(),
             )
         assert exc_info.value.violation.code == "duplicate"
@@ -331,9 +421,7 @@ class TestTransfer:
             transfer(
                 state,
                 out_id=9999,
-                in_id=9001,
-                in_price=40,
-                in_position=FWD,
+                in_player=_player(9001, FWD),
                 team_id_by_player=_team_id_by_player(),
             )
         assert exc_info.value.violation.code == "unknown_player"
@@ -349,9 +437,7 @@ class TestTransfer:
             transfer(
                 state,
                 out_id=FWD_IDS[2],
-                in_id=9001,
-                in_price=40,
-                in_position=FWD,
+                in_player=_player(9001, FWD),
                 team_id_by_player=team_ids,
             )
         assert exc_info.value.violation.code == "club_limit"
@@ -361,12 +447,7 @@ class TestTransfer:
         team_ids = _team_id_by_player()
         team_ids[9001] = 9001
         new_state = transfer(
-            state,
-            out_id=FWD_IDS[0],
-            in_id=9001,
-            in_price=40,
-            in_position=FWD,
-            team_id_by_player=team_ids,
+            state, out_id=FWD_IDS[0], in_player=_player(9001, FWD), team_id_by_player=team_ids
         )
         assert 9001 in new_state.starting_xi
         assert new_state.captain_id == 9001
@@ -376,44 +457,17 @@ class TestTransfer:
         team_ids = _team_id_by_player()
         team_ids[9001] = 9001
         new_state = transfer(
-            state,
-            out_id=FWD_IDS[2],
-            in_id=9001,
-            in_price=40,
-            in_position=FWD,
-            team_id_by_player=team_ids,
+            state, out_id=FWD_IDS[2], in_player=_player(9001, FWD), team_id_by_player=team_ids
         )
         assert 9001 in new_state.bench_order
         assert 9001 not in new_state.starting_xi
-
-    def test_never_charges_a_hit_itself(self):
-        state = _base_state(free_transfers=0)
-        team_ids = _team_id_by_player()
-        team_ids[9001] = 9001
-        # No exception, no points concept exists on MyTeamState at all -- hits are computed
-        # entirely by transfer_hit_cost, never by transfer() itself.
-        transfer(
-            state,
-            out_id=FWD_IDS[2],
-            in_id=9001,
-            in_price=40,
-            in_position=FWD,
-            team_id_by_player=team_ids,
-        )
 
     def test_does_not_mutate_the_input_state(self):
         state = _base_state()
         original_squad = state.squad
         team_ids = _team_id_by_player()
         team_ids[9001] = 9001
-        transfer(
-            state,
-            out_id=FWD_IDS[2],
-            in_id=9001,
-            in_price=40,
-            in_position=FWD,
-            team_id_by_player=team_ids,
-        )
+        transfer(state, out_id=FWD_IDS[2], in_player=_player(9001, FWD), team_id_by_player=team_ids)
         assert state.squad == original_squad
 
 
@@ -493,17 +547,3 @@ class TestOptimiseXi:
         expected_points[FWD_IDS[2]] = 100.0
         new_state = optimise_xi(state, expected_points)
         assert new_state.captain_id in new_state.starting_xi
-
-
-class TestTransferHitCost:
-    def test_hit_free_is_always_zero(self):
-        assert transfer_hit_cost(5, free_transfers=0, hit_free=True) == 0
-
-    def test_within_free_transfers_is_zero(self):
-        assert transfer_hit_cost(1, free_transfers=2, hit_free=False) == 0
-
-    def test_beyond_free_transfers_charges_per_extra(self):
-        assert transfer_hit_cost(3, free_transfers=1, hit_free=False) == 8  # 2 extra x 4
-
-    def test_never_negative(self):
-        assert transfer_hit_cost(0, free_transfers=5, hit_free=False) == 0
