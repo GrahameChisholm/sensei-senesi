@@ -1,9 +1,8 @@
 """One function behind the header's predicted-points number, every pitch card's per-gameweek
-value, and every chip preview (D18) — a pure read over an already-committed (or hypothetical
-draft) squad plus its projections. No drafting/chip-spending concept lives here at all — that's
-``features.squad_draft``'s job; this module only ever answers "how many points does this specific
-squad, captain, and chip choice score," which is exactly why previewing a chip (D18) needs no
-draft at all: it's just a different ``chip`` argument to the same read-only call.
+value, and every chip preview — a pure read over a squad plus its projections. No squad-editing
+concept lives here at all, this module only ever answers "how many points does this specific
+squad, captain, and chip choice score," which is exactly why previewing a chip needs no separate
+step: it's just a different ``chip`` argument to the same read-only call.
 """
 
 from __future__ import annotations
@@ -12,12 +11,15 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from engine.projections import PlayerHorizonProjection
-from features.team_state import CHIPS, MyTeamState
+from features.team_state import MyTeamState
 
-__all__ = ["CHIP_BENCH_BOOST", "CHIP_TRIPLE_CAPTAIN", "SquadPoints", "projected_points"]
+__all__ = ["CHIP_BENCH_BOOST", "CHIP_TRIPLE_CAPTAIN", "CHIPS", "SquadPoints", "projected_points"]
 
 CHIP_BENCH_BOOST = "bench_boost"
 CHIP_TRIPLE_CAPTAIN = "triple_captain"
+# The only two chips left in the sandbox model -- plain, always-available toggles on how points
+# are displayed, with no scarcity and no usage tracking (Wildcard/Free Hit no longer exist).
+CHIPS = (CHIP_BENCH_BOOST, CHIP_TRIPLE_CAPTAIN)
 
 
 @dataclass(frozen=True)
@@ -51,14 +53,11 @@ def projected_points(
     chip: str | None = None,
 ) -> SquadPoints:
     """Sum of ``state``'s expected points across ``gameweeks``, captain doubled (or tripled under
-    Triple Captain) and the bench added at full weight under Bench Boost.
-
-    ``chip`` in ``{"wildcard", "free_hit"}`` has **no scoring effect here** — either chip's whole
-    effect is removing a transfer's hit cost, which is entirely
-    ``features.squad_draft``/``features.squad_rules.transfer_hit_cost``'s concern, not this
-    function's; pass whatever squad you want scored (the committed one, or a hypothetical draft's)
-    and this reduces to the same "no chip" scoring. Chip **stacking** needs no explicit rejection:
-    this function only ever takes one ``chip`` argument, so it can't even be expressed.
+    Triple Captain) and the bench added at full weight under Bench Boost. ``chip`` is a plain,
+    always-available toggle with no scarcity or usage tracking — pass ``None``, ``"bench_boost"``,
+    or ``"triple_captain"``; anything else raises ``ValueError``. Chip **stacking** needs no
+    explicit rejection: this function only ever takes one ``chip`` argument, so it can't even be
+    expressed.
 
     A player missing a projection for a requested gameweek (a blank gameweek, or a cold-start gap)
     contributes nothing for that gameweek and is reported in ``missing_player_ids`` — never

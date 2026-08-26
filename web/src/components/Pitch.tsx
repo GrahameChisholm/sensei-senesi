@@ -1,103 +1,105 @@
-import { PlayerPanelRowOut, TeamOut, TeamStateOut } from "../api";
+import { PlayerPanelRowOut, SquadOut, TeamOut } from "../api";
 import { CardFixture, PlayerCard } from "./PlayerCard";
 
 export const POSITION_ORDER = ["GK", "DEF", "MID", "FWD"];
+export const QUOTA: Record<string, number> = { GK: 2, DEF: 5, MID: 5, FWD: 3 };
 
-export function cardFixtures(row: PlayerPanelRowOut | undefined, teams: Record<number, TeamOut>): CardFixture[] {
+export function cardFixtures(
+  row: PlayerPanelRowOut | undefined,
+  teams: Record<number, TeamOut>,
+): CardFixture[] {
   if (!row) return [];
   return row.fixtures.map((fixture) => ({
     gameweek: fixture.gameweek,
-    opponentShortName: fixture.opponent_id !== null ? teams[fixture.opponent_id]?.short_name ?? null : null,
+    opponentShortName:
+      fixture.opponent_id !== null ? teams[fixture.opponent_id]?.short_name ?? null : null,
     isHome: fixture.is_home,
     expectedPoints: fixture.expected_points,
   }));
 }
 
 interface PitchProps {
-  teamState: TeamStateOut;
+  squad: SquadOut;
   directory: Record<number, PlayerPanelRowOut>;
   teams: Record<number, TeamOut>;
   horizon: "next" | "three";
-  /** Every squad member currently marked for removal (via a card's hover "x"), if any, a
-   * purely local, not-yet-applied intent: nothing is removed from the real squad until a
-   * replacement is picked in the Player Panel (a squad can never actually hold fewer than 15
-   * players, see features.team_state.MyTeamState). Any number of players can be marked at once,
-   * each rendered as an empty slot instead of that player's card, and filled independently. */
-  removingIds: number[];
-  onStartRemove: (playerId: number) => void;
-  onCancelRemove: (playerId: number) => void;
+  onRemove: (playerId: number) => void;
   onSetCaptain: (playerId: number, role: "captain" | "vice") => void;
 }
 
-/** No more "edit team" mode: the pitch is always live. Hovering any squad player reveals a small
- * "x"; clicking it marks that slot empty (still just local UI state) until the Player Panel picks
- * a same-position replacement, which is what actually calls the API (TeamSelection.tsx). Any
- * number of slots can be emptied at once, so a manager can clear their whole squad and rebuild it
- * from the panel. Hovering a starting-XI player also reveals "C"/"VC" pills; captain/vice must
- * be in the XI, so bench cards never get them. */
-export function Pitch({
-  teamState,
-  directory,
-  teams,
-  horizon,
-  removingIds,
-  onStartRemove,
-  onCancelRemove,
-  onSetCaptain,
-}: PitchProps) {
-  const positionById = Object.fromEntries(teamState.squad.map((p) => [p.player_id, p.position]));
-  const priceById = Object.fromEntries(teamState.squad.map((p) => [p.player_id, p.current_price]));
+/** One pitch for every squad size from empty to a complete 15. Once a starting XI/bench split
+ * exists (15/15 reached and auto-arranged), it renders the classic formation shape: one row per
+ * position for the starting XI, plus a separate bench strip, matching real FPL. Before that, it
+ * falls back to one row per position with an empty "pick a {position}" placeholder per still-open
+ * slot, since there's no arrangement yet to render a formation from. Removing a squad player is
+ * instant (no draft, no confirm) -- the vacated slot just renders empty on the next render.
+ * Captain/vice pills only ever show on starting-XI cards, since only they're eligible for the
+ * armband. */
+export function Pitch({ squad, directory, teams, horizon, onRemove, onSetCaptain }: PitchProps) {
+  const byId = Object.fromEntries(squad.squad.map((p) => [p.player_id, p]));
 
-  const rowsByPosition: Record<string, number[]> = { GK: [], DEF: [], MID: [], FWD: [] };
-  for (const playerId of teamState.starting_xi) {
-    rowsByPosition[positionById[playerId]]?.push(playerId);
-  }
-
-  function renderSlot(playerId: number, isBench: boolean) {
-    if (removingIds.includes(playerId)) {
-      return (
-        <button
-          key={playerId}
-          type="button"
-          className="empty-slot"
-          onClick={() => onCancelRemove(playerId)}
-          title="Cancel"
-        >
-          <span>{positionById[playerId]}</span>
-          <span className="empty-slot-hint">Pick a replacement, or click to cancel</span>
-        </button>
-      );
-    }
+  function renderCard(playerId: number, isBench: boolean) {
+    const pick = byId[playerId];
     const row = directory[playerId];
     return (
       <PlayerCard
         key={playerId}
         playerId={playerId}
         name={row?.name ?? `#${playerId}`}
-        price={priceById[playerId] ?? row?.price ?? null}
+        price={pick?.price ?? row?.price ?? null}
         fixtures={cardFixtures(row, teams)}
         horizon={horizon}
-        isCaptain={teamState.captain_id === playerId}
-        isVice={teamState.vice_captain_id === playerId}
+        isCaptain={squad.captain_id === playerId}
+        isVice={squad.vice_captain_id === playerId}
         lowConfidence={row?.low_confidence}
-        onRemove={() => onStartRemove(playerId)}
+        onRemove={() => onRemove(playerId)}
         onCaptain={isBench ? undefined : () => onSetCaptain(playerId, "captain")}
         onVice={isBench ? undefined : () => onSetCaptain(playerId, "vice")}
       />
     );
   }
 
+  if (squad.starting_xi.length > 0) {
+    const positionById = Object.fromEntries(squad.squad.map((p) => [p.player_id, p.position]));
+    const rowsByPosition: Record<string, number[]> = { GK: [], DEF: [], MID: [], FWD: [] };
+    for (const playerId of squad.starting_xi) {
+      rowsByPosition[positionById[playerId]]?.push(playerId);
+    }
+    return (
+      <div className="pitch">
+        {POSITION_ORDER.map((position) => (
+          <div className="pitch-row" key={position}>
+            {rowsByPosition[position].map((playerId) => renderCard(playerId, false))}
+          </div>
+        ))}
+        <div className="pitch-row bench-row">
+          <div className="bench-label">Bench</div>
+          {squad.bench_order.map((playerId) => renderCard(playerId, true))}
+        </div>
+      </div>
+    );
+  }
+
+  const byPosition: Record<string, typeof squad.squad> = { GK: [], DEF: [], MID: [], FWD: [] };
+  for (const pick of squad.squad) byPosition[pick.position]?.push(pick);
+
   return (
     <div className="pitch">
-      {POSITION_ORDER.map((position) => (
-        <div className="pitch-row" key={position}>
-          {rowsByPosition[position].map((playerId) => renderSlot(playerId, false))}
-        </div>
-      ))}
-      <div className="pitch-row bench-row">
-        <div className="bench-label">Bench</div>
-        {teamState.bench_order.map((playerId) => renderSlot(playerId, true))}
-      </div>
+      {POSITION_ORDER.map((position) => {
+        const picks = byPosition[position];
+        const emptyCount = Math.max(QUOTA[position] - picks.length, 0);
+        return (
+          <div className="pitch-row" key={position}>
+            {picks.map((pick) => renderCard(pick.player_id, false))}
+            {Array.from({ length: emptyCount }, (_, index) => (
+              <div key={`empty-${position}-${index}`} className="empty-slot">
+                <span>{position}</span>
+                <span className="empty-slot-hint">Pick a {position} from the panel</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }

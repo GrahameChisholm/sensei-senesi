@@ -1,11 +1,10 @@
-"""In-memory application state the API's endpoints read from (mirrors the deleted ``api/state.py``'s
-own "populated once, read by every request" shape, extended for the team-selection page): the
-projection cache ``scripts/build_projections.py`` writes, plus the squad's committed/pending state
-(``features.squad_draft``), persisted via ``api.persistence``.
+"""In-memory application state the API's endpoints read from: the projection cache
+``scripts/build_projections.py`` writes, plus the squad's one live sandbox state
+(``api.squad_state.SquadState``), persisted via ``api.persistence``.
 
 Endpoints never fetch or compute projections themselves, and never touch squad legality directly —
-every mutation delegates to ``features.squad_rules``/``features.squad_draft``, matching this page's
-"no FPL rule logic in the API" layering rule.
+every mutation delegates to ``features.squad_rules``/``features.squad_optimizer``, matching this
+page's "no FPL rule logic in the API" layering rule.
 """
 
 from __future__ import annotations
@@ -18,12 +17,8 @@ from pathlib import Path
 import numpy as np
 from sqlalchemy.orm import Session
 
-from api.persistence import (
-    load_build_picks,
-    load_squad_state,
-    save_build_picks,
-    save_squad_state,
-)
+from api.persistence import load_squad_state, save_squad_state
+from api.squad_state import SquadState
 from engine.aggregate import ComponentBreakdown
 from engine.data.player_history import PlayerGameweekActual
 from engine.data.storage import DEFAULT_DB_PATH, Base, get_engine
@@ -35,8 +30,6 @@ from engine.projections import (
     project_player_horizon,
 )
 from engine.simulate import PlayerSimulationSummary
-from features.squad_draft import CommittedSquad, PendingDraft, advance_gameweek
-from features.team_state import SquadPlayer
 
 __all__ = [
     "DEFAULT_PROJECTION_CACHE_DIR",
@@ -46,9 +39,6 @@ __all__ = [
     "set_app_state",
     "get_squad_state",
     "set_squad_state",
-    "confirm_and_save",
-    "get_build_picks",
-    "set_build_picks",
     "reset_state",
 ]
 
@@ -182,10 +172,7 @@ def _latest_cache_path(cache_dir: Path, season: str) -> Path:
 
 
 _app_state: AppState | None = None
-_committed: CommittedSquad | None = None
-_pending: PendingDraft | None = None
-_build_picks: list[SquadPlayer] | None = None
-_build_picks_loaded: bool = False
+_squad_state: SquadState | None = None
 _db_path: str = DEFAULT_DB_PATH
 
 
@@ -227,71 +214,31 @@ def _get_session() -> Session:
     return Session(engine)
 
 
-def get_squad_state() -> tuple[CommittedSquad, PendingDraft | None]:
-    """Loads the saved squad on first access, running :func:`~features.squad_draft.advance_gameweek`
-    if the cache has moved on to a later gameweek since the squad was last saved — this is where
-    Free Hit reversion (D15) and stale-draft discarding (D24) actually fire."""
-    global _committed, _pending
-    if _committed is None:
+def get_squad_state() -> SquadState:
+    """Loads the saved squad on first access, or starts a fresh empty one if none has ever been
+    saved for the current season."""
+    global _squad_state
+    if _squad_state is None:
         app_state = get_app_state()
         session = _get_session()
         loaded = load_squad_state(session, app_state.season)
-        if loaded is None:
-            _committed = CommittedSquad(team_state=None, committed_gameweek=app_state.gameweek)
-            _pending = None
-        else:
-            committed, pending = loaded
-            if committed.committed_gameweek != app_state.gameweek:
-                committed, pending = advance_gameweek(committed, pending, app_state.gameweek)
-            _committed, _pending = committed, pending
-    return _committed, _pending
+        _squad_state = loaded if loaded is not None else SquadState()
+    return _squad_state
 
 
-def set_squad_state(committed: CommittedSquad, pending: PendingDraft | None) -> None:
-    """Persist a new squad/draft state and update the process-wide singletons — every successful
-    draft mutation and confirm/discard calls this."""
-    global _committed, _pending
+def set_squad_state(state: SquadState) -> None:
+    """Persist a new squad state and update the process-wide singleton — every successful
+    mutation calls this."""
+    global _squad_state
     app_state = get_app_state()
     session = _get_session()
-    save_squad_state(session, app_state.season, committed, pending)
-    _committed, _pending = committed, pending
-
-
-def confirm_and_save(committed: CommittedSquad, pending: PendingDraft | None = None) -> None:
-    """Convenience alias for the common "confirm, then persist the result" sequence."""
-    set_squad_state(committed, pending)
-
-
-def get_build_picks() -> list[SquadPlayer]:
-    """The in-progress initial-build squad (D6/D23) — 0 to 15 picks, not yet a real
-    ``MyTeamState`` (which requires exactly 15/11/4 at every step, so it can't represent this
-    state at all). Loaded from ``SavedBuildPicks`` on first access and persisted on every
-    add/remove via :func:`set_build_picks`, so it survives a restart like the committed squad
-    and any pending draft do."""
-    global _build_picks, _build_picks_loaded
-    if not _build_picks_loaded:
-        app_state = get_app_state()
-        session = _get_session()
-        _build_picks = load_build_picks(session, app_state.season) or []
-        _build_picks_loaded = True
-    return _build_picks
-
-
-def set_build_picks(picks: list[SquadPlayer]) -> None:
-    global _build_picks, _build_picks_loaded
-    app_state = get_app_state()
-    session = _get_session()
-    save_build_picks(session, app_state.season, picks)
-    _build_picks = picks
-    _build_picks_loaded = True
+    save_squad_state(session, app_state.season, state)
+    _squad_state = state
 
 
 def reset_state(db_path: str = DEFAULT_DB_PATH) -> None:
     """Test-only: clear every process-wide singleton so the next access reloads from scratch."""
-    global _app_state, _committed, _pending, _build_picks, _build_picks_loaded, _db_path
+    global _app_state, _squad_state, _db_path
     _app_state = None
-    _committed = None
-    _pending = None
-    _build_picks = None
-    _build_picks_loaded = False
+    _squad_state = None
     _db_path = db_path

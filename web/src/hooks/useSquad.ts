@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, SquadOut } from "../api";
 
-// The server is always the source of truth (D16): every mutation just calls the API and replaces
-// local state with whatever it returns -- never reconstructed client-side.
+// The server is always the source of truth: every mutation just calls the API and replaces
+// local state with whatever it returns -- never reconstructed client-side. Every action here
+// applies instantly, there is no confirm step anywhere.
 export function useSquad() {
   const [squad, setSquad] = useState<SquadOut | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,31 +43,17 @@ export function useSquad() {
     loading,
     clearError: () => setError(null),
     refresh,
-    addBuildPlayer: (playerId: number, position: string, price: number) =>
-      run(() => api.addBuildPlayer(playerId, position, price)),
-    removeBuildPlayer: (playerId: number) => run(() => api.removeBuildPlayer(playerId)),
-    confirmBuild: (body: {
-      player_ids: number[];
-      starting_xi: number[];
-      bench_order: number[];
-      captain_id: number;
-      vice_captain_id: number;
-    }) => run(() => api.confirmBuild(body)),
-    openDraft: () => run(() => api.openDraft()),
-    discardDraft: () => run(() => api.discardDraft()),
-    substitute: (outId: number, inId: number) => run(() => api.substitute(outId, inId)),
-    transfer: (outId: number, inId: number, inPrice: number, inPosition: string) =>
-      run(() => api.transfer(outId, inId, inPrice, inPosition)),
-    liveTransfer: (outId: number, inId: number, inPrice: number, inPosition: string) =>
-      run(() => api.liveTransfer(outId, inId, inPrice, inPosition)),
+    addPlayer: (playerId: number, position: string, price: number) =>
+      run(() => api.addPlayer(playerId, position, price)),
+    removePlayer: (playerId: number) => run(() => api.removePlayer(playerId)),
+    clearSquad: () => run(() => api.clearSquad()),
     setCaptain: (playerId: number, role: "captain" | "vice") =>
       run(() => api.setCaptain(playerId, role)),
-    liveCaptain: (playerId: number, role: "captain" | "vice") =>
-      run(() => api.liveCaptain(playerId, role)),
-    setBenchOrder: (benchOrder: number[]) => run(() => api.setBenchOrder(benchOrder)),
-    setDraftChip: (chip: string | null) => run(() => api.setDraftChip(chip)),
-    confirmDraft: () => run(() => api.confirmDraft()),
+    setBenchOrder: (startingXi: number[], benchOrder: number[]) =>
+      run(() => api.setBenchOrder(startingXi, benchOrder)),
     optimiseXi: () => run(() => api.optimiseXi()),
-    wipeSquad: () => run(() => api.wipeSquad()),
+    optimise: (objective: "starting_xi" | "full_squad", captainMultiplier?: number) =>
+      run(() => api.optimise(objective, captainMultiplier)),
+    importSquad: (teamId: number) => run(() => api.importSquad(teamId)),
   };
 }

@@ -38,38 +38,19 @@ export interface GameweekOut {
 export interface SquadPlayerOut {
   player_id: number;
   position: string;
-  purchase_price: number;
-  current_price: number;
-  sell_price: number;
+  price: number;
 }
 
-export interface TeamStateOut {
+// The one live sandbox squad -- 0 to 15 players, no confirm step, no transfer economy.
+export interface SquadOut {
   squad: SquadPlayerOut[];
   starting_xi: number[];
   bench_order: number[];
-  captain_id: number;
-  vice_captain_id: number;
-  bank: number;
-  free_transfers: number;
-  chips_remaining: string[];
-}
-
-export interface DraftOut {
-  base_gameweek: number;
-  working_state: TeamStateOut;
-  transfers_made: number;
-  chip: string | null;
-}
-
-export interface SquadOut {
+  captain_id: number | null;
+  vice_captain_id: number | null;
   is_complete: boolean;
-  committed: TeamStateOut | null;
-  build_picks: SquadPlayerOut[] | null;
-  active_chip: string | null;
-  active_chip_gameweek: number | null;
-  chips_available: string[];
-  draft: DraftOut | null;
-  last_hit_cost: number | null;
+  budget_ceiling: number;
+  budget_remaining: number;
 }
 
 export interface SquadPointsOut {
@@ -231,19 +212,6 @@ export interface DifferentialsResponseOut {
   rows: DifferentialRowOut[];
 }
 
-export interface TransferRecommendationOut {
-  sell_player_id: number;
-  sell_player_name: string;
-  buy_player_id: number;
-  buy_player_name: string;
-  buy_price: number;
-  position: string;
-  net_points_gain: number;
-  hit_cost: number;
-  is_forced: boolean;
-  reasoning: string;
-}
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -268,61 +236,39 @@ export const api = {
   getTeams: () => request<TeamOut[]>("/teams"),
   getSquad: () => request<SquadOut>("/squad"),
 
-  addBuildPlayer: (player_id: number, position: string, price: number) =>
-    request<SquadOut>("/squad/build/players", {
+  addPlayer: (player_id: number, position: string, price: number) =>
+    request<SquadOut>("/squad/players", {
       method: "POST",
       body: JSON.stringify({ player_id, position, price }),
     }),
-  removeBuildPlayer: (player_id: number) =>
-    request<SquadOut>(`/squad/build/players/${player_id}`, { method: "DELETE" }),
-  confirmBuild: (body: {
-    player_ids: number[];
-    starting_xi: number[];
-    bench_order: number[];
-    captain_id: number;
-    vice_captain_id: number;
-  }) => request<SquadOut>("/squad/build/confirm", { method: "POST", body: JSON.stringify(body) }),
+  removePlayer: (playerId: number) =>
+    request<SquadOut>(`/squad/players/${playerId}`, { method: "DELETE" }),
+  clearSquad: () => request<SquadOut>("/squad/players", { method: "DELETE" }),
 
-  openDraft: () => request<SquadOut>("/squad/draft", { method: "POST" }),
-  discardDraft: () => request<SquadOut>("/squad/draft", { method: "DELETE" }),
-  substitute: (out_id: number, in_id: number) =>
-    request<SquadOut>("/squad/draft/substitute", {
-      method: "POST",
-      body: JSON.stringify({ out_id, in_id }),
-    }),
-  transfer: (out_id: number, in_id: number, in_price: number, in_position: string) =>
-    request<SquadOut>("/squad/draft/transfer", {
-      method: "POST",
-      body: JSON.stringify({ out_id, in_id, in_price, in_position }),
-    }),
-  liveTransfer: (out_id: number, in_id: number, in_price: number, in_position: string) =>
-    request<SquadOut>("/squad/live-transfer", {
-      method: "POST",
-      body: JSON.stringify({ out_id, in_id, in_price, in_position }),
-    }),
   setCaptain: (player_id: number, role: "captain" | "vice") =>
-    request<SquadOut>("/squad/draft/captain", {
+    request<SquadOut>("/squad/captain", {
       method: "POST",
       body: JSON.stringify({ player_id, role }),
     }),
-  liveCaptain: (player_id: number, role: "captain" | "vice") =>
-    request<SquadOut>("/squad/live-captain", {
+  setBenchOrder: (starting_xi: number[], bench_order: number[]) =>
+    request<SquadOut>("/squad/bench-order", {
       method: "POST",
-      body: JSON.stringify({ player_id, role }),
+      body: JSON.stringify({ starting_xi, bench_order }),
     }),
-  setBenchOrder: (bench_order: number[]) =>
-    request<SquadOut>("/squad/draft/bench-order", {
-      method: "POST",
-      body: JSON.stringify({ bench_order }),
-    }),
-  setDraftChip: (chip: string | null) =>
-    request<SquadOut>("/squad/draft/chip", { method: "POST", body: JSON.stringify({ chip }) }),
-  confirmDraft: () => request<SquadOut>("/squad/draft/confirm", { method: "POST" }),
   optimiseXi: () => request<SquadOut>("/squad/optimise-xi", { method: "POST" }),
-  wipeSquad: () => request<SquadOut>("/squad/wipe", { method: "POST" }),
+  optimise: (objective: "starting_xi" | "full_squad" = "starting_xi", captainMultiplier = 2.0) =>
+    request<SquadOut>("/squad/optimise", {
+      method: "POST",
+      body: JSON.stringify({ objective, captain_multiplier: captainMultiplier }),
+    }),
+  importSquad: (teamId: number) =>
+    request<SquadOut>("/squad/import", {
+      method: "POST",
+      body: JSON.stringify({ team_id: teamId }),
+    }),
 
-  getSquadPoints: (chip?: string | null, horizon: number = 1, source: "draft" | "committed" = "draft") =>
-    request<SquadPointsOut>(`/squad/points${query({ chip: chip ?? undefined, horizon, source })}`),
+  getSquadPoints: (chip?: string | null, horizon: number = 1) =>
+    request<SquadPointsOut>(`/squad/points${query({ chip: chip ?? undefined, horizon })}`),
 
   listPlayers: (filters: {
     position?: string;
@@ -332,8 +278,6 @@ export const api = {
   }) => request<PlayerPanelRowOut[]>(`/players${query(filters)}`),
   getPlayer: (playerId: number, gameweek?: number) =>
     request<PlayerDetailOut>(`/players/${playerId}${query({ gameweek })}`),
-
-  getRecommendedTransfer: () => request<TransferRecommendationOut | null>("/transfers/recommended"),
 
   getFixtureTicker: (horizon?: number) =>
     request<FixtureTickerRowOut[]>(`/fixtures${query({ horizon })}`),

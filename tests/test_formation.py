@@ -10,7 +10,7 @@ from features.team_state import SquadPlayer
 
 
 def _squad_player(player_id: int, position: str) -> SquadPlayer:
-    return SquadPlayer(player_id=player_id, position=position, purchase_price=50, current_price=50)
+    return SquadPlayer(player_id=player_id, position=position, price=50)
 
 
 def _standard_squad() -> tuple[SquadPlayer, ...]:

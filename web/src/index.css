@@ -267,6 +267,22 @@ button {
   background: var(--accent-hover);
 }
 
+.import-team-form {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.import-team-form input {
+  width: 8rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
 /* --- Chip bar --- */
 
 .chip-bar {
@@ -281,7 +297,7 @@ button {
   box-shadow: var(--shadow-card);
 }
 
-.chip button {
+.chip-bar button {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0.5rem 1rem;
@@ -292,60 +308,10 @@ button {
   cursor: pointer;
 }
 
-.chip-active button {
+.chip-bar button.chip-active {
   background: var(--gold-soft);
   border-color: var(--gold);
   color: #7a5a1a;
-}
-
-.chip-used button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.chip-previewing button {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-
-.play-chip-button {
-  margin-left: 0.4rem;
-  background: var(--accent) !important;
-  color: white !important;
-  border-color: var(--accent) !important;
-}
-
-.play-chip-button:hover {
-  background: var(--accent-hover) !important;
-}
-
-/* --- Draft compare bar --- */
-
-.draft-compare-bar {
-  background: var(--gold-soft);
-  border: 1px solid var(--gold);
-  border-radius: var(--radius-md);
-  padding: 0.6rem 1rem;
-  margin-bottom: 1rem;
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.draft-compare-bar .arrow {
-  color: var(--text-muted);
-}
-
-.delta-positive {
-  color: var(--high-text);
-  font-weight: 700;
-}
-
-.delta-negative {
-  color: var(--low-text);
-  font-weight: 700;
 }
 
 /* --- Main content layout --- */
@@ -356,56 +322,12 @@ button {
   align-items: flex-start;
 }
 
-.squad-column {
-  flex: 2;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
 .pitch {
   background: #eef6f0;
   border: 1px solid #d9e8dd;
   border-radius: var(--radius-lg);
   padding: 1.25rem 1rem 1rem;
-}
-
-.transfer-recommendation-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  background: var(--surface);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-lg);
-  padding: 0.85rem 1.25rem;
-  box-shadow: var(--shadow-card);
-}
-
-.transfer-recommendation-banner.empty {
-  border-color: var(--border);
-  color: var(--text-muted);
-  font-size: 0.85rem;
-  justify-content: flex-start;
-}
-
-.transfer-recommendation-text {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
-.transfer-recommendation-swap {
-  font-weight: 600;
-}
-
-.transfer-recommendation-swap .arrow {
-  color: var(--text-muted);
-}
-
-.transfer-recommendation-reasoning {
-  font-size: 0.8rem;
-  color: var(--text-muted);
+  flex: 2;
 }
 
 .pitch-row {
@@ -825,43 +747,7 @@ button {
   font-size: 0.8rem;
 }
 
-/* --- Build summary (assembling or rebuilding a squad) --- */
-
-.build-summary {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  margin-bottom: 1rem;
-  font-weight: 600;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
-/* --- Confirm bar / toast --- */
-
-.draft-confirm-bar {
-  position: sticky;
-  bottom: 1rem;
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 1rem;
-}
-
-.draft-confirm-bar button {
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: var(--radius-md);
-  padding: 0.7rem 1.6rem;
-  font-weight: 700;
-  font-size: 0.9rem;
-  cursor: pointer;
-  box-shadow: 0 4px 14px rgba(15, 125, 111, 0.3);
-}
-
-.draft-confirm-bar button:hover {
-  background: var(--accent-hover);
-}
+/* --- Toast --- */
 
 .rule-violation-toast {
   background: var(--danger);
