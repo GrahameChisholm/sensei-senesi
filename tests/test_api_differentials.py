@@ -13,13 +13,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.state as state_module
+from api.squad_state import SquadState
 from engine.aggregate import ComponentBreakdown
 from engine.data.player_history import PlayerGameweekActual
 from engine.models.minutes import MinutesDistribution
 from engine.projections import project_player_gameweek, project_player_horizon
 from engine.scoring import FWD, MID
-from features.squad_draft import CommittedSquad
-from features.team_state import MyTeamState, SquadPlayer
+from features.team_state import SquadPlayer
 
 
 def _minutes() -> MinutesDistribution:
@@ -93,7 +93,7 @@ def _full_squad_containing(player_id: int, position: str):
     ids = list(range(1001, 1016))
     ids[slot] = player_id
     players = tuple(
-        SquadPlayer(player_id=pid, position=pos, purchase_price=50, current_price=50)
+        SquadPlayer(player_id=pid, position=pos, price=50)
         for pid, pos in zip(ids, positions, strict=True)
     )
     return players
@@ -246,23 +246,17 @@ def test_requested_window_larger_than_played_gameweeks_clamps(client: TestClient
     assert window["requested_gameweeks"] == 20
 
 
-def test_hide_owned_excludes_a_player_in_the_committed_squad(client: TestClient):
+def test_hide_owned_excludes_a_player_in_the_squad(client: TestClient):
     squad = _full_squad_containing(1, MID)
     squad_ids = [p.player_id for p in squad]
-    starting_xi = tuple(squad_ids[:11])
-    bench_order = tuple(squad_ids[11:])
-    team_state = MyTeamState(
+    state = SquadState(
         squad=squad,
-        starting_xi=starting_xi,
-        bench_order=bench_order,
-        captain_id=starting_xi[0],
-        vice_captain_id=starting_xi[1],
-        bank=0,
-        free_transfers=1,
-        chips_remaining=frozenset(),
+        starting_xi=tuple(squad_ids[:11]),
+        bench_order=tuple(squad_ids[11:]),
+        captain_id=squad_ids[0],
+        vice_captain_id=squad_ids[1],
     )
-    committed = CommittedSquad(team_state=team_state, committed_gameweek=7)
-    state_module.set_squad_state(committed, None)
+    state_module.set_squad_state(state)
 
     response = client.get("/players/differentials")
 
@@ -273,20 +267,14 @@ def test_hide_owned_excludes_a_player_in_the_committed_squad(client: TestClient)
 def test_hide_owned_false_keeps_the_owned_player(client: TestClient):
     squad = _full_squad_containing(1, MID)
     squad_ids = [p.player_id for p in squad]
-    starting_xi = tuple(squad_ids[:11])
-    bench_order = tuple(squad_ids[11:])
-    team_state = MyTeamState(
+    state = SquadState(
         squad=squad,
-        starting_xi=starting_xi,
-        bench_order=bench_order,
-        captain_id=starting_xi[0],
-        vice_captain_id=starting_xi[1],
-        bank=0,
-        free_transfers=1,
-        chips_remaining=frozenset(),
+        starting_xi=tuple(squad_ids[:11]),
+        bench_order=tuple(squad_ids[11:]),
+        captain_id=squad_ids[0],
+        vice_captain_id=squad_ids[1],
     )
-    committed = CommittedSquad(team_state=team_state, committed_gameweek=7)
-    state_module.set_squad_state(committed, None)
+    state_module.set_squad_state(state)
 
     response = client.get("/players/differentials", params={"hide_owned": False})
 
@@ -294,7 +282,7 @@ def test_hide_owned_false_keeps_the_owned_player(client: TestClient):
     assert 1 in player_ids
 
 
-def test_no_squad_committed_yet_does_not_error_with_hide_owned(client: TestClient):
+def test_no_squad_yet_does_not_error_with_hide_owned(client: TestClient):
     response = client.get("/players/differentials", params={"hide_owned": True})
 
     assert response.status_code == 200

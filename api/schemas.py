@@ -18,9 +18,7 @@ class RuleViolationOut(BaseModel):
 class SquadPlayerOut(BaseModel):
     player_id: int
     position: str
-    purchase_price: int
-    current_price: int
-    sell_price: int
+    price: int
 
 
 class ComponentBreakdownOut(BaseModel):
@@ -61,33 +59,18 @@ class GameweekOut(BaseModel):
     model_version: str
 
 
-class TeamStateOut(BaseModel):
+class SquadOut(BaseModel):
+    """The one live sandbox squad — 0 to 15 players, no confirm step. ``is_complete`` is true once
+    all 15 slots are filled and captain/vice are set."""
+
     squad: list[SquadPlayerOut]
     starting_xi: list[int]
     bench_order: list[int]
-    captain_id: int
-    vice_captain_id: int
-    bank: int
-    free_transfers: int
-    chips_remaining: list[str]
-
-
-class DraftOut(BaseModel):
-    base_gameweek: int
-    working_state: TeamStateOut
-    transfers_made: int
-    chip: str | None
-
-
-class SquadOut(BaseModel):
+    captain_id: int | None
+    vice_captain_id: int | None
     is_complete: bool
-    committed: TeamStateOut | None
-    build_picks: list[SquadPlayerOut] | None
-    active_chip: str | None
-    active_chip_gameweek: int | None
-    chips_available: list[str]
-    draft: DraftOut | None
-    last_hit_cost: int | None = None
+    budget_ceiling: int
+    budget_remaining: int
 
 
 class SquadPointsOut(BaseModel):
@@ -233,19 +216,6 @@ class DifferentialsResponseOut(BaseModel):
     rows: list[DifferentialRowOut]
 
 
-class TransferRecommendationOut(BaseModel):
-    sell_player_id: int
-    sell_player_name: str
-    buy_player_id: int
-    buy_player_name: str
-    buy_price: int
-    position: str
-    net_points_gain: float
-    hit_cost: int
-    is_forced: bool
-    reasoning: str
-
-
 # --- request bodies ------------------------------------------------------------------------
 
 
@@ -255,37 +225,19 @@ class AddPlayerIn(BaseModel):
     price: int
 
 
-class SubstituteIn(BaseModel):
-    out_id: int
-    in_id: int
-
-
-class TransferIn(BaseModel):
-    out_id: int
-    in_id: int
-    in_price: int
-    in_position: str
-
-
 class CaptainIn(BaseModel):
     player_id: int
     role: str  # "captain" | "vice"
 
 
 class BenchOrderIn(BaseModel):
-    bench_order: list[int]
-
-
-class ChipIn(BaseModel):
-    chip: str | None = None
-
-
-class ConfirmSquadIn(BaseModel):
-    player_ids: list[int]
     starting_xi: list[int]
     bench_order: list[int]
-    captain_id: int
-    vice_captain_id: int
+
+
+class OptimiseIn(BaseModel):
+    objective: str = "starting_xi"  # "starting_xi" | "full_squad" (Bench Boost active)
+    captain_multiplier: float = 2.0  # 3.0 under Triple Captain
 
 
 class ImportSquadIn(BaseModel):

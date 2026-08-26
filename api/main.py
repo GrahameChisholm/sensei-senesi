@@ -19,45 +19,29 @@ from api.differentials_panel import build_differential_rows
 from api.fixtures_view import DEFAULT_FIXTURE_TICKER_HORIZON, build_fixture_ticker_rows
 from api.panel import build_panel_rows, build_team_fixture_map
 from api.player_stats_panel import build_player_stats_rows
-from api.state import (
-    get_app_state,
-    get_build_picks,
-    get_squad_state,
-    set_build_picks,
-    set_squad_state,
-)
+from api.squad_state import SquadState
+from api.state import get_app_state, get_squad_state, set_squad_state
 from engine.data.fpl_client import FPLClient, FPLClientError
 from engine.data.team_state_builder import build_my_team_state
-from features.chip_calendar import available_chips_this_gameweek
 from features.differentials import DEFAULT_WINDOW_GAMEWEEKS, build_differentials
 from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
-from features.squad_draft import (
-    CommittedSquad,
-    apply_optimise_xi_to_draft,
-    apply_reorder_bench_to_draft,
-    apply_set_captain_to_draft,
-    apply_set_vice_captain_to_draft,
-    apply_substitute_to_draft,
-    apply_transfer_to_draft,
-    confirm_draft,
-    confirm_imported_squad,
-    confirm_initial_squad,
-    open_draft,
-    set_draft_chip,
-)
+from features.squad_optimizer import PlayerCandidate, SquadOptimizerError, optimise_squad
 from features.squad_points import projected_points
 from features.squad_rules import (
-    MAX_PER_CLUB,
+    INITIAL_BUDGET,
+    SQUAD_SIZE,
     RuleViolation,
     SquadRuleError,
+    add_player,
+    assemble_team_state,
     optimise_xi,
+    remove_player,
     set_captain,
     set_vice_captain,
-    transfer,
+    validate_xi,
 )
-from features.team_state import SquadPlayer
-from features.transfers import TransferCandidate, find_transfer_candidates
+from features.team_state import MyTeamState, SquadPlayer
 
 app = FastAPI(title="FPL Assistant API", version="0.1.0")
 
@@ -82,6 +66,16 @@ def _squad_rule_error_handler(request: Request, exc: SquadRuleError) -> JSONResp
             message=exc.violation.message,
             player_ids=list(exc.violation.player_ids),
         ).model_dump(),
+    )
+
+
+@app.exception_handler(SquadOptimizerError)
+def _squad_optimizer_error_handler(request: Request, exc: SquadOptimizerError) -> JSONResponse:
+    """A distinct 500, not 400: an infeasible optimizer call means the player pool (given the
+    caller's locked picks, budget, and real prices) has no legal completion -- a data/state
+    problem, not a malformed request."""
+    return JSONResponse(
+        status_code=500, content={"code": "infeasible", "message": str(exc), "player_ids": []}
     )
 
 
@@ -153,59 +147,91 @@ def get_gameweek() -> schemas.GameweekOut:
 
 def _squad_player_out(player: SquadPlayer) -> schemas.SquadPlayerOut:
     return schemas.SquadPlayerOut(
-        player_id=player.player_id,
-        position=player.position,
-        purchase_price=player.purchase_price,
-        current_price=player.current_price,
-        sell_price=player.sell_price,
+        player_id=player.player_id, position=player.position, price=player.price
     )
 
 
-def _team_state_out(team_state) -> schemas.TeamStateOut:
-    return schemas.TeamStateOut(
-        squad=[_squad_player_out(player) for player in team_state.squad],
-        starting_xi=list(team_state.starting_xi),
-        bench_order=list(team_state.bench_order),
+def _squad_out() -> schemas.SquadOut:
+    state = get_squad_state()
+    is_complete = (
+        len(state.squad) == SQUAD_SIZE
+        and state.captain_id is not None
+        and state.vice_captain_id is not None
+    )
+    budget_remaining = state.budget_ceiling - sum(player.price for player in state.squad)
+    return schemas.SquadOut(
+        squad=[_squad_player_out(player) for player in state.squad],
+        starting_xi=list(state.starting_xi),
+        bench_order=list(state.bench_order),
+        captain_id=state.captain_id,
+        vice_captain_id=state.vice_captain_id,
+        is_complete=is_complete,
+        budget_ceiling=state.budget_ceiling,
+        budget_remaining=budget_remaining,
+    )
+
+
+def _reconcile_after_squad_change(
+    state: SquadState, new_squad: tuple[SquadPlayer, ...]
+) -> SquadState:
+    """After an add/remove changes the squad's membership, keep starting_xi/bench_order/captain/
+    vice consistent with it. Below 15 players there's no legal starting XI to speak of, so those
+    fields are cleared; back at 15, the best XI is auto-derived (:func:`~features.squad_rules
+    .assemble_team_state`), preferring to keep the existing captain/vice if they're still eligible
+    so an incidental swap elsewhere doesn't reset the armband."""
+    if len(new_squad) != SQUAD_SIZE:
+        return replace(
+            state,
+            squad=new_squad,
+            starting_xi=(),
+            bench_order=(),
+            captain_id=None,
+            vice_captain_id=None,
+        )
+    app_state = get_app_state()
+    team_state = assemble_team_state(
+        new_squad,
+        app_state.expected_points(),
+        app_state.team_id_by_player,
+        budget=state.budget_ceiling,
+        preferred_captain_id=state.captain_id,
+        preferred_vice_captain_id=state.vice_captain_id,
+    )
+    return replace(
+        state,
+        squad=team_state.squad,
+        starting_xi=team_state.starting_xi,
+        bench_order=team_state.bench_order,
         captain_id=team_state.captain_id,
         vice_captain_id=team_state.vice_captain_id,
-        bank=team_state.bank,
-        free_transfers=team_state.free_transfers,
-        chips_remaining=sorted(team_state.chips_remaining),
     )
 
 
-def _squad_out(last_hit_cost: int | None = None) -> schemas.SquadOut:
-    app_state = get_app_state()
-    committed, pending = get_squad_state()
+def _require_team_state() -> tuple[SquadState, MyTeamState]:
+    state = get_squad_state()
+    if len(state.squad) != SQUAD_SIZE or state.captain_id is None or state.vice_captain_id is None:
+        raise HTTPException(400, "no complete 15-player squad yet")
+    team_state = MyTeamState(
+        squad=state.squad,
+        starting_xi=state.starting_xi,
+        bench_order=state.bench_order,
+        captain_id=state.captain_id,
+        vice_captain_id=state.vice_captain_id,
+        mini_league_ids=state.mini_league_ids,
+    )
+    return state, team_state
 
-    build_picks_out = None
-    if committed.team_state is None:
-        build_picks_out = [_squad_player_out(player) for player in get_build_picks()]
 
-    draft_out = None
-    if pending is not None:
-        draft_out = schemas.DraftOut(
-            base_gameweek=pending.base_gameweek,
-            working_state=_team_state_out(pending.working_state),
-            transfers_made=pending.transfers_made,
-            chip=pending.chip,
+def _save_team_state(state: SquadState, team_state: MyTeamState) -> None:
+    set_squad_state(
+        replace(
+            state,
+            squad=team_state.squad,
+            starting_xi=team_state.starting_xi,
+            bench_order=team_state.bench_order,
+            captain_id=team_state.captain_id,
+            vice_captain_id=team_state.vice_captain_id,
         )
-
-    chips_available = sorted(
-        available_chips_this_gameweek(committed.chip_usage, app_state.gameweek)
-    )
-
-    return schemas.SquadOut(
-        is_complete=committed.team_state is not None,
-        committed=(
-            _team_state_out(committed.team_state) if committed.team_state is not None else None
-        ),
-        build_picks=build_picks_out,
-        active_chip=committed.active_chip,
-        active_chip_gameweek=committed.active_chip_gameweek,
-        chips_available=chips_available,
-        draft=draft_out,
-        last_hit_cost=last_hit_cost,
     )
 
 
@@ -214,41 +240,45 @@ def get_squad() -> schemas.SquadOut:
     return _squad_out()
 
 
-@app.post("/squad/wipe", response_model=schemas.SquadOut)
-def wipe_squad() -> schemas.SquadOut:
-    """Sandbox reset, by explicit product direction overriding TEAM_PAGE_PLAN D21 ("a full wipe
-    is just repeated free transfers within a Wildcard/Free Hit draft, not a separate action").
-    D21 modelled this page as a faithful simulation of FPL's real transfer economy, where a
-    squad's value is only ever realised at real sell prices, one swap at a time. The team
-    selection page is instead meant to work as a sandbox for exploring squad ideas, constrained
-    only by the classic legality rules (£100m budget, 2/5/5/3 quota, max 3 per club --
-    :func:`~features.squad_rules.validate_squad`), not by what the current squad happens to be
-    worth.
-
-    Discards the committed squad, any pending draft, and every build pick, dropping straight back
-    to the empty-budget build screen (D6) as if no squad had ever been confirmed -- the same
-    state :func:`~api.state.get_squad_state` already produces for a manager who has never built
-    one, so this reuses that exact path rather than adding a new "empty squad" representation.
-    Chip usage resets too, since a fresh squad has no history to have spent a chip against.
-    """
+@app.post("/squad/players", response_model=schemas.SquadOut)
+def add_squad_player(body: schemas.AddPlayerIn) -> schemas.SquadOut:
+    state = get_squad_state()
     app_state = get_app_state()
-    set_squad_state(CommittedSquad(team_state=None, committed_gameweek=app_state.gameweek), None)
-    set_build_picks([])
+    player = SquadPlayer(body.player_id, body.position, body.price)
+    new_squad = add_player(state.squad, player, app_state.team_id_by_player, state.budget_ceiling)
+    set_squad_state(_reconcile_after_squad_change(state, new_squad))
+    return _squad_out()
+
+
+@app.delete("/squad/players/{player_id}", response_model=schemas.SquadOut)
+def remove_squad_player(player_id: int) -> schemas.SquadOut:
+    state = get_squad_state()
+    new_squad = remove_player(state.squad, player_id)
+    set_squad_state(_reconcile_after_squad_change(state, new_squad))
+    return _squad_out()
+
+
+@app.delete("/squad/players", response_model=schemas.SquadOut)
+def clear_squad() -> schemas.SquadOut:
+    """Sandbox reset: empties the squad and resets the personal budget ceiling back to the
+    classic £100m (:data:`~features.squad_rules.INITIAL_BUDGET`) — the team-selection page is a
+    sandbox for exploring squad ideas, constrained only by the classic legality rules, not by what
+    the current squad happens to be worth."""
+    mini_league_ids = get_squad_state().mini_league_ids
+    set_squad_state(SquadState(mini_league_ids=mini_league_ids))
     return _squad_out()
 
 
 @app.post("/squad/import", response_model=schemas.SquadOut)
 def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
-    """Import a real FPL manager's current squad by their team (entry) ID (TEAM_PAGE_PLAN D6 /
-    section 18 -- deferred until GW1 locks, since :func:`~engine.data.team_state_builder
-    .build_my_team_state` had nothing to import before then; it does now).
+    """Import a real FPL manager's current squad by their team (entry) ID.
 
     Fetches live from the official FPL API at request time -- a team ID is per-request user input
-    with no precomputable form, unlike projections (D7's "the API never fetches or computes on
-    request" is about not recomputing those; it doesn't cover reading a manager's own squad by
-    their own ID). Overwrites whatever squad/draft/build-pick state currently exists, same as
-    :func:`wipe_squad`, since re-importing is meant to be usable any time as a re-sync, not just
-    once at onboarding.
+    with no precomputable form, unlike projections (the API never fetches or computes those on
+    request; it doesn't cover reading a manager's own squad by their own ID). Overwrites whatever
+    squad currently exists and recomputes the personal budget ceiling from this squad's total
+    current value, floored at the classic £100m, since re-importing is meant to be usable any time
+    as a re-sync, not just once at onboarding.
 
     Picks are fetched for ``entry["current_event"]``, not ``app_state.gameweek``: FPL only has a
     ``picks`` record for a gameweek once its deadline has passed, or the manager has explicitly
@@ -261,272 +291,120 @@ def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
         try:
             entry = client.get_entry(payload.team_id)
             picks = client.get_entry_picks(payload.team_id, entry["current_event"])
-            transfers = client.get_entry_transfers(payload.team_id)
-            history = client.get_entry_history(payload.team_id)
             elements = pd.DataFrame(client.get_bootstrap_static()["elements"])
         except FPLClientError as exc:
             raise ValueError(f"could not import FPL team {payload.team_id}: {exc}") from exc
 
-    team_state = build_my_team_state(picks, entry, transfers, history, elements, app_state.gameweek)
-    committed = confirm_imported_squad(
-        team_state, app_state.team_id_by_player, history.get("chips", []), app_state.gameweek
-    )
-    set_squad_state(committed, None)
-    set_build_picks([])
-    return _squad_out()
-
-
-# --- build mode (D6/D23): assembling the very first squad from an empty £100m ------------------
-
-
-@app.post("/squad/build/players", response_model=schemas.SquadOut)
-def add_build_player(body: schemas.AddPlayerIn) -> schemas.SquadOut:
-    committed, _ = get_squad_state()
-    if committed.team_state is not None:
-        raise HTTPException(400, "a squad already exists -- use /squad/draft to edit it instead")
-    picks = get_build_picks()
-    if any(player.player_id == body.player_id for player in picks):
-        raise SquadRuleError(
-            RuleViolation(
-                "duplicate", f"player {body.player_id} is already picked", (body.player_id,)
-            )
+    team_state = build_my_team_state(picks, elements, app_state.team_id_by_player)
+    budget_ceiling = max(sum(player.price for player in team_state.squad), INITIAL_BUDGET)
+    mini_league_ids = get_squad_state().mini_league_ids
+    set_squad_state(
+        SquadState(
+            squad=team_state.squad,
+            starting_xi=team_state.starting_xi,
+            bench_order=team_state.bench_order,
+            captain_id=team_state.captain_id,
+            vice_captain_id=team_state.vice_captain_id,
+            mini_league_ids=mini_league_ids,
+            budget_ceiling=budget_ceiling,
         )
-    set_build_picks([*picks, SquadPlayer(body.player_id, body.position, body.price, body.price)])
-    return _squad_out()
-
-
-@app.delete("/squad/build/players/{player_id}", response_model=schemas.SquadOut)
-def remove_build_player(player_id: int) -> schemas.SquadOut:
-    committed, _ = get_squad_state()
-    if committed.team_state is not None:
-        raise HTTPException(400, "a squad already exists")
-    picks = get_build_picks()
-    set_build_picks([player for player in picks if player.player_id != player_id])
-    return _squad_out()
-
-
-@app.post("/squad/build/confirm", response_model=schemas.SquadOut)
-def confirm_build(body: schemas.ConfirmSquadIn) -> schemas.SquadOut:
-    """The very first commit (D23) — requires an explicit action once the picks satisfy every
-    rule; it never happens automatically."""
-    committed, _ = get_squad_state()
-    if committed.team_state is not None:
-        raise HTTPException(400, "a squad already exists")
-    picks_by_id = {player.player_id: player for player in get_build_picks()}
-    if set(body.player_ids) != set(picks_by_id):
-        raise SquadRuleError(
-            RuleViolation(
-                "incomplete_squad",
-                "confirmed player_ids must exactly match the current build picks",
-            )
-        )
-    squad = tuple(picks_by_id[player_id] for player_id in body.player_ids)
-
-    app_state = get_app_state()
-    new_committed = confirm_initial_squad(
-        squad=squad,
-        starting_xi=tuple(body.starting_xi),
-        bench_order=tuple(body.bench_order),
-        captain_id=body.captain_id,
-        vice_captain_id=body.vice_captain_id,
-        team_id_by_player=app_state.team_id_by_player,
-        gameweek=app_state.gameweek,
     )
-    set_squad_state(new_committed, None)
-    set_build_picks([])
     return _squad_out()
 
 
-# --- editing an existing squad (D16): preview-then-confirm --------------------------------------
-
-
-def _require_committed_squad():
-    committed, _ = get_squad_state()
-    if committed.team_state is None:
-        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
-    return committed
-
-
-def _require_open_draft():
-    committed, pending = get_squad_state()
-    if committed.team_state is None:
-        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
-    if pending is None:
-        raise SquadRuleError(
-            RuleViolation("no_pending_draft", "no draft is open -- call POST /squad/draft first")
-        )
-    return committed, pending
-
-
-@app.post("/squad/draft", response_model=schemas.SquadOut)
-def open_edit_draft() -> schemas.SquadOut:
-    committed = _require_committed_squad()
-    app_state = get_app_state()
-    draft = open_draft(committed, app_state.gameweek)
-    set_squad_state(committed, draft)
-    return _squad_out()
-
-
-@app.delete("/squad/draft", response_model=schemas.SquadOut)
-def discard_edit_draft() -> schemas.SquadOut:
-    """D21 — "Reset team" discards only the pending draft, reverting to the last-confirmed squad."""
-    committed, _ = get_squad_state()
-    set_squad_state(committed, None)
-    return _squad_out()
-
-
-@app.post("/squad/draft/substitute", response_model=schemas.SquadOut)
-def draft_substitute(body: schemas.SubstituteIn) -> schemas.SquadOut:
-    committed, pending = _require_open_draft()
-    app_state = get_app_state()
-    new_draft = apply_substitute_to_draft(
-        pending, body.out_id, body.in_id, app_state.position_by_player
-    )
-    set_squad_state(committed, new_draft)
-    return _squad_out()
-
-
-@app.post("/squad/draft/transfer", response_model=schemas.SquadOut)
-def draft_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
-    committed, pending = _require_open_draft()
-    app_state = get_app_state()
-    new_draft = apply_transfer_to_draft(
-        pending,
-        body.out_id,
-        body.in_id,
-        body.in_price,
-        body.in_position,
-        app_state.team_id_by_player,
-    )
-    set_squad_state(committed, new_draft)
-    return _squad_out()
-
-
-def _require_live_committed():
-    """Shared guard for the direct-mutation endpoints below: validates there's a committed squad
-    already and no draft happens to be open."""
-    app_state = get_app_state()
-    committed, pending = get_squad_state()
-    if committed.team_state is None:
-        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
-    if pending is not None:
-        raise HTTPException(400, "a draft is unexpectedly open -- confirm or discard it first")
-    return app_state, committed
-
-
-@app.post("/squad/live-transfer", response_model=schemas.SquadOut)
-def live_transfer(body: schemas.TransferIn) -> schemas.SquadOut:
-    """The live team page's only transfer path: swap a player straight in and out of the real
-    committed squad, no draft/preview, no hit cost, no free-transfer accounting. This page is a
-    planning tool for a season that hasn't been played yet, not a simulation of FPL's
-    transfer-limit rules.
-    """
-    app_state, committed = _require_live_committed()
-    new_team_state = transfer(
-        committed.team_state,
-        body.out_id,
-        body.in_id,
-        body.in_price,
-        body.in_position,
-        app_state.team_id_by_player,
-    )
-    set_squad_state(replace(committed, team_state=new_team_state), None)
-    return _squad_out()
-
-
-@app.post("/squad/live-captain", response_model=schemas.SquadOut)
-def live_captain(body: schemas.CaptainIn) -> schemas.SquadOut:
-    """The live team page's captain/vice-captain path -- same direct-mutation shape as
-    :func:`live_transfer`, just simpler: captaincy never carries a hit cost, so there's nothing
-    to bypass beyond the preview step itself."""
-    _, committed = _require_live_committed()
+@app.post("/squad/captain", response_model=schemas.SquadOut)
+def set_squad_captain(body: schemas.CaptainIn) -> schemas.SquadOut:
+    state, team_state = _require_team_state()
     if body.role == "captain":
-        new_team_state = set_captain(committed.team_state, body.player_id)
+        new_team_state = set_captain(team_state, body.player_id)
     elif body.role == "vice":
-        new_team_state = set_vice_captain(committed.team_state, body.player_id)
+        new_team_state = set_vice_captain(team_state, body.player_id)
     else:
         raise HTTPException(400, "role must be 'captain' or 'vice'")
-    set_squad_state(replace(committed, team_state=new_team_state), None)
+    _save_team_state(state, new_team_state)
     return _squad_out()
 
 
-@app.post("/squad/draft/captain", response_model=schemas.SquadOut)
-def draft_captain(body: schemas.CaptainIn) -> schemas.SquadOut:
-    committed, pending = _require_open_draft()
-    if body.role == "captain":
-        new_draft = apply_set_captain_to_draft(pending, body.player_id)
-    elif body.role == "vice":
-        new_draft = apply_set_vice_captain_to_draft(pending, body.player_id)
-    else:
-        raise HTTPException(400, "role must be 'captain' or 'vice'")
-    set_squad_state(committed, new_draft)
-    return _squad_out()
-
-
-@app.post("/squad/draft/bench-order", response_model=schemas.SquadOut)
-def draft_bench_order(body: schemas.BenchOrderIn) -> schemas.SquadOut:
-    committed, pending = _require_open_draft()
-    new_draft = apply_reorder_bench_to_draft(pending, body.bench_order)
-    set_squad_state(committed, new_draft)
-    return _squad_out()
-
-
-@app.post("/squad/draft/chip", response_model=schemas.SquadOut)
-def draft_chip(body: schemas.ChipIn) -> schemas.SquadOut:
-    """D18: setting a chip on the draft is itself free — it is only actually spent when the draft
-    is confirmed (:func:`confirm_edit_draft`)."""
-    committed, pending = _require_open_draft()
-    new_draft = set_draft_chip(pending, body.chip)
-    set_squad_state(committed, new_draft)
-    return _squad_out()
-
-
-@app.post("/squad/draft/confirm", response_model=schemas.SquadOut)
-def confirm_edit_draft() -> schemas.SquadOut:
-    committed, pending = _require_open_draft()
-    app_state = get_app_state()
-    new_committed, hit_cost = confirm_draft(
-        committed, pending, app_state.gameweek, app_state.deadline_passed
+@app.post("/squad/bench-order", response_model=schemas.SquadOut)
+def set_squad_bench_order(body: schemas.BenchOrderIn) -> schemas.SquadOut:
+    """Set the starting XI/bench partition directly — covers moving a player between XI and
+    bench, and reordering the bench, in one call."""
+    state, team_state = _require_team_state()
+    position_by_player = {player.player_id: player.position for player in state.squad}
+    violations = validate_xi(body.starting_xi, position_by_player)
+    if violations:
+        raise SquadRuleError(violations[0])
+    squad_ids = set(team_state.player_ids)
+    new_xi, new_bench = set(body.starting_xi), set(body.bench_order)
+    if new_xi | new_bench != squad_ids or new_xi & new_bench:
+        raise SquadRuleError(
+            RuleViolation("xi_shape", "starting_xi + bench_order must exactly partition the squad")
+        )
+    new_team_state = replace(
+        team_state, starting_xi=tuple(body.starting_xi), bench_order=tuple(body.bench_order)
     )
-    set_squad_state(new_committed, None)
-    return _squad_out(last_hit_cost=hit_cost)
+    _save_team_state(state, new_team_state)
+    return _squad_out()
 
 
 @app.post("/squad/optimise-xi", response_model=schemas.SquadOut)
 def optimise_lineup() -> schemas.SquadOut:
-    """D22 — applies immediately, no draft/confirm step: it only ever rearranges players already
-    owned (the currently open draft's, if one exists, else the committed squad directly)."""
-    committed, pending = get_squad_state()
-    if committed.team_state is None:
-        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
+    """Re-derive the best legal XI/bench from the current 15 — applies immediately, since it only
+    ever rearranges players already owned."""
+    state, team_state = _require_team_state()
     app_state = get_app_state()
-    expected_points = app_state.expected_points()
-    if pending is not None:
-        new_draft = apply_optimise_xi_to_draft(pending, expected_points)
-        set_squad_state(committed, new_draft)
-    else:
-        new_team_state = optimise_xi(committed.team_state, expected_points)
-        set_squad_state(replace(committed, team_state=new_team_state), None)
+    new_team_state = optimise_xi(team_state, app_state.expected_points())
+    _save_team_state(state, new_team_state)
+    return _squad_out()
+
+
+@app.post("/squad/optimise", response_model=schemas.SquadOut)
+def auto_build_squad(body: schemas.OptimiseIn) -> schemas.SquadOut:
+    """The best-possible-squad solver: keeps whatever's currently in the squad and fills any
+    remaining slots with the legal combination that maximizes projected points (an empty squad and
+    a squad missing a few players are the same call — nothing already picked is ever locked
+    differently). ``objective="full_squad"`` should be passed when Bench Boost is active, since
+    bench points count then and are worth spending budget on.
+    """
+    state = get_squad_state()
+    app_state = get_app_state()
+    candidates = [
+        PlayerCandidate(
+            player_id=player_id,
+            position=app_state.position_by_player[player_id],
+            team_id=app_state.team_id_by_player[player_id],
+            price=app_state.buy_prices[player_id],
+            expected_points=horizon.horizon_total_points,
+        )
+        for player_id, horizon in app_state.projections.items()
+        if player_id in app_state.buy_prices
+    ]
+    locked_player_ids = frozenset(player.player_id for player in state.squad)
+    result = optimise_squad(
+        candidates,
+        locked_player_ids=locked_player_ids,
+        objective=body.objective,
+        captain_multiplier=body.captain_multiplier,
+        budget=state.budget_ceiling,
+    )
+    set_squad_state(
+        replace(
+            state,
+            squad=result.squad,
+            starting_xi=result.starting_xi,
+            bench_order=result.bench_order,
+            captain_id=result.captain_id,
+            vice_captain_id=result.vice_captain_id,
+        )
+    )
     return _squad_out()
 
 
 @app.get("/squad/points", response_model=schemas.SquadPointsOut)
-def get_squad_points(
-    chip: str | None = None, horizon: int = 1, source: str = "draft"
-) -> schemas.SquadPointsOut:
-    """The free chip-preview path (D18): pass ``chip`` to see what the total would be without
-    spending anything. Scored against the open draft by default (``source="draft"``, falling back
-    to the committed squad if none is open) — pass ``source="committed"`` to score the
-    last-confirmed squad regardless, which is what D19's before/after rebuild comparison needs
-    while a draft is open.
-    """
-    committed, pending = get_squad_state()
-    if source == "committed":
-        team_state = committed.team_state
-    else:
-        team_state = pending.working_state if pending is not None else committed.team_state
-    if team_state is None:
-        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
+def get_squad_points(chip: str | None = None, horizon: int = 1) -> schemas.SquadPointsOut:
+    """Pass ``chip`` (``"bench_boost"`` or ``"triple_captain"``) to preview points under that
+    toggle — it's stateless, nothing is "spent" or remembered between calls."""
+    _, team_state = _require_team_state()
     app_state = get_app_state()
     gameweeks = app_state.horizon_gameweeks[: max(horizon, 1)] or [app_state.gameweek]
     result = projected_points(team_state, app_state.projections, gameweeks, chip=chip)
@@ -538,67 +416,6 @@ def get_squad_points(
         per_player={str(player_id): points for player_id, points in result.per_player.items()},
         per_gameweek={str(gw): points for gw, points in result.per_gameweek.items()},
         missing_player_ids=list(result.missing_player_ids),
-    )
-
-
-def _respects_club_quota(
-    team_state, candidate: TransferCandidate, team_id_by_player: dict[int, int]
-) -> bool:
-    """``find_transfer_candidates`` only checks position match and budget -- it has no concept of
-    the max-3-per-club rule. Filtering here (rather than in ``features/transfers.py``) keeps that
-    module's scope as a pure points comparator and guarantees the one recommendation this endpoint
-    surfaces always applies cleanly."""
-    counts: dict[int, int] = {}
-    for player in team_state.squad:
-        team_id = team_id_by_player.get(player.player_id)
-        counts[team_id] = counts.get(team_id, 0) + 1
-    counts[team_id_by_player[candidate.sell_player_id]] -= 1
-    buy_team_id = team_id_by_player[candidate.buy_player_id]
-    counts[buy_team_id] = counts.get(buy_team_id, 0) + 1
-    return counts[buy_team_id] <= MAX_PER_CLUB
-
-
-@app.get("/transfers/recommended", response_model=schemas.TransferRecommendationOut | None)
-def get_recommended_transfer() -> schemas.TransferRecommendationOut | None:
-    """The one headline transfer suggestion, evaluated against whichever squad is currently
-    loaded (the open draft's working state if any, else the committed squad) over the full
-    projection horizon, independent of this page's Next GW / Next 3 GWs toggle -- a transfer is a
-    multi-gameweek commitment regardless of which window is on screen."""
-    committed, pending = get_squad_state()
-    team_state = pending.working_state if pending is not None else committed.team_state
-    if team_state is None:
-        raise HTTPException(400, "no committed squad yet -- build and confirm one first")
-    app_state = get_app_state()
-    plan = find_transfer_candidates(
-        team_state, app_state.projections, app_state.projections, app_state.buy_prices
-    )
-    # affordable_candidates is already sorted by net_points_gain descending, so filtering
-    # preserves that order.
-    legal = [
-        c
-        for c in plan.affordable_candidates
-        if _respects_club_quota(team_state, c, app_state.team_id_by_player)
-    ]
-    forced = [c for c in legal if c.is_forced]
-    if forced:
-        candidate = max(forced, key=lambda c: c.net_points_gain)
-    else:
-        candidate = legal[0] if legal and legal[0].net_points_gain > 0 else None
-    if candidate is None:
-        return None
-
-    player_names = {pid: data["web_name"] for pid, data in app_state.players.items()}
-    return schemas.TransferRecommendationOut(
-        sell_player_id=candidate.sell_player_id,
-        sell_player_name=player_names.get(candidate.sell_player_id, "?"),
-        buy_player_id=candidate.buy_player_id,
-        buy_player_name=player_names.get(candidate.buy_player_id, "?"),
-        buy_price=candidate.buy_price,
-        position=candidate.position,
-        net_points_gain=candidate.net_points_gain,
-        hit_cost=candidate.hit_cost,
-        is_forced=candidate.is_forced,
-        reasoning=candidate.reasoning,
     )
 
 
@@ -792,12 +609,8 @@ def list_differentials(
     )
 
     if hide_owned:
-        committed, _ = get_squad_state()
-        owned_ids = (
-            {player.player_id for player in committed.team_state.squad}
-            if committed.team_state is not None
-            else set()
-        )
+        squad_state = get_squad_state()
+        owned_ids = {player.player_id for player in squad_state.squad}
         differentials = [d for d in differentials if d.player_id not in owned_ids]
 
     fixture_map = build_team_fixture_map(app_state.fixtures)
