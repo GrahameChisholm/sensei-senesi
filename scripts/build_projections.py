@@ -288,6 +288,12 @@ def _serialize_player_history(history: list[PlayerGameweekActual]) -> list[dict]
             "expected_assists": actual.expected_assists,
             "expected_goal_involvements": actual.expected_goal_involvements,
             "expected_goals_conceded": actual.expected_goals_conceded,
+            "selected": actual.selected,
+            "starts": actual.starts,
+            "value": actual.value,
+            "transfers_in": actual.transfers_in,
+            "transfers_out": actual.transfers_out,
+            "bps": actual.bps,
         }
         for actual in history
     ]

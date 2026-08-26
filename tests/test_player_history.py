@@ -33,6 +33,12 @@ def _history_row(**overrides) -> dict:
         "expected_assists": 0.0,
         "expected_goal_involvements": 0.0,
         "expected_goals_conceded": 0.0,
+        "selected": 19933,
+        "starts": 1,
+        "value": 50,
+        "transfers_in": 0,
+        "transfers_out": 0,
+        "bps": 0,
     }
     row.update(overrides)
     return row
@@ -110,6 +116,70 @@ def test_load_live_player_history_defaults_missing_expected_stats_fields():
     result = load_live_player_history(client, [1])
 
     assert result[1][0].expected_goals == 0.0
+
+
+def test_load_live_player_history_reads_differentials_fields():
+    """DIFFERENTIALS_PLAN Phase 1: selected/starts/value/transfers_in/transfers_out/bps, all
+    previously discarded on ingestion."""
+    client = _StubClient(
+        {
+            1: {
+                "history": [
+                    _history_row(
+                        selected=123456,
+                        starts=1,
+                        value=55,
+                        transfers_in=1000,
+                        transfers_out=200,
+                        bps=28,
+                    )
+                ]
+            }
+        }
+    )
+
+    result = load_live_player_history(client, [1])
+    actual = result[1][0]
+
+    assert actual.selected == 123456
+    assert actual.starts == 1
+    assert actual.value == 55
+    assert actual.transfers_in == 1000
+    assert actual.transfers_out == 200
+    assert actual.bps == 28
+
+
+def test_load_live_player_history_defaults_missing_differentials_fields_to_none():
+    """A row missing these keys entirely (an old cached export, not a live FPL response) must
+    read as unknown, not as zero -- a zero ``selected`` would be indistinguishable from "owned by
+    nobody" and would poison an ownership-trend calculation. See the module docstring."""
+    row = _history_row()
+    for key in ("selected", "starts", "value", "transfers_in", "transfers_out", "bps"):
+        del row[key]
+    client = _StubClient({1: {"history": [row]}})
+
+    result = load_live_player_history(client, [1])
+    actual = result[1][0]
+
+    assert actual.selected is None
+    assert actual.starts is None
+    assert actual.value is None
+    assert actual.transfers_in is None
+    assert actual.transfers_out is None
+    assert actual.bps is None
+
+
+def test_player_gameweek_actual_defaults_differentials_fields_to_none():
+    """Constructing PlayerGameweekActual without the new fields (an old cache deserialized via
+    PlayerGameweekActual(**data)) must not raise, and must leave them as None."""
+    actual = _actual()
+
+    assert actual.selected is None
+    assert actual.starts is None
+    assert actual.value is None
+    assert actual.transfers_in is None
+    assert actual.transfers_out is None
+    assert actual.bps is None
 
 
 # --- actual_points_for_gameweek --------------------------------------------------------------

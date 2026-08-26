@@ -10,11 +10,14 @@ from datetime import UTC, datetime
 
 import pandas as pd
 
+from api.state import _player_actual_from_dict
 from engine.aggregate import ComponentBreakdown
 from engine.data.cold_start import fit_cold_start_priors
+from engine.data.player_history import PlayerGameweekActual
 from engine.models.minutes import MinutesDistribution
 from engine.projections import project_player_gameweek, project_player_horizon
 from scripts.build_projections import (
+    _serialize_player_history,
     assemble_projection_cache,
     build_fixture_list,
     merge_cold_start_projections,
@@ -395,3 +398,88 @@ class TestWriteProjectionCache:
 
         path = tmp_path / "2026-27" / "gw01.json"
         assert json.loads(path.read_text())["v"] == "new"
+
+
+class TestSerializePlayerHistoryRoundTrip:
+    """DIFFERENTIALS_PLAN Phase 1: selected/starts/value/transfers_in/transfers_out/bps must
+    survive the full write -> JSON -> api.state read cycle, and an old cache missing them must
+    still load, with all six coming back as None rather than raising or defaulting to 0."""
+
+    def _actual(self, **overrides) -> PlayerGameweekActual:
+        base = dict(
+            gameweek=1,
+            minutes=90,
+            goals_scored=1,
+            assists=0,
+            clean_sheets=0,
+            goals_conceded=1,
+            own_goals=0,
+            penalties_saved=0,
+            penalties_missed=0,
+            saves=0,
+            yellow_cards=0,
+            red_cards=0,
+            bonus=2,
+            defensive_contribution=0,
+            total_points=7,
+            expected_goals=0.8,
+            expected_assists=0.1,
+            expected_goal_involvements=0.9,
+            expected_goals_conceded=1.1,
+            selected=123456,
+            starts=1,
+            value=55,
+            transfers_in=1000,
+            transfers_out=200,
+            bps=28,
+        )
+        base.update(overrides)
+        return PlayerGameweekActual(**base)
+
+    def test_new_fields_round_trip_through_json(self):
+        import json
+
+        serialized = _serialize_player_history([self._actual()])
+        reloaded = json.loads(json.dumps(serialized))
+        actual = _player_actual_from_dict(reloaded[0])
+
+        assert actual.selected == 123456
+        assert actual.starts == 1
+        assert actual.value == 55
+        assert actual.transfers_in == 1000
+        assert actual.transfers_out == 200
+        assert actual.bps == 28
+
+    def test_a_cache_written_before_these_fields_existed_still_loads(self):
+        """Simulates an old on-disk cache: the dict simply has no keys for the six new fields,
+        the same shape ``_serialize_player_history`` produced before this change."""
+        old_style_row = {
+            "gameweek": 1,
+            "minutes": 90,
+            "goals_scored": 1,
+            "assists": 0,
+            "clean_sheets": 0,
+            "goals_conceded": 1,
+            "own_goals": 0,
+            "penalties_saved": 0,
+            "penalties_missed": 0,
+            "saves": 0,
+            "yellow_cards": 0,
+            "red_cards": 0,
+            "bonus": 2,
+            "defensive_contribution": 0,
+            "total_points": 7,
+            "expected_goals": 0.8,
+            "expected_assists": 0.1,
+            "expected_goal_involvements": 0.9,
+            "expected_goals_conceded": 1.1,
+        }
+
+        actual = _player_actual_from_dict(old_style_row)
+
+        assert actual.selected is None
+        assert actual.starts is None
+        assert actual.value is None
+        assert actual.transfers_in is None
+        assert actual.transfers_out is None
+        assert actual.bps is None

@@ -11,6 +11,16 @@ every component -- see :func:`actual_points_for_gameweek`'s docstring for the tw
 recomputed) where per-gameweek order of operations matters (PLAYER_STATS_PLAN's G4 note). Every
 component here mirrors :func:`engine.aggregate.aggregate_gameweek`'s own lines, just driven by
 what actually happened instead of what was projected.
+
+``selected``, ``starts``, ``value``, ``transfers_in``, ``transfers_out``, and ``bps``
+(DIFFERENTIALS_PLAN Phase 1) are read the same way but were previously discarded on ingestion.
+Each defaults to ``None`` rather than a zero-like placeholder, both here and on
+:class:`PlayerGameweekActual` itself -- a cache written before these fields existed deserializes
+straight into ``None`` for all six (:class:`~api.state.AppState`'s loader passes a plain dict
+through ``PlayerGameweekActual(**data)``, so an absent key needs a real default). ``selected``
+defaulting to ``0`` in particular would be indistinguishable from "owned by nobody", and ownership
+trend is computed by differencing ``selected`` across gameweeks -- a stale cache would then produce
+a confident, wrong, flat trend for every player instead of an honest unknown.
 """
 
 from __future__ import annotations
@@ -69,6 +79,13 @@ class PlayerGameweekActual:
     expected_assists: float
     expected_goal_involvements: float
     expected_goals_conceded: float
+    # DIFFERENTIALS_PLAN Phase 1 -- see module docstring for why these default to None, not 0.
+    selected: int | None = None
+    starts: int | None = None
+    value: int | None = None
+    transfers_in: int | None = None
+    transfers_out: int | None = None
+    bps: int | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +105,13 @@ class ActualComponentPoints:
     cards: float
     penalty_misses: float
     own_goals: float
+
+
+def _optional_int(row: dict, key: str) -> int | None:
+    """``row[key]`` as ``int``, or ``None`` when the key is absent -- distinct from ``0``, which
+    is a real, meaningful value for several of these fields (see module docstring)."""
+    value = row.get(key)
+    return None if value is None else int(value)
 
 
 def _actual_from_history_row(row: dict) -> PlayerGameweekActual:
@@ -111,6 +135,12 @@ def _actual_from_history_row(row: dict) -> PlayerGameweekActual:
         expected_assists=float(row.get("expected_assists", 0.0)),
         expected_goal_involvements=float(row.get("expected_goal_involvements", 0.0)),
         expected_goals_conceded=float(row.get("expected_goals_conceded", 0.0)),
+        selected=_optional_int(row, "selected"),
+        starts=_optional_int(row, "starts"),
+        value=_optional_int(row, "value"),
+        transfers_in=_optional_int(row, "transfers_in"),
+        transfers_out=_optional_int(row, "transfers_out"),
+        bps=_optional_int(row, "bps"),
     )
 
 
