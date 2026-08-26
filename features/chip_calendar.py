@@ -11,19 +11,31 @@ grant a chip.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import Any
 
 from features.team_state import CHIPS
 
 __all__ = [
     "FIRST_HALF_LAST_GAMEWEEK",
+    "FPL_CHIP_CODE_TO_NAME",
     "ChipUsage",
     "available_chips_this_gameweek",
     "record_chip_played",
+    "chip_usage_from_fpl_history",
 ]
 
 # GW19/20 boundary: real FPL's own half-season split point.
 FIRST_HALF_LAST_GAMEWEEK = 19
+
+# FPL's own API uses terser, different codes for its chips than this repo's names (CHIPS above).
+FPL_CHIP_CODE_TO_NAME: Mapping[str, str] = {
+    "wildcard": "wildcard",
+    "freehit": "free_hit",
+    "3xc": "triple_captain",
+    "bboost": "bench_boost",
+}
 
 
 @dataclass(frozen=True)
@@ -69,3 +81,23 @@ def record_chip_played(usage: ChipUsage, chip: str, gameweek: int) -> ChipUsage:
     if gameweek <= FIRST_HALF_LAST_GAMEWEEK:
         return replace(usage, first_half_played=usage.first_half_played | {chip})
     return replace(usage, second_half_played=usage.second_half_played | {chip})
+
+
+def chip_usage_from_fpl_history(
+    chips_played: Sequence[Mapping[str, Any]],
+    first_half_last_gameweek: int = FIRST_HALF_LAST_GAMEWEEK,
+) -> ChipUsage:
+    """Reconstruct a :class:`ChipUsage` from :meth:`~engine.data.fpl_client.FPLClient
+    .get_entry_history`'s own ``chips`` list (raw FPL chip codes, translated through
+    :data:`FPL_CHIP_CODE_TO_NAME`) — the live-import counterpart to :func:`record_chip_played`'s
+    own bookkeeping, for a manager whose chips were played before their squad was ever imported
+    into this app."""
+    first_half: set[str] = set()
+    second_half: set[str] = set()
+    for chip in chips_played:
+        name = FPL_CHIP_CODE_TO_NAME.get(chip["name"], chip["name"])
+        event = int(chip["event"])
+        (first_half if event <= first_half_last_gameweek else second_half).add(name)
+    return ChipUsage(
+        first_half_played=frozenset(first_half), second_half_played=frozenset(second_half)
+    )

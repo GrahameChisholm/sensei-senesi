@@ -81,6 +81,18 @@ def test_compute_chips_remaining_excludes_chips_played_this_half():
     assert remaining == frozenset(CHIPS) - {"wildcard"}
 
 
+def test_compute_chips_remaining_translates_fpl_raw_chip_codes():
+    # FPL's own API uses "freehit"/"3xc"/"bboost", not this repo's "free_hit"/"triple_captain"/
+    # "bench_boost" -- these must still be excluded, not silently ignored.
+    chips_played = [
+        {"name": "freehit", "event": 3},
+        {"name": "3xc", "event": 5},
+        {"name": "bboost", "event": 7},
+    ]
+    remaining = compute_chips_remaining(chips_played, current_gameweek=10)
+    assert remaining == frozenset(CHIPS) - {"free_hit", "triple_captain", "bench_boost"}
+
+
 def test_compute_chips_remaining_resets_after_the_half_boundary():
     chips_played = [{"name": "wildcard", "event": 5}]  # played in the first half
     remaining = compute_chips_remaining(

@@ -4,7 +4,7 @@ serialisation-only shapes over the real ``features/`` dataclasses. No FPL rule l
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RuleViolationOut(BaseModel):
@@ -286,3 +286,7 @@ class ConfirmSquadIn(BaseModel):
     bench_order: list[int]
     captain_id: int
     vice_captain_id: int
+
+
+class ImportSquadIn(BaseModel):
+    team_id: int = Field(gt=0)

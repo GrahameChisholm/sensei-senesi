@@ -12,8 +12,10 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+import api.main as api_main
 import api.state as state_module
 from engine.aggregate import ComponentBreakdown
+from engine.data.fpl_client import FPLClientError
 from engine.models.minutes import MinutesDistribution
 from engine.projections import project_player_gameweek, project_player_horizon
 from engine.scoring import DEF, FWD, GK, MID
@@ -156,6 +158,46 @@ def _confirm_build(client: TestClient) -> dict:
     )
     assert response.status_code == 200, response.json()
     return response.json()
+
+
+_ELEMENT_TYPE_BY_POSITION = {GK: 1, DEF: 2, MID: 3, FWD: 4}
+
+
+def _fpl_picks_payload() -> dict:
+    starting_ids = [GK1, *DEF_IDS[:4], *MID_IDS[:4], *FWD_IDS[:2]]
+    bench_ids = [DEF_IDS[4], MID_IDS[4], FWD_IDS[2], GK2]
+    picks = [
+        {
+            "element": pid,
+            "position": i,
+            "multiplier": 2 if pid == MID_IDS[0] else 1,
+            "is_captain": pid == MID_IDS[0],
+            "is_vice_captain": pid == MID_IDS[1],
+        }
+        for i, pid in enumerate(starting_ids, start=1)
+    ]
+    picks += [
+        {
+            "element": pid,
+            "position": i,
+            "multiplier": 1,
+            "is_captain": False,
+            "is_vice_captain": False,
+        }
+        for i, pid in enumerate(bench_ids, start=12)
+    ]
+    return {"active_chip": None, "picks": picks}
+
+
+def _fpl_elements_payload(now_cost: int = 45) -> list[dict]:
+    return [
+        {
+            "id": pid,
+            "now_cost": now_cost,
+            "element_type": _ELEMENT_TYPE_BY_POSITION[_position_for(pid)],
+        }
+        for pid in ALL_IDS
+    ]
 
 
 class TestHealthAndGameweek:
@@ -310,6 +352,119 @@ class TestWipeSquad:
         body = _confirm_build(client)
         assert body["is_complete"] is True
         assert len(body["committed"]["squad"]) == 15
+
+
+class TestImportSquad:
+    """POST /squad/import -- fetches a real manager's squad live via FPLClient (monkeypatched
+    here) and commits it via features.squad_draft.confirm_imported_squad."""
+
+    def _stub_client(
+        self,
+        monkeypatch,
+        *,
+        entry=None,
+        transfers=None,
+        history=None,
+        error=None,
+        now_cost=45,
+        picks_gameweeks_seen=None,
+    ):
+        entry = entry if entry is not None else {"last_deadline_bank": 55, "current_event": 1}
+        transfers = transfers if transfers is not None else []
+        history = history if history is not None else {"current": [], "chips": []}
+        picks = _fpl_picks_payload()
+        elements = _fpl_elements_payload(now_cost)
+
+        class _StubFPLClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def get_entry(self, entry_id):
+                if error is not None:
+                    raise error
+                return entry
+
+            def get_entry_picks(self, entry_id, gameweek):
+                if picks_gameweeks_seen is not None:
+                    picks_gameweeks_seen.append(gameweek)
+                return picks
+
+            def get_entry_transfers(self, entry_id):
+                return transfers
+
+            def get_entry_history(self, entry_id):
+                return history
+
+            def get_bootstrap_static(self):
+                return {"elements": elements}
+
+        monkeypatch.setattr(api_main, "FPLClient", lambda: _StubFPLClient())
+
+    def test_imports_a_real_squad(self, client, monkeypatch):
+        self._stub_client(
+            monkeypatch, history={"current": [], "chips": [{"name": "wildcard", "event": 2}]}
+        )
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200, response.json()
+        body = response.json()
+        assert body["is_complete"] is True
+        assert body["committed"]["bank"] == 55
+        assert len(body["committed"]["squad"]) == 15
+        assert "wildcard" not in body["chips_available"]
+
+    def test_purchase_price_falls_back_to_current_price_with_no_transfer_record(
+        self, client, monkeypatch
+    ):
+        self._stub_client(monkeypatch, now_cost=45)
+        response = client.post("/squad/import", json={"team_id": 123456})
+        body = response.json()
+        assert all(p["purchase_price"] == 45 for p in body["committed"]["squad"])
+
+    def test_squad_over_100m_via_price_rises_is_accepted(self, client, monkeypatch):
+        # Real squads legitimately drift above £100m of nominal spend as prices rise; the import
+        # path must not reject that the way confirm_initial_squad's from-scratch check would.
+        self._stub_client(monkeypatch, now_cost=100)
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200, response.json()
+        assert response.json()["committed"]["bank"] == 55
+
+    def test_overwrites_an_existing_committed_squad(self, client, monkeypatch):
+        _build_full_squad(client)
+        _confirm_build(client)
+        self._stub_client(monkeypatch)
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200
+        assert response.json()["committed"]["bank"] == 55
+
+    def test_unreachable_team_id_surfaces_as_a_400(self, client, monkeypatch):
+        self._stub_client(monkeypatch, error=FPLClientError("team not found"))
+        response = client.post("/squad/import", json={"team_id": 999999})
+        assert response.status_code == 400
+        body = response.json()
+        assert "team not found" in body["message"]
+
+    def test_non_positive_team_id_is_rejected(self, client):
+        response = client.post("/squad/import", json={"team_id": 0})
+        assert response.status_code == 422
+
+    def test_fetches_picks_for_entrys_current_event_not_app_states_gameweek(
+        self, client, monkeypatch
+    ):
+        # A real manager's picks/{gw} 404s until that gameweek's deadline or a saved transfer --
+        # entry["current_event"] is the gameweek that actually has a picks record, which can lag
+        # behind app_state.gameweek (the app's own target gameweek, currently 1 in this fixture).
+        seen = []
+        self._stub_client(
+            monkeypatch,
+            entry={"last_deadline_bank": 55, "current_event": 7},
+            picks_gameweeks_seen=seen,
+        )
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200, response.json()
+        assert seen == [7]
 
 
 class TestEditDraftLifecycle:

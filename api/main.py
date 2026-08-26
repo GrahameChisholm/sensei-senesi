@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -25,6 +26,8 @@ from api.state import (
     set_build_picks,
     set_squad_state,
 )
+from engine.data.fpl_client import FPLClient, FPLClientError
+from engine.data.team_state_builder import build_my_team_state
 from features.chip_calendar import available_chips_this_gameweek
 from features.differentials import DEFAULT_WINDOW_GAMEWEEKS, build_differentials
 from features.player_stats import build_actual_stats_by_player
@@ -38,6 +41,7 @@ from features.squad_draft import (
     apply_substitute_to_draft,
     apply_transfer_to_draft,
     confirm_draft,
+    confirm_imported_squad,
     confirm_initial_squad,
     open_draft,
     set_draft_chip,
@@ -229,6 +233,45 @@ def wipe_squad() -> schemas.SquadOut:
     """
     app_state = get_app_state()
     set_squad_state(CommittedSquad(team_state=None, committed_gameweek=app_state.gameweek), None)
+    set_build_picks([])
+    return _squad_out()
+
+
+@app.post("/squad/import", response_model=schemas.SquadOut)
+def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
+    """Import a real FPL manager's current squad by their team (entry) ID (TEAM_PAGE_PLAN D6 /
+    section 18 -- deferred until GW1 locks, since :func:`~engine.data.team_state_builder
+    .build_my_team_state` had nothing to import before then; it does now).
+
+    Fetches live from the official FPL API at request time -- a team ID is per-request user input
+    with no precomputable form, unlike projections (D7's "the API never fetches or computes on
+    request" is about not recomputing those; it doesn't cover reading a manager's own squad by
+    their own ID). Overwrites whatever squad/draft/build-pick state currently exists, same as
+    :func:`wipe_squad`, since re-importing is meant to be usable any time as a re-sync, not just
+    once at onboarding.
+
+    Picks are fetched for ``entry["current_event"]``, not ``app_state.gameweek``: FPL only has a
+    ``picks`` record for a gameweek once its deadline has passed, or the manager has explicitly
+    saved a transfer for it -- before that, the upcoming gameweek's picks endpoint 404s and
+    ``current_event`` is the most recent gameweek that does have one (the manager's real current
+    squad either way, since nothing has changed since).
+    """
+    app_state = get_app_state()
+    with FPLClient() as client:
+        try:
+            entry = client.get_entry(payload.team_id)
+            picks = client.get_entry_picks(payload.team_id, entry["current_event"])
+            transfers = client.get_entry_transfers(payload.team_id)
+            history = client.get_entry_history(payload.team_id)
+            elements = pd.DataFrame(client.get_bootstrap_static()["elements"])
+        except FPLClientError as exc:
+            raise ValueError(f"could not import FPL team {payload.team_id}: {exc}") from exc
+
+    team_state = build_my_team_state(picks, entry, transfers, history, elements, app_state.gameweek)
+    committed = confirm_imported_squad(
+        team_state, app_state.team_id_by_player, history.get("chips", []), app_state.gameweek
+    )
+    set_squad_state(committed, None)
     set_build_picks([])
     return _squad_out()
 

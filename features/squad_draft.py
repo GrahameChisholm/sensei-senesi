@@ -26,7 +26,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from features.chip_calendar import ChipUsage, available_chips_this_gameweek, record_chip_played
+from features.chip_calendar import (
+    ChipUsage,
+    available_chips_this_gameweek,
+    chip_usage_from_fpl_history,
+    record_chip_played,
+)
 from features.squad_rules import (
     INITIAL_BUDGET,
     RuleViolation,
@@ -47,6 +52,7 @@ __all__ = [
     "PendingDraft",
     "CommittedSquad",
     "confirm_initial_squad",
+    "confirm_imported_squad",
     "open_draft",
     "apply_substitute_to_draft",
     "apply_transfer_to_draft",
@@ -146,6 +152,46 @@ def confirm_initial_squad(
         chips_remaining=available_chips_this_gameweek(chip_usage, gameweek),
     )
     return CommittedSquad(team_state=team_state, chip_usage=chip_usage, committed_gameweek=gameweek)
+
+
+def confirm_imported_squad(
+    team_state: MyTeamState,
+    team_id_by_player: Mapping[int, int],
+    chips_played: Sequence[Mapping[str, object]],
+    gameweek: int,
+) -> CommittedSquad:
+    """Commit a squad imported from a real FPL manager's team ID (D6/section 18 of TEAM_PAGE_PLAN
+    — deferred until GW1 locks; see :func:`~engine.data.team_state_builder.build_my_team_state`,
+    the function that plan named for this job), now that it has.
+
+    Unlike :func:`confirm_initial_squad`, this skips the from-scratch budget check
+    (:data:`~features.squad_rules.INITIAL_BUDGET`) — ``team_state.bank`` already reflects this
+    manager's real transfer history, not a fresh £100m, and a manager who has banked price-rise
+    profit can legitimately hold a squad whose purchase-price sum exceeds it. Quota, club-limit,
+    and XI-shape are still validated defensively, same as ``confirm_initial_squad``.
+
+    ``chips_played`` is FPL's own raw ``entry/{id}/history/``'s ``chips`` list — reconstructed via
+    :func:`~features.chip_calendar.chip_usage_from_fpl_history` so a chip this manager already
+    played in real FPL can't be played again in this app.
+    """
+    position_by_player = {player.player_id: player.position for player in team_state.squad}
+    _raise_first(validate_squad(team_state.squad, team_id_by_player, check_budget=False))
+    _raise_first(validate_xi(team_state.starting_xi, position_by_player))
+
+    squad_ids = {player.player_id for player in team_state.squad}
+    bench_ids = squad_ids - set(team_state.starting_xi)
+    if set(team_state.bench_order) != bench_ids:
+        raise SquadRuleError(
+            RuleViolation("xi_shape", "bench_order must be exactly the squad minus the starting XI")
+        )
+
+    chip_usage = chip_usage_from_fpl_history(chips_played)
+    new_team_state = replace(
+        team_state, chips_remaining=available_chips_this_gameweek(chip_usage, gameweek)
+    )
+    return CommittedSquad(
+        team_state=new_team_state, chip_usage=chip_usage, committed_gameweek=gameweek
+    )
 
 
 def open_draft(committed: CommittedSquad, gameweek: int) -> PendingDraft:

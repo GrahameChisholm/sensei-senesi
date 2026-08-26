@@ -20,6 +20,7 @@ from features.squad_draft import (
     apply_substitute_to_draft,
     apply_transfer_to_draft,
     confirm_draft,
+    confirm_imported_squad,
     confirm_initial_squad,
     open_draft,
     set_draft_chip,
@@ -109,6 +110,49 @@ class TestConfirmInitialSquad:
         assert committed.chip_usage == ChipUsage()
         assert committed.team_state.chips_remaining == frozenset(
             {"wildcard", "free_hit", "bench_boost", "triple_captain"}
+        )
+
+
+class TestConfirmImportedSquad:
+    def _team_state(self):
+        return _initial_committed().team_state
+
+    def test_accepts_a_squad_over_initial_budget(self):
+        # A real manager's squad can legitimately cost more than INITIAL_BUDGET via banked
+        # price-rise profit -- confirm_imported_squad must not reject that.
+        team_state = self._team_state()
+        pricey_squad = tuple(
+            replace(p, purchase_price=p.purchase_price + 500) if p.player_id == GK1 else p
+            for p in team_state.squad
+        )
+        team_state = replace(team_state, squad=pricey_squad)
+        committed = confirm_imported_squad(
+            team_state, _team_id_by_player(), chips_played=[], gameweek=1
+        )
+        assert committed.team_state is not None
+        assert sum(p.purchase_price for p in committed.team_state.squad) > 1000
+
+    def test_illegal_squad_still_raises(self):
+        team_state = self._team_state()
+        bad_squad = tuple(
+            replace(p, position=DEF) if p.player_id == GK2 else p for p in team_state.squad
+        )
+        team_state = replace(team_state, squad=bad_squad)
+        with pytest.raises(SquadRuleError):
+            confirm_imported_squad(team_state, _team_id_by_player(), chips_played=[], gameweek=1)
+
+    def test_seeds_chip_usage_from_fpl_history(self):
+        team_state = self._team_state()
+        chips_played = [{"name": "freehit", "event": 5}, {"name": "3xc", "event": 25}]
+        committed = confirm_imported_squad(
+            team_state, _team_id_by_player(), chips_played=chips_played, gameweek=6
+        )
+        assert committed.chip_usage == ChipUsage(
+            first_half_played=frozenset({"free_hit"}),
+            second_half_played=frozenset({"triple_captain"}),
+        )
+        assert committed.team_state.chips_remaining == frozenset(
+            {"wildcard", "bench_boost", "triple_captain"}
         )
 
 

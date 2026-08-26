@@ -21,6 +21,7 @@ from typing import Any
 import pandas as pd
 
 from engine.scoring import ELEMENT_TYPE_TO_POSITION
+from features.chip_calendar import FPL_CHIP_CODE_TO_NAME
 from features.team_state import CHIPS, MyTeamState, SquadPlayer
 
 __all__ = [
@@ -114,11 +115,16 @@ def compute_chips_remaining(
 ) -> frozenset[str]:
     """Which chips are still playable this half-season, from
     :meth:`~engine.data.fpl_client.FPLClient.get_entry_history`'s own ``chips`` list (one entry
-    per chip already played this season, each carrying ``name``/``event``) — BUILD_PLAN 4's "one
-    full set per half", resetting at ``first_half_last_gameweek``.
+    per chip already played this season, each carrying ``name``/``event``, ``name`` in FPL's own
+    raw codes translated through :data:`~features.chip_calendar.FPL_CHIP_CODE_TO_NAME`) —
+    BUILD_PLAN 4's "one full set per half", resetting at ``first_half_last_gameweek``.
     """
     half_start = 1 if current_gameweek <= first_half_last_gameweek else first_half_last_gameweek + 1
-    played_this_half = {chip["name"] for chip in chips_played if int(chip["event"]) >= half_start}
+    played_this_half = {
+        FPL_CHIP_CODE_TO_NAME.get(chip["name"], chip["name"])
+        for chip in chips_played
+        if int(chip["event"]) >= half_start
+    }
     return frozenset(CHIPS) - played_this_half
 
 
