@@ -185,6 +185,52 @@ export interface PlayerStatsRowOut {
   fixtures: FixtureCellOut[];
 }
 
+// --- Differentials page ---------------------------------------------------------------------
+
+export interface DifferentialsWindowOut {
+  gameweek_from: number;
+  gameweek_to: number;
+  requested_gameweeks: number;
+}
+
+export type Confidence = "low" | "medium" | "high";
+export type Archetype = "proven" | "emerging" | "riding_luck" | "none";
+
+export interface DifferentialRowOut {
+  player_id: number;
+  name: string;
+  team_id: number | null;
+  position: string;
+  price: number;
+  minutes: number;
+  apps_in_window: number;
+  starts_in_window: number | null;
+  points_per_90: number;
+  shrunk_points_per_90: number;
+  bracket_median_points_per_90: number;
+  surplus_vs_bracket: number;
+  confidence: Confidence;
+  xgi_per_90: number;
+  goals_assists_per_90: number;
+  luck_gap: number;
+  defensive_contribution_per_90: number;
+  bps_per_90: number | null;
+  return_frequency: number;
+  points_variance: number | null;
+  recent_vs_earlier_points_per_90: number | null;
+  minutes_trend: number | null;
+  current_ownership_percent: number | null;
+  ownership_trend_pct_per_gw: number | null;
+  net_transfers_per_gw: number | null;
+  archetype: Archetype;
+  fixtures: FixtureCellOut[];
+}
+
+export interface DifferentialsResponseOut {
+  window: DifferentialsWindowOut;
+  rows: DifferentialRowOut[];
+}
+
 export interface TransferRecommendationOut {
   sell_player_id: number;
   sell_player_name: string;
@@ -293,5 +339,13 @@ export const api = {
   getPlayerStats: (gameweekFrom: number, gameweekTo: number) =>
     request<PlayerStatsRowOut[]>(
       `/players/stats${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,
+    ),
+  getDifferentials: (window: number, maxOwnership?: number, hideOwned: boolean = true) =>
+    request<DifferentialsResponseOut>(
+      `/players/differentials${query({
+        window,
+        max_ownership: maxOwnership,
+        hide_owned: hideOwned,
+      })}`,
     ),
 };
