@@ -68,5 +68,6 @@ export function useSquad() {
     confirmDraft: () => run(() => api.confirmDraft()),
     optimiseXi: () => run(() => api.optimiseXi()),
     wipeSquad: () => run(() => api.wipeSquad()),
+    importSquad: (teamId: number) => run(() => api.importSquad(teamId)),
   };
 }

@@ -320,6 +320,8 @@ export const api = {
   confirmDraft: () => request<SquadOut>("/squad/draft/confirm", { method: "POST" }),
   optimiseXi: () => request<SquadOut>("/squad/optimise-xi", { method: "POST" }),
   wipeSquad: () => request<SquadOut>("/squad/wipe", { method: "POST" }),
+  importSquad: (teamId: number) =>
+    request<SquadOut>("/squad/import", { method: "POST", body: JSON.stringify({ team_id: teamId }) }),
 
   getSquadPoints: (chip?: string | null, horizon: number = 1, source: "draft" | "committed" = "draft") =>
     request<SquadPointsOut>(`/squad/points${query({ chip: chip ?? undefined, horizon, source })}`),

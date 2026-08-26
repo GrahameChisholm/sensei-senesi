@@ -1,4 +1,5 @@
 import { GameweekOut, SquadOut, SquadPointsOut } from "../api";
+import { ImportTeamForm } from "./ImportTeamForm";
 
 interface GameweekHeaderProps {
   gameweek: GameweekOut | null;
@@ -17,6 +18,10 @@ interface GameweekHeaderProps {
    * irreversible from here (unlike a marked-for-removal slot, there's no "Cancel all" once this
    * has been sent). */
   onWipeSquad: () => void;
+  /** Re-syncs the squad from a real FPL Team ID (POST /squad/import), overwriting whatever squad
+   * state currently exists -- usable any time, not just once at onboarding, since a manager's real
+   * team also changes over the season via their own transfers in the real FPL app. */
+  onImportSquad: (teamId: number) => void;
 }
 
 export function GameweekHeader({
@@ -29,6 +34,7 @@ export function GameweekHeader({
   onOptimise,
   onResetTeam,
   onWipeSquad,
+  onImportSquad,
 }: GameweekHeaderProps) {
   const teamState = squad.draft?.working_state ?? squad.committed;
   const transfersMade = squad.draft?.transfers_made ?? 0;
@@ -77,6 +83,10 @@ export function GameweekHeader({
         <button className="danger" onClick={onWipeSquad} title="Mark every player for removal so the squad can be rebuilt from scratch">
           Wipe squad
         </button>
+        <ImportTeamForm
+          onImport={onImportSquad}
+          confirmMessage="Import your real FPL team? This replaces your current squad, bank, and chip usage. This can't be undone."
+        />
         <button className="btn-primary" onClick={onOptimise}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18" />

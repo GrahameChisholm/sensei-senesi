@@ -11,6 +11,7 @@ import { GameweekHeader } from "../components/GameweekHeader";
 import { ChipBar } from "../components/ChipBar";
 import { DraftCompareBar } from "../components/DraftCompareBar";
 import { BuildPitch } from "../components/BuildPitch";
+import { ImportTeamForm } from "../components/ImportTeamForm";
 import { Pitch } from "../components/Pitch";
 import { PlayerPanel } from "../components/PlayerPanel";
 import { RuleViolationToast } from "../components/RuleViolationToast";
@@ -74,6 +75,7 @@ export function TeamSelection() {
           <button disabled={!isReadyToSave} onClick={() => void handleSaveTeam()}>
             Save team
           </button>
+          <ImportTeamForm onImport={(teamId) => squadState.importSquad(teamId)} />
         </div>
 
         <div className="main-content">
@@ -180,6 +182,10 @@ export function TeamSelection() {
           }
           setRemovingIds([]);
           await squadState.wipeSquad();
+        }}
+        onImportSquad={async (teamId) => {
+          setRemovingIds([]);
+          await squadState.importSquad(teamId);
         }}
       />
 
