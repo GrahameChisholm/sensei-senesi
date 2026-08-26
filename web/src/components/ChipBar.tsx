@@ -1,41 +1,35 @@
-import { SquadOut } from "../api";
-
-const CHIPS: { key: string; label: string }[] = [
-  { key: "bench_boost", label: "Bench Boost" },
-  { key: "triple_captain", label: "Triple Captain" },
-];
+export type ActiveChip = "bench_boost" | "triple_captain" | null;
 
 interface ChipBarProps {
-  squad: SquadOut;
-  previewChip: string | null;
-  onPreview: (chip: string | null) => void;
-  onPlay: (chip: string) => void;
+  activeChip: ActiveChip;
+  onChange: (chip: ActiveChip) => void;
 }
 
-export function ChipBar({ squad, previewChip, onPreview, onPlay }: ChipBarProps) {
+const CHIPS: { key: "bench_boost" | "triple_captain"; label: string; hint: string }[] = [
+  { key: "bench_boost", label: "Bench Boost", hint: "Count bench points toward the total" },
+  { key: "triple_captain", label: "Triple Captain", hint: "Triple the captain's points instead of doubling" },
+];
+
+/** Bench Boost/Triple Captain as plain, always-available toggles: no scarcity, no "used this
+ * half" tracking, no separate play step -- toggling one just changes how the predicted points
+ * total (and, for Bench Boost, an auto-build) are computed. Only one can be active at a time,
+ * since the points-preview call only ever takes a single chip. */
+export function ChipBar({ activeChip, onChange }: ChipBarProps) {
   return (
     <div className="chip-bar">
-      {CHIPS.map(({ key, label }) => {
-        const available = squad.chips_available.includes(key);
-        const active = squad.active_chip === key;
-        const previewing = previewChip === key;
+      {CHIPS.map(({ key, label, hint }) => {
+        const active = activeChip === key;
         return (
-          <div key={key} className={["chip", active ? "chip-active" : "", !available ? "chip-used" : ""].join(" ")}>
-            <button
-              disabled={!available && !active}
-              className={previewing ? "chip-previewing" : ""}
-              onClick={() => onPreview(previewing ? null : key)}
-              title={available ? "Preview this chip's effect on your predicted points" : "Already used this half of the season"}
-            >
-              {label}
-              {active && " (active)"}
-            </button>
-            {previewing && available && (
-              <button className="play-chip-button" onClick={() => onPlay(key)}>
-                Play {label}
-              </button>
-            )}
-          </div>
+          <button
+            key={key}
+            type="button"
+            aria-pressed={active}
+            className={active ? "chip-active" : ""}
+            title={hint}
+            onClick={() => onChange(active ? null : key)}
+          >
+            {label}
+          </button>
         );
       })}
     </div>

@@ -6,7 +6,6 @@ import {
   PlayerPanelRowOut,
   SquadPointsOut,
   TeamOut,
-  TransferRecommendationOut,
 } from "../api";
 
 /** Returns [gameweek, refresh] -- Season Replay's "Advance" moves the process-wide app state on to
@@ -62,7 +61,6 @@ export function useSquadPoints(
   chip: string | null,
   horizon: number,
   refreshKey: unknown,
-  source: "draft" | "committed" = "draft",
   enabled: boolean = true,
 ) {
   const [points, setPoints] = useState<SquadPointsOut | null>(null);
@@ -74,7 +72,7 @@ export function useSquadPoints(
     }
     let cancelled = false;
     api
-      .getSquadPoints(chip, horizon, source)
+      .getSquadPoints(chip, horizon)
       .then((result) => {
         if (!cancelled) setPoints(result);
       })
@@ -85,34 +83,9 @@ export function useSquadPoints(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chip, horizon, refreshKey, source, enabled]);
+  }, [chip, horizon, refreshKey, enabled]);
 
   return points;
-}
-
-/** Refetches whenever ``refreshKey`` (typically the ``squad`` object) changes, so the
- * recommendation stays in sync with whatever squad is currently loaded -- same dependency
- * shape as ``useSquadPoints``. */
-export function useTransferRecommendation(refreshKey: unknown): TransferRecommendationOut | null {
-  const [recommendation, setRecommendation] = useState<TransferRecommendationOut | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getRecommendedTransfer()
-      .then((result) => {
-        if (!cancelled) setRecommendation(result);
-      })
-      .catch(() => {
-        if (!cancelled) setRecommendation(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
-
-  return recommendation;
 }
 
 export function usePlayerPanel(filters: {
