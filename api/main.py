@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api import schemas
+from api.differentials_panel import build_differential_rows
 from api.fixtures_view import DEFAULT_FIXTURE_TICKER_HORIZON, build_fixture_ticker_rows
 from api.panel import build_panel_rows, build_team_fixture_map
 from api.player_stats_panel import build_player_stats_rows
@@ -25,6 +26,7 @@ from api.state import (
     set_squad_state,
 )
 from features.chip_calendar import available_chips_this_gameweek
+from features.differentials import DEFAULT_WINDOW_GAMEWEEKS, build_differentials
 from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
 from features.squad_draft import (
@@ -684,6 +686,109 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> list[schemas.Play
         )
         for row in rows
     ]
+
+
+@app.get("/players/differentials", response_model=schemas.DifferentialsResponseOut)
+def list_differentials(
+    window: int = DEFAULT_WINDOW_GAMEWEEKS,
+    max_ownership: float | None = None,
+    hide_owned: bool = True,
+) -> schemas.DifferentialsResponseOut:
+    """DIFFERENTIALS_PLAN Phase 3: players sustainedly outperforming their own position/price
+    bracket among low-owned players, ranked (client-side, D10) over a set of independent,
+    unblended columns rather than one composite score.
+
+    ``window`` is the requested gameweek count, clamped to whatever has actually been played this
+    season (D5/D6) -- the response's own ``window`` field reports the resolved range, since it
+    frequently differs from what was requested early in a season. ``max_ownership`` and
+    ``hide_owned`` are the two differentiating filters (D1): a player already in the committed
+    squad is excluded by default rather than shown as a "differential" against yourself.
+
+    Registered *before* ``/players/{player_id}`` below, for the same route-order reason
+    ``/players/stats`` above already documents -- a literal path registered after the
+    parameterised one gets swallowed by it.
+    """
+    app_state = get_app_state()
+    player_names = {pid: data["web_name"] for pid, data in app_state.players.items()}
+    ownership_by_player = {
+        pid: data.get("selected_by_percent") for pid, data in app_state.players.items()
+    }
+
+    resolved_window, differentials = build_differentials(
+        app_state.player_history,
+        app_state.position_by_player,
+        app_state.buy_prices,
+        latest_played_gameweek=app_state.gameweek - 1,
+        window_gameweeks=window,
+        current_ownership_by_player=ownership_by_player,
+        max_ownership_percent=max_ownership,
+    )
+
+    if hide_owned:
+        committed, _ = get_squad_state()
+        owned_ids = (
+            {player.player_id for player in committed.team_state.squad}
+            if committed.team_state is not None
+            else set()
+        )
+        differentials = [d for d in differentials if d.player_id not in owned_ids]
+
+    fixture_map = build_team_fixture_map(app_state.fixtures)
+    rows = build_differential_rows(
+        differentials,
+        player_names,
+        app_state.team_id_by_player,
+        app_state.projections,
+        fixture_map,
+        app_state.horizon_gameweeks,
+    )
+    return schemas.DifferentialsResponseOut(
+        window=schemas.DifferentialsWindowOut(
+            gameweek_from=resolved_window.gameweek_from,
+            gameweek_to=resolved_window.gameweek_to,
+            requested_gameweeks=resolved_window.requested_gameweeks,
+        ),
+        rows=[
+            schemas.DifferentialRowOut(
+                player_id=row.differential.player_id,
+                name=row.name,
+                team_id=row.team_id,
+                position=row.differential.position,
+                price=row.differential.price,
+                minutes=row.differential.minutes,
+                apps_in_window=row.differential.apps_in_window,
+                starts_in_window=row.differential.starts_in_window,
+                points_per_90=row.differential.points_per_90,
+                shrunk_points_per_90=row.differential.shrunk_points_per_90,
+                bracket_median_points_per_90=row.differential.bracket_median_points_per_90,
+                surplus_vs_bracket=row.differential.surplus_vs_bracket,
+                confidence=row.differential.confidence.value,
+                xgi_per_90=row.differential.xgi_per_90,
+                goals_assists_per_90=row.differential.goals_assists_per_90,
+                luck_gap=row.differential.luck_gap,
+                defensive_contribution_per_90=row.differential.defensive_contribution_per_90,
+                bps_per_90=row.differential.bps_per_90,
+                return_frequency=row.differential.return_frequency,
+                points_variance=row.differential.points_variance,
+                recent_vs_earlier_points_per_90=row.differential.recent_vs_earlier_points_per_90,
+                minutes_trend=row.differential.minutes_trend,
+                current_ownership_percent=row.differential.current_ownership_percent,
+                ownership_trend_pct_per_gw=row.differential.ownership_trend_pct_per_gw,
+                net_transfers_per_gw=row.differential.net_transfers_per_gw,
+                archetype=row.differential.archetype.value,
+                fixtures=[
+                    schemas.FixtureCellOut(
+                        gameweek=cell.gameweek,
+                        opponent_id=cell.opponent_id,
+                        is_home=cell.is_home,
+                        expected_points=cell.expected_points,
+                    )
+                    for cell in row.fixtures
+                ],
+            )
+            for row in rows
+        ],
+    )
 
 
 @app.get("/players/{player_id}", response_model=schemas.PlayerDetailOut)

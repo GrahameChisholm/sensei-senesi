@@ -189,6 +189,50 @@ class PlayerStatsRowOut(BaseModel):
     fixtures: list[FixtureCellOut]
 
 
+# --- Differentials page (DIFFERENTIALS_PLAN) -------------------------------------------------
+
+
+class DifferentialsWindowOut(BaseModel):
+    gameweek_from: int
+    gameweek_to: int
+    requested_gameweeks: int
+
+
+class DifferentialRowOut(BaseModel):
+    player_id: int
+    name: str
+    team_id: int | None
+    position: str
+    price: int
+    minutes: int
+    apps_in_window: int
+    starts_in_window: int | None
+    points_per_90: float
+    shrunk_points_per_90: float
+    bracket_median_points_per_90: float
+    surplus_vs_bracket: float
+    confidence: str
+    xgi_per_90: float
+    goals_assists_per_90: float
+    luck_gap: float
+    defensive_contribution_per_90: float
+    bps_per_90: float | None
+    return_frequency: float
+    points_variance: float | None
+    recent_vs_earlier_points_per_90: float | None
+    minutes_trend: float | None
+    current_ownership_percent: float | None
+    ownership_trend_pct_per_gw: float | None
+    net_transfers_per_gw: float | None
+    archetype: str
+    fixtures: list[FixtureCellOut]
+
+
+class DifferentialsResponseOut(BaseModel):
+    window: DifferentialsWindowOut
+    rows: list[DifferentialRowOut]
+
+
 class TransferRecommendationOut(BaseModel):
     sell_player_id: int
     sell_player_name: str
