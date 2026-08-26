@@ -17,6 +17,26 @@ function firstGameweekEp(row: PlayerPanelRowOut): number {
   return row.fixtures[0]?.expected_points ?? 0;
 }
 
+/** The affordable-limit a specific row's price should be checked against. */
+function limitFor(affordableBudget: number | Record<string, number>, position: string): number {
+  return typeof affordableBudget === "number" ? affordableBudget : affordableBudget[position] ?? 0;
+}
+
+/** What to show next to the "Affordable only" checkbox. A single figure when there's one number
+ * (build mode) or every fillable position happens to afford the same amount; a range when
+ * different positions afford different amounts, since showing just one of them would be exactly
+ * the kind of misleading single-number-for-several-positions bug this type exists to prevent. */
+function affordableLabel(affordableBudget: number | Record<string, number>): string {
+  if (typeof affordableBudget === "number") {
+    return `£${(affordableBudget / 10).toFixed(1)}m available`;
+  }
+  const values = Object.values(affordableBudget);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (min === max) return `£${(min / 10).toFixed(1)}m available`;
+  return `£${(min / 10).toFixed(1)}m to £${(max / 10).toFixed(1)}m available, depending on position`;
+}
+
 function sortRows(rows: PlayerPanelRowOut[], sortKey: SortKey): PlayerPanelRowOut[] {
   const withKey = rows.map((row) => {
     const ep = firstGameweekEp(row);
@@ -42,10 +62,14 @@ interface PlayerPanelProps {
    * being filled, none of these are valid add targets (a marked-for-removal player because the
    * backend hasn't actually let go of them yet, everyone else because they're already owned). */
   squadPlayerIds: number[];
-  /** Bank plus the sell price of every player currently marked for removal, a rough ceiling for
-   * the "Affordable only" filter, not a per-slot guarantee (a specific swap's own budget is
-   * enforced by the API). Null when nothing is open, so the filter has nothing to check against. */
-  affordableBudget: number | null;
+  /** What the "Affordable only" filter checks a row's price against. A single number while
+   * building a squad from scratch, where there's one global budget and no notion of "swapping
+   * out" a specific player. A per-position map while editing an existing squad, since only one
+   * marked-for-removal player is ever actually sold for a given position's next Add (whichever
+   * was marked first) -- summing every marked player's sell price regardless of position would
+   * overstate what a single swap can afford, worse the more players are marked. Null when
+   * nothing is open, so the filter has nothing to check against. */
+  affordableBudget: number | Record<string, number> | null;
   onAdd: (playerId: number, position: string, price: number) => void;
   /** Cancels every currently open slot at once. Omit where there's nothing to cancel (e.g.
    * building a squad from scratch, where an "empty slot" is just not-yet-picked, not a pending
@@ -81,7 +105,9 @@ export function PlayerPanel({
       result = result.filter((row) => !owned.has(row.player_id));
     }
     if (affordableOnly && affordableBudget !== null) {
-      result = result.filter((row) => row.price !== null && row.price <= affordableBudget);
+      result = result.filter(
+        (row) => row.price !== null && row.price <= limitFor(affordableBudget, row.position),
+      );
     }
     return result;
   }, [unsortedRows, affordableOnly, affordableBudget, fillMode, squadPlayerIds]);
@@ -139,7 +165,7 @@ export function PlayerPanel({
               checked={affordableOnly}
               onChange={(e) => setAffordableOnly(e.target.checked)}
             />
-            Affordable only (£{(affordableBudget / 10).toFixed(1)}m available)
+            Affordable only ({affordableLabel(affordableBudget)})
           </label>
         )}
       </div>

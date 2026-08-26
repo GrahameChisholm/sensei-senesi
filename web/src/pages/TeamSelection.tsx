@@ -143,9 +143,20 @@ export function TeamSelection() {
   const draftChipIsRebuild = squad.draft?.chip === "wildcard" || squad.draft?.chip === "free_hit";
   const removingPlayers = teamState.squad.filter((p) => removingIds.includes(p.player_id));
   const fillablePositions = [...new Set(removingPlayers.map((p) => p.position))];
-  const affordableBudget = removingPlayers.length
-    ? teamState.bank + removingPlayers.reduce((sum, p) => sum + p.sell_price, 0)
-    : null;
+  // Only one player is ever actually sold per Add -- handleTransferIn resolves it to the
+  // earliest-marked removingId matching the incoming player's position -- so the true affordable
+  // budget for a position is bank plus *that one* player's sell price, never the sum of every
+  // marked player's sell price. Summing all of them (the previous behaviour) meant marking
+  // several players for removal, let alone all 15, made every player in the game look affordable
+  // right up until the real per-swap check rejected almost all of them.
+  const affordableBudgetByPosition: Record<string, number> = {};
+  for (const position of fillablePositions) {
+    const targetId = removingIds.find(
+      (id) => teamState.squad.find((p) => p.player_id === id)?.position === position,
+    );
+    const target = teamState.squad.find((p) => p.player_id === targetId);
+    if (target) affordableBudgetByPosition[position] = teamState.bank + target.sell_price;
+  }
 
   return (
     <div className="team-selection">
@@ -198,7 +209,7 @@ export function TeamSelection() {
           fillMode={removingIds.length > 0}
           fillablePositions={fillablePositions}
           squadPlayerIds={teamState.squad.map((p) => p.player_id)}
-          affordableBudget={affordableBudget}
+          affordableBudget={affordableBudgetByPosition}
           onAdd={(playerId, position, price) => void handleTransferIn(playerId, position, price)}
           onCancel={() => setRemovingIds([])}
         />
