@@ -1,7 +1,7 @@
 """Tests for the GET /fixtures endpoint -- the thin API wiring over api.fixtures_view. The
 difficulty numbers themselves are just FPL's own values carried straight through, so these tests
-check request/response wiring (horizon handling, blank/double gameweek shape, team exclusion),
-not any rating math.
+check request/response wiring (gameweek window handling, blank/double gameweek shape, team
+exclusion), not any rating math.
 """
 
 from __future__ import annotations
@@ -85,12 +85,27 @@ class TestFixtureTicker:
         team_a = _row_for(rows, TEAM_A)
         assert [cell["gameweek"] for cell in team_a["gameweeks"]] == [1, 2, 3, 4, 5]
 
-    def test_explicit_horizon_limits_gameweek_columns(self, client):
-        response = client.get("/fixtures", params={"horizon": 2})
+    def test_explicit_range_limits_gameweek_columns(self, client):
+        response = client.get("/fixtures", params={"gameweek_from": 1, "gameweek_to": 2})
         assert response.status_code == 200
         rows = response.json()
         team_a = _row_for(rows, TEAM_A)
         assert [cell["gameweek"] for cell in team_a["gameweeks"]] == [1, 2]
+
+    def test_explicit_range_need_not_start_at_current_gameweek(self, client):
+        response = client.get("/fixtures", params={"gameweek_from": 4, "gameweek_to": 5})
+        assert response.status_code == 200
+        rows = response.json()
+        team_a = _row_for(rows, TEAM_A)
+        assert [cell["gameweek"] for cell in team_a["gameweeks"]] == [4, 5]
+
+    def test_gameweek_to_defaults_from_explicit_gameweek_from(self, client):
+        response = client.get("/fixtures", params={"gameweek_from": 3})
+        assert response.status_code == 200
+        rows = response.json()
+        team_a = _row_for(rows, TEAM_A)
+        # Same default 5-gameweek span as the no-params case, just chained off gameweek_from=3.
+        assert [cell["gameweek"] for cell in team_a["gameweeks"]] == [3, 4, 5, 6, 7]
 
     def test_blank_gameweek_has_no_fixtures(self, client):
         rows = client.get("/fixtures").json()
@@ -121,6 +136,10 @@ class TestFixtureTicker:
         rows = client.get("/fixtures").json()
         assert {row["team_id"] for row in rows} == {TEAM_A, TEAM_B, TEAM_C}
 
-    def test_zero_horizon_is_rejected(self, client):
-        response = client.get("/fixtures", params={"horizon": 0})
+    def test_gameweek_to_before_gameweek_from_is_rejected(self, client):
+        response = client.get("/fixtures", params={"gameweek_from": 3, "gameweek_to": 2})
+        assert response.status_code == 400
+
+    def test_gameweek_from_below_one_is_rejected(self, client):
+        response = client.get("/fixtures", params={"gameweek_from": 0, "gameweek_to": 2})
         assert response.status_code == 400

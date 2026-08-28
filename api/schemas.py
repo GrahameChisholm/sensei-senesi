@@ -133,6 +133,28 @@ class FixtureTickerRowOut(BaseModel):
     average_difficulty: float | None
 
 
+class HorizonDifficultyOut(BaseModel):
+    attack_rating: int
+    defense_rating: int
+    mean_attack_factor: float
+    mean_defense_factor: float
+
+
+class TeamSwingRowOut(BaseModel):
+    team_id: int
+    near: HorizonDifficultyOut | None
+    far: HorizonDifficultyOut | None
+    attack_swing: float | None
+    defense_swing: float | None
+    has_owned_player: bool
+
+
+class FixtureSwingResponseOut(BaseModel):
+    near_gameweeks: list[int]
+    far_gameweeks: list[int]
+    rows: list[TeamSwingRowOut]
+
+
 # --- Player Stats page (PLAYER_STATS_PLAN) --------------------------------------------------
 
 

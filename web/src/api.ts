@@ -128,6 +128,28 @@ export interface FixtureTickerRowOut {
   average_difficulty: number | null;
 }
 
+export interface HorizonDifficultyOut {
+  attack_rating: number;
+  defense_rating: number;
+  mean_attack_factor: number;
+  mean_defense_factor: number;
+}
+
+export interface TeamSwingRowOut {
+  team_id: number;
+  near: HorizonDifficultyOut | null;
+  far: HorizonDifficultyOut | null;
+  attack_swing: number | null;
+  defense_swing: number | null;
+  has_owned_player: boolean;
+}
+
+export interface FixtureSwingResponseOut {
+  near_gameweeks: number[];
+  far_gameweeks: number[];
+  rows: TeamSwingRowOut[];
+}
+
 // --- Player Stats page ---------------------------------------------------------------------
 
 export interface ActualStatsOut {
@@ -287,8 +309,24 @@ export const api = {
   getPlayer: (playerId: number, gameweek?: number) =>
     request<PlayerDetailOut>(`/players/${playerId}${query({ gameweek })}`),
 
-  getFixtureTicker: (horizon?: number) =>
-    request<FixtureTickerRowOut[]>(`/fixtures${query({ horizon })}`),
+  getFixtureTicker: (gameweekFrom?: number, gameweekTo?: number) =>
+    request<FixtureTickerRowOut[]>(
+      `/fixtures${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,
+    ),
+  getFixtureSwing: (
+    nearFrom?: number,
+    nearTo?: number,
+    farFrom?: number,
+    farTo?: number,
+  ) =>
+    request<FixtureSwingResponseOut>(
+      `/teams/fixture-swing${query({
+        near_from: nearFrom,
+        near_to: nearTo,
+        far_from: farFrom,
+        far_to: farTo,
+      })}`,
+    ),
   getPlayerStats: (gameweekFrom: number, gameweekTo: number) =>
     request<PlayerStatsRowOut[]>(
       `/players/stats${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,

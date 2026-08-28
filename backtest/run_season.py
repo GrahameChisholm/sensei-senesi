@@ -66,6 +66,14 @@ from engine.data.crosswalk import (
     fetch_fpl_web_names,
     understat_players_from_league_data,
 )
+from engine.data.team_rates import (
+    TEAM_VENUE_SHRINKAGE_K,
+    _league_venue_multipliers,
+    _team_rate_asof,
+    _team_rate_asof_shrunk,
+    _team_venue_multipliers,
+    build_team_rate_histories,
+)
 from engine.data.understat_client import (
     EARLIEST_SEASON,
     UnderstatClient,
@@ -102,7 +110,6 @@ from engine.rates import (
     effective_sample_minutes_asof,
     ewma_rate_asof,
     latest_ewma_rate,
-    shrink_toward_prior,
 )
 from engine.scoring import DEF, DEFENSIVE_CONTRIBUTION_THRESHOLD, FWD, GK, MID, POSITIONS
 from engine.simulate import (
@@ -201,19 +208,6 @@ OWN_GOAL_SHRINKAGE_K = 500.0
 # matches — a much smaller prior weight than the card constants above is appropriate. Initial
 # evidence-based value, not yet swept.
 SAVE_RATE_SHRINKAGE_K = 90.0
-
-# Understat's ``team_title`` -> the vaastav/FPL team-name spelling for the same club, wherever they
-# differ (BUILD_PLAN 1.1's ID-crosswalk problem, at team-name granularity rather than player-id
-# granularity — same "match names across two sources" problem engine/data/crosswalk.py solves for
-# players). Verified against a real 2025/26 pull; extend if a season adds/renames a club.
-UNDERSTAT_TO_FPL_TEAM_NAME = {
-    "Tottenham": "Spurs",
-    "Newcastle United": "Newcastle",
-    "Manchester City": "Man City",
-    "Manchester United": "Man Utd",
-    "Wolverhampton Wanderers": "Wolves",
-    "Nottingham Forest": "Nott'm Forest",
-}
 
 __all__ = [
     "DEFAULT_CACHE_DIR",
@@ -433,38 +427,6 @@ def fetch_understat_player_histories(
     return histories
 
 
-def build_team_rate_histories(teams_history: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """FPL team name -> that team's Understat match history (xG/xGA), chronologically sorted, with
-    a constant ``minutes=90`` column so :mod:`engine.rates`'s per-90 EWMA helpers (built for
-    player-level data) apply unchanged at team level — a full match is always a 90-minute unit for
-    a team, so the per-match average already *is* the per-90 rate.
-
-    A6: a real live pull against Understat's pre-season endpoint found ``getLeagueData`` returns
-    completely empty ``teams``/``players`` before a season's first match — a totally columnless
-    ``teams_history`` (no ``"team_title"`` column at all), which ``.groupby("team_title")`` raises
-    a bare ``KeyError`` on rather than degrading. An empty input is a real, expected state (a new
-    season that hasn't started, or engine.data.live_adapter's own cold-start fix falling back to
-    this alone when no prior-season data was supplied either) — it should produce an empty
-    ``dict``, exactly what every downstream ``.get(team, empty)``-style lookup already handles,
-    not crash the whole feature-engineering pipeline.
-    """
-    if teams_history.empty:
-        return {}
-    histories: dict[str, pd.DataFrame] = {}
-    for _, group in teams_history.groupby("team_title"):
-        fpl_name = UNDERSTAT_TO_FPL_TEAM_NAME.get(
-            group["team_title"].iloc[0], group["team_title"].iloc[0]
-        )
-        g = group.copy()
-        g["date"] = pd.to_datetime(g["date"], utc=True)
-        g["minutes"] = 90.0
-        # ENGINE_IMPROVEMENTS_2.md D.5: venue split for the home/away rate difference BUILD_PLAN
-        # 2.4 specifies (home defence is measurably stronger than away defence).
-        g["is_home"] = g["h_a"] == "h"
-        histories[fpl_name] = g.sort_values("date").reset_index(drop=True)
-    return histories
-
-
 # =================================================================================================
 # Feature engineering — point-in-time, one row per (player, gameweek)
 # =================================================================================================
@@ -660,166 +622,6 @@ def compute_team_rotation_propensity(gw: pd.DataFrame) -> pd.Series:
     result = dispersion.reindex(keys).fillna(0.0)
     result.index = gw.index
     return result
-
-
-def _team_rate_asof(team_history: pd.DataFrame, stat_col: str, before: pd.Timestamp) -> float:
-    if team_history.empty:
-        return float("nan")
-    prior = team_history[team_history["date"] < before]
-    if prior.empty:
-        return float("nan")
-    return latest_ewma_rate(prior, stat_col, minutes_col="minutes")
-
-
-def _team_prior_match_count(team_history: pd.DataFrame, before: pd.Timestamp) -> int:
-    """Matches strictly before ``before`` — the shrinkage weight for
-    :func:`_team_rate_asof_shrunk` (ENGINE_IMPROVEMENTS_3.md A.1). A match count, not
-    :func:`engine.rates.effective_sample_minutes`, since a team's own "sample size" for this
-    purpose is naturally in matches, not minutes (unlike a player, who can appear for a handful of
-    minutes and legitimately deserve a small weight)."""
-    if team_history.empty:
-        return 0
-    return int((team_history["date"] < before).sum())
-
-
-# ENGINE_IMPROVEMENTS_3.md A.1: shrinkage strength (in matches) for a team's own point-in-time
-# xG/xGA rate toward the point-in-time league average. Selected via an end-to-end sweep over
-# {2, 4, 8} team-fixtures matches against real 2025/26 clean-sheet outcomes — every metric (MACE,
-# Brier, share of team-fixtures projected above 50%) was best at k=4; see the document's Tier A.1
-# evidence table. Revisit with a proper walk-forward search across seasons, same caveat as
-# SHRINKAGE_K.
-TEAM_RATE_SHRINKAGE_K = 4.0
-
-# Below this many league-wide prior matches, a venue multiplier can't be trusted — hold it at 1.0
-# (venue-neutral) rather than fit one off a handful of games (only ever binds in the season's very
-# first gameweek or two).
-_MIN_MATCHES_FOR_VENUE_MULTIPLIER = 40
-
-
-def _team_rate_asof_shrunk(
-    team_history: pd.DataFrame,
-    stat_col: str,
-    before: pd.Timestamp,
-    league_avg: float,
-    shrinkage_k: float = TEAM_RATE_SHRINKAGE_K,
-) -> float:
-    """Point-in-time per-90 EWMA rate, shrunk toward ``league_avg`` (the same gameweek's own
-    point-in-time league-average rate) by the team's own prior match count
-    (ENGINE_IMPROVEMENTS_3.md A.1). Replaces the previous per-team home/away split
-    (``_team_rate_asof_venue_split``, ENGINE_IMPROVEMENTS_2.md D.5), which measurably made
-    clean-sheet calibration *worse than predicting the league base rate* (Brier 0.1895 vs a
-    constant-base-rate Brier of 0.1872): splitting by venue halves the effective sample behind
-    every team rate, and the home/away effect (~0.33 xGA) is close in size to the per-team-match
-    noise (~0.87 std) — ~10 same-venue matches per team is too thin to estimate a team-specific
-    venue split, even though the league-wide venue effect itself is real (see
-    :func:`_league_venue_multipliers`, applied afterward in :func:`build_fixture_rate_frame`).
-
-    A newly-promoted club has zero prior top-flight matches, so its own raw rate is NaN with
-    zero weight. :func:`shrink_toward_prior` already returns the prior outright in that case, so
-    the result here is the full league-average rate rather than a missing value, closing a gap
-    where an established team's very first fixture against a debutant club would otherwise get
-    a NaN opponent rate and be dropped entirely by the required-columns dropna downstream.
-    """
-    raw = _team_rate_asof(team_history, stat_col, before)
-    if pd.isna(league_avg):
-        return raw
-    n_prior = _team_prior_match_count(team_history, before)
-    return shrink_toward_prior(raw, float(n_prior), league_avg, shrinkage_k)
-
-
-def _league_venue_multipliers(
-    team_histories: dict[str, pd.DataFrame], before: pd.Timestamp
-) -> tuple[float, float]:
-    """Point-in-time, LEAGUE-WIDE home/away multiplier for xG and xGA (ENGINE_IMPROVEMENTS_3.md
-    A.1) — a single pair of numbers fit across every team's matches strictly before ``before``,
-    replacing the previous per-team venue split. ``xg_mult``/``xga_mult`` are each
-    ``home_mean / overall_mean`` for that stat; by construction the away multiplier is
-    ``2 - mult`` (the overall mean is the average of the home and away means), which is how
-    :func:`build_fixture_rate_frame` applies this without a separate away-side computation. Falls
-    back to ``(1.0, 1.0)`` — venue-neutral — when fewer than
-    :data:`_MIN_MATCHES_FOR_VENUE_MULTIPLIER` league-wide matches are available yet (only binds in
-    the season's first gameweek or two).
-    """
-    if not team_histories:
-        return 1.0, 1.0
-    all_matches = pd.concat(team_histories.values(), ignore_index=True)
-    prior = all_matches[all_matches["date"] < before]
-    if len(prior) < _MIN_MATCHES_FOR_VENUE_MULTIPLIER:
-        return 1.0, 1.0
-    home = prior[prior["is_home"]]
-    overall_xg = float(prior["xG"].mean())
-    overall_xga = float(prior["xGA"].mean())
-    if home.empty or not overall_xg or not overall_xga:
-        return 1.0, 1.0
-    xg_mult = float(home["xG"].mean() / overall_xg)
-    xga_mult = float(home["xGA"].mean() / overall_xga)
-    return xg_mult, xga_mult
-
-
-# B1: how hard a team's own venue multiplier is pulled toward the league-wide one, in units of that
-# team's prior home matches. Swept on the real 2025/26 walk-forward (team-level clean-sheet MACE /
-# Brier / overall MAE):
-#
-#     k       1e9*     60      40      20      10       5       0
-#     MACE    0.0396  0.0353  0.0340  0.0322  0.0284  0.0248  0.0219
-#     Brier   0.1763  0.1762  0.1762  0.1762  0.1762  0.1763  0.1765
-#     MAE     1.5702  1.5704  1.5704  1.5706  1.5707  1.5709  1.5712
-#     (* k -> infinity is the league-only multiplier, i.e. A.1's shipped behaviour)
-#
-# MACE falls monotonically as the estimate becomes more team-specific, while Brier is flat to
-# k=10 and MAE degrades by 0.0005 across the whole range. k=10 clears the < 0.03 target with
-# margin at no Brier cost, which is why it is preferred over the unshrunk k=0 that scores best on
-# MACE alone.
-#
-# This does NOT contradict A.1's finding that per-team venue splits are harmful, and the
-# distinction matters: A.1 split the *rate itself* by venue, halving the sample behind every team
-# rate. Here the rate keeps its full sample and only the venue *adjustment* on top of it is
-# team-specific — so the quantity being estimated from ~10 home matches is a multiplier near 1.0,
-# not a rate from scratch, and shrinkage has something stable to pull toward.
-TEAM_VENUE_SHRINKAGE_K = 10.0
-
-
-def _team_venue_multipliers(
-    team_history: pd.DataFrame,
-    before: pd.Timestamp,
-    league_multipliers: tuple[float, float],
-    shrinkage_k: float = TEAM_VENUE_SHRINKAGE_K,
-) -> tuple[float, float]:
-    """This team's own home/away multiplier for xG and xGA, shrunk toward the league-wide pair.
-
-    A.1 reverted the per-team venue split and left a single league-wide multiplier applied to every
-    team. That fixed the Brier regression but leaves real signal on the table: home advantage
-    genuinely differs by team, and the reason the previous attempt failed was thin-sample variance,
-    not the absence of an effect. Shrinking each team's own multiplier toward the league one by its
-    prior home-match count is the same empirical-Bayes treatment
-    :func:`_team_rate_asof_shrunk` already applies to the rates themselves — the level of
-    aggregation A.1's own closing note identified as the missing piece.
-
-    Returns the league pair unchanged when this team has no prior home or away matches, so the
-    early season degrades to exactly today's behaviour rather than to a one-match estimate.
-    """
-    league_xg_mult, league_xga_mult = league_multipliers
-    if team_history.empty:
-        return league_xg_mult, league_xga_mult
-    prior = team_history[team_history["date"] < before]
-    home = prior[prior["is_home"]]
-    if home.empty or len(prior) == len(home):
-        return league_xg_mult, league_xga_mult
-
-    overall_xg = float(prior["xG"].mean())
-    overall_xga = float(prior["xGA"].mean())
-    if not overall_xg > 0 or not overall_xga > 0:
-        return league_xg_mult, league_xga_mult
-
-    n_home = float(len(home))
-    return (
-        shrink_toward_prior(
-            float(home["xG"].mean()) / overall_xg, n_home, league_xg_mult, shrinkage_k
-        ),
-        shrink_toward_prior(
-            float(home["xGA"].mean()) / overall_xga, n_home, league_xga_mult, shrinkage_k
-        ),
-    )
 
 
 def build_fixture_rate_frame(

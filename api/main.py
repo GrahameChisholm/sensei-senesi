@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from api import schemas
 from api.differentials_panel import build_differential_rows
+from api.fixture_swing_panel import build_fixture_swing_rows
 from api.fixtures_view import DEFAULT_FIXTURE_TICKER_HORIZON, build_fixture_ticker_rows
 from api.panel import build_panel_rows, build_team_fixture_map
 from api.player_stats_panel import build_player_stats_rows
@@ -24,6 +25,8 @@ from api.state import get_app_state, get_squad_state, set_squad_state
 from engine.data.fpl_client import FPLClient, FPLClientError
 from engine.data.team_state_builder import build_my_team_state
 from features.differentials import DEFAULT_WINDOW_GAMEWEEKS, build_differentials
+from features.fixture_swing import DEFAULT_FAR_GAMEWEEKS, DEFAULT_NEAR_GAMEWEEKS
+from features.fixtures import HorizonDifficulty
 from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
 from features.squad_optimizer import PlayerCandidate, SquadOptimizerError, optimise_squad
@@ -103,12 +106,21 @@ def list_teams() -> list[schemas.TeamOut]:
 
 @app.get("/fixtures", response_model=list[schemas.FixtureTickerRowOut])
 def list_fixture_ticker(
-    horizon: int = DEFAULT_FIXTURE_TICKER_HORIZON,
+    gameweek_from: int | None = None,
+    gameweek_to: int | None = None,
 ) -> list[schemas.FixtureTickerRowOut]:
-    if horizon < 1:
-        raise ValueError("horizon must be at least 1")
+    """Each bound defaults independently when omitted, chaining the same way
+    ``/teams/fixture-swing``'s near/far bounds do: ``gameweek_from`` defaults to the app's current
+    gameweek, ``gameweek_to`` to ``gameweek_from + DEFAULT_FIXTURE_TICKER_HORIZON - 1``, so an
+    arbitrary window like GW4-6 is just as valid as the locked-in 5-gameweek default."""
     app_state = get_app_state()
-    gameweeks = list(range(app_state.gameweek, app_state.gameweek + horizon))
+    if gameweek_from is None:
+        gameweek_from = app_state.gameweek
+    if gameweek_to is None:
+        gameweek_to = gameweek_from + DEFAULT_FIXTURE_TICKER_HORIZON - 1
+    if gameweek_from < 1 or gameweek_to < gameweek_from:
+        raise ValueError("gameweek_to must be >= gameweek_from, and both must be at least 1")
+    gameweeks = list(range(gameweek_from, gameweek_to + 1))
     rows = build_fixture_ticker_rows(app_state.fixtures, app_state.teams.keys(), gameweeks)
     return [
         schemas.FixtureTickerRowOut(
@@ -131,6 +143,73 @@ def list_fixture_ticker(
         )
         for row in rows
     ]
+
+
+def _horizon_difficulty_out(
+    difficulty: HorizonDifficulty | None,
+) -> schemas.HorizonDifficultyOut | None:
+    if difficulty is None:
+        return None
+    return schemas.HorizonDifficultyOut(
+        attack_rating=difficulty.attack_rating,
+        defense_rating=difficulty.defense_rating,
+        mean_attack_factor=difficulty.mean_attack_factor,
+        mean_defense_factor=difficulty.mean_defense_factor,
+    )
+
+
+@app.get("/teams/fixture-swing", response_model=schemas.FixtureSwingResponseOut)
+def list_fixture_swing(
+    near_from: int | None = None,
+    near_to: int | None = None,
+    far_from: int | None = None,
+    far_to: int | None = None,
+) -> schemas.FixtureSwingResponseOut:
+    """Fixture swing detection plan Phase 3: per-team fixture-difficulty swing between an arbitrary
+    near gameweek range and an arbitrary far one -- is this team's run getting easier or harder,
+    distinct from any change in an individual player's own outlook.
+
+    Each bound defaults independently when omitted, chaining onto whatever was resolved just
+    before it so a caller can override only the window(s) they care about: ``near_from`` defaults
+    to the app's current gameweek, ``near_to`` to ``near_from + DEFAULT_NEAR_GAMEWEEKS - 1``,
+    ``far_from`` to right after the (possibly customized) near window ends, and ``far_to`` to
+    ``far_from + DEFAULT_FAR_GAMEWEEKS - 1`` -- reproducing the original locked-in 3-vs-5 default
+    when all four are omitted.
+    """
+    app_state = get_app_state()
+    if near_from is None:
+        near_from = app_state.gameweek
+    if near_to is None:
+        near_to = near_from + DEFAULT_NEAR_GAMEWEEKS - 1
+    if far_from is None:
+        far_from = near_to + 1
+    if far_to is None:
+        far_to = far_from + DEFAULT_FAR_GAMEWEEKS - 1
+    if near_from < 1 or near_to < near_from or far_from < 1 or far_to < far_from:
+        raise ValueError("each window's `to` must be >= its `from`, and both must be at least 1")
+    near_gameweeks = list(range(near_from, near_to + 1))
+    far_gameweeks = list(range(far_from, far_to + 1))
+
+    squad_state = get_squad_state()
+    owned_ids = {player.player_id for player in squad_state.squad}
+    owned_team_ids = {app_state.team_id_by_player[pid] for pid in owned_ids}
+
+    rows = build_fixture_swing_rows(app_state, near_gameweeks, far_gameweeks, owned_team_ids)
+    return schemas.FixtureSwingResponseOut(
+        near_gameweeks=near_gameweeks,
+        far_gameweeks=far_gameweeks,
+        rows=[
+            schemas.TeamSwingRowOut(
+                team_id=row.swing.team_id,
+                near=_horizon_difficulty_out(row.swing.near),
+                far=_horizon_difficulty_out(row.swing.far),
+                attack_swing=row.swing.attack_swing,
+                defense_swing=row.swing.defense_swing,
+                has_owned_player=row.has_owned_player,
+            )
+            for row in rows
+        ],
+    )
 
 
 @app.get("/gameweek", response_model=schemas.GameweekOut)

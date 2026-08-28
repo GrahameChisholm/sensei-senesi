@@ -3,8 +3,6 @@ import { FixtureTickerRowOut, TeamOut } from "../api";
 import { useFixtureTicker } from "../hooks/useProjections";
 import { fixtureDifficultyColour, fixtureDifficultyTextColour } from "../lib/colours";
 
-const HORIZON_OPTIONS = [3, 5, 8, 10];
-
 type SortKey = "difficulty" | "alphabetical";
 
 const SORT_OPTIONS: { key: SortKey; label: string }[] = [
@@ -34,30 +32,35 @@ function sortRows(
 
 interface FixturesTickerProps {
   teams: Record<number, TeamOut>;
+  // Empty (or omitted) means no filter -- every team shows, matching PlayerStats' own team-picker
+  // convention (features/player_stats filters use the same "empty selection = show all" rule).
+  selectedTeamIds?: Set<number>;
+  // Undefined leaves the bound to resolve server-side against the app's own current gameweek,
+  // matching useFixtureSwing's own near/far bound convention.
+  gameweekFrom?: number;
+  gameweekTo?: number;
 }
 
-export function FixturesTicker({ teams }: FixturesTickerProps) {
-  const [horizon, setHorizon] = useState(5);
+export function FixturesTicker({
+  teams,
+  selectedTeamIds,
+  gameweekFrom,
+  gameweekTo,
+}: FixturesTickerProps) {
   const [sortKey, setSortKey] = useState<SortKey>("difficulty");
 
-  const { rows: unsortedRows, loading } = useFixtureTicker(horizon);
-  const rows = useMemo(() => sortRows(unsortedRows, teams, sortKey), [unsortedRows, teams, sortKey]);
+  const { rows: unsortedRows, loading } = useFixtureTicker(gameweekFrom, gameweekTo);
+  const rows = useMemo(() => {
+    const sorted = sortRows(unsortedRows, teams, sortKey);
+    if (!selectedTeamIds || selectedTeamIds.size === 0) return sorted;
+    return sorted.filter((row) => selectedTeamIds.has(row.team_id));
+  }, [unsortedRows, teams, sortKey, selectedTeamIds]);
 
   return (
     <div className="player-panel fixture-ticker">
       <h3>Fixtures</h3>
 
       <div className="panel-filters">
-        <label>
-          Gameweeks
-          <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
-            {HORIZON_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                Next {option}
-              </option>
-            ))}
-          </select>
-        </label>
         <label>
           Sort by
           <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
