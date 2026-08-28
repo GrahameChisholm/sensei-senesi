@@ -155,16 +155,24 @@ button {
 
 .gameweek-header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  flex-direction: column;
+  gap: 0.85rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 1rem 1.5rem;
   box-shadow: var(--shadow-card);
   margin-bottom: 1rem;
+}
+
+/* Each row wraps independently, so which optional pieces are shown (deadline vs. previewing
+   badge, horizon toggle vs. hidden) never changes which row an element appears on. */
+.gameweek-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .gameweek-title h2 {
@@ -1033,6 +1041,38 @@ button {
 
 .differentials-muted-cell {
   opacity: 0.75;
+}
+
+/* --- Gameweek preview selector (Team Selection) --- */
+
+.gameweek-selector {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.gameweek-selector button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.gameweek-selector button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.previewing-badge {
+  margin: 3px 0 0;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .differentials-empty {

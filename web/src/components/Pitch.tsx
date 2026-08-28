@@ -23,6 +23,9 @@ interface PitchProps {
   directory: Record<number, PlayerPanelRowOut>;
   teams: Record<number, TeamOut>;
   horizon: "next" | "three";
+  /** When set, every card shows its points for this specific gameweek instead of following
+   * ``horizon``, used to preview a future gameweek picked via the GameweekSelector. */
+  pinnedGameweek?: number;
   onRemove: (playerId: number) => void;
   onSetCaptain: (playerId: number, role: "captain" | "vice") => void;
 }
@@ -35,7 +38,15 @@ interface PitchProps {
  * instant (no draft, no confirm) -- the vacated slot just renders empty on the next render.
  * Captain/vice pills only ever show on starting-XI cards, since only they're eligible for the
  * armband. */
-export function Pitch({ squad, directory, teams, horizon, onRemove, onSetCaptain }: PitchProps) {
+export function Pitch({
+  squad,
+  directory,
+  teams,
+  horizon,
+  pinnedGameweek,
+  onRemove,
+  onSetCaptain,
+}: PitchProps) {
   const byId = Object.fromEntries(squad.squad.map((p) => [p.player_id, p]));
 
   function renderCard(playerId: number, isBench: boolean) {
@@ -49,6 +60,7 @@ export function Pitch({ squad, directory, teams, horizon, onRemove, onSetCaptain
         price={pick?.price ?? row?.price ?? null}
         fixtures={cardFixtures(row, teams)}
         horizon={horizon}
+        pinnedGameweek={pinnedGameweek}
         isCaptain={squad.captain_id === playerId}
         isVice={squad.vice_captain_id === playerId}
         lowConfidence={row?.low_confidence}

@@ -15,6 +15,7 @@ export function TeamSelection() {
 
   const [horizon, setHorizon] = useState<"next" | "three">("next");
   const [activeChip, setActiveChip] = useState<ActiveChip>(null);
+  const [viewGameweek, setViewGameweek] = useState<number | null>(null);
 
   const { squad, error, loading, clearError } = squadState;
 
@@ -23,7 +24,10 @@ export function TeamSelection() {
     horizon === "three" ? 3 : 1,
     squad,
     squad?.is_complete ?? false,
+    viewGameweek ?? undefined,
   );
+
+  const pinnedGameweek = viewGameweek ?? gameweek?.gameweek;
 
   if (loading || squad === null) {
     return <p className="loading">Loading…</p>;
@@ -63,6 +67,8 @@ export function TeamSelection() {
         points={points}
         horizon={horizon}
         onHorizonChange={setHorizon}
+        viewGameweek={viewGameweek}
+        onViewGameweekChange={setViewGameweek}
         onAutoBuild={() => void handleAutoBuild()}
         onClearSquad={() => void handleClearSquad()}
         onImportSquad={(teamId) => void squadState.importSquad(teamId)}
@@ -76,6 +82,7 @@ export function TeamSelection() {
           directory={directory}
           teams={teams}
           horizon={horizon}
+          pinnedGameweek={pinnedGameweek}
           onRemove={(playerId) => void squadState.removePlayer(playerId)}
           onSetCaptain={(playerId, role) => void squadState.setCaptain(playerId, role)}
         />

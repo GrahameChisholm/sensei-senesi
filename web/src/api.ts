@@ -33,6 +33,7 @@ export interface GameweekOut {
   deadline_passed: boolean;
   generated_at: string;
   model_version: string;
+  horizon_gameweeks: number[];
 }
 
 export interface SquadPlayerOut {
@@ -267,8 +268,10 @@ export const api = {
       body: JSON.stringify({ team_id: teamId }),
     }),
 
-  getSquadPoints: (chip?: string | null, horizon: number = 1) =>
-    request<SquadPointsOut>(`/squad/points${query({ chip: chip ?? undefined, horizon })}`),
+  getSquadPoints: (chip?: string | null, horizon: number = 1, gameweek?: number) =>
+    request<SquadPointsOut>(
+      `/squad/points${query({ chip: chip ?? undefined, horizon: gameweek === undefined ? horizon : undefined, gameweek })}`,
+    ),
 
   listPlayers: (filters: {
     position?: string;

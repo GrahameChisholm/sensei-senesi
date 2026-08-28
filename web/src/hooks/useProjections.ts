@@ -8,9 +8,7 @@ import {
   TeamOut,
 } from "../api";
 
-/** Returns [gameweek, refresh] -- Season Replay's "Advance" moves the process-wide app state on to
- * the next gameweek's cache server-side, so the header needs an explicit way to refetch rather
- * than relying on the once-on-mount fetch alone. */
+/** Returns [gameweek, refresh]. */
 export function useGameweek(): [GameweekOut | null, () => Promise<void>] {
   const [gameweek, setGameweek] = useState<GameweekOut | null>(null);
 
@@ -40,8 +38,7 @@ export function useTeams(): Record<number, TeamOut> {
 
 /** Every player's panel row, unfiltered -- doubles as the pitch's own player directory (name,
  * team, position, price, 3 fixture cells) so the pitch never needs a separate bulk lookup.
- * Returns [directory, refresh] -- Season Replay's "Advance" needs to force a refetch once the
- * process-wide app state has moved on to a new gameweek's prices/fixtures/projections. */
+ * Returns [directory, refresh]. */
 export function usePlayerDirectory(): [Record<number, PlayerPanelRowOut>, () => Promise<void>] {
   const [directory, setDirectory] = useState<Record<number, PlayerPanelRowOut>>({});
 
@@ -62,6 +59,7 @@ export function useSquadPoints(
   horizon: number,
   refreshKey: unknown,
   enabled: boolean = true,
+  gameweek?: number,
 ) {
   const [points, setPoints] = useState<SquadPointsOut | null>(null);
 
@@ -72,7 +70,7 @@ export function useSquadPoints(
     }
     let cancelled = false;
     api
-      .getSquadPoints(chip, horizon)
+      .getSquadPoints(chip, horizon, gameweek)
       .then((result) => {
         if (!cancelled) setPoints(result);
       })
@@ -83,7 +81,7 @@ export function useSquadPoints(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chip, horizon, refreshKey, enabled]);
+  }, [chip, horizon, refreshKey, enabled, gameweek]);
 
   return points;
 }

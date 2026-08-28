@@ -15,6 +15,8 @@ interface PlayerCardProps {
   price: number | null;
   fixtures: CardFixture[];
   horizon: "next" | "three";
+  /** When set, show this specific gameweek's points instead of following ``horizon``. */
+  pinnedGameweek?: number;
   isCaptain?: boolean;
   isVice?: boolean;
   lowConfidence?: boolean;
@@ -38,6 +40,7 @@ export function PlayerCard({
   price,
   fixtures,
   horizon,
+  pinnedGameweek,
   isCaptain,
   isVice,
   lowConfidence,
@@ -46,7 +49,10 @@ export function PlayerCard({
   onVice,
 }: PlayerCardProps) {
   const [hovered, setHovered] = useState(false);
-  const primary = fixtures[0];
+  const primary =
+    pinnedGameweek !== undefined
+      ? fixtures.find((fixture) => fixture.gameweek === pinnedGameweek) ?? fixtures[0]
+      : fixtures[0];
 
   return (
     <div
@@ -109,7 +115,7 @@ export function PlayerCard({
       </div>
       <div className="player-card-price">{price !== null ? `£${(price / 10).toFixed(1)}m` : "—"}</div>
 
-      {horizon === "next" ? (
+      {horizon === "next" || pinnedGameweek !== undefined ? (
         <div
           className="player-card-points"
           style={{
