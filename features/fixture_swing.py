@@ -22,10 +22,19 @@ from features.fixtures import (
 )
 
 __all__ = [
+    "DEFAULT_NEAR_GAMEWEEKS",
+    "DEFAULT_FAR_GAMEWEEKS",
     "TeamSwing",
     "compute_team_swing",
     "rank_team_swings",
 ]
+
+# Locked in with the user before building this feature: the near window is the next 3 gameweeks,
+# the far window the 5 after that (8 gameweeks total) -- both configurable per request, but this
+# is the default that best balances "far enough out to see a real swing" against "close enough to
+# still be a useful decision timeframe."
+DEFAULT_NEAR_GAMEWEEKS = 3
+DEFAULT_FAR_GAMEWEEKS = 5
 
 
 @dataclass(frozen=True)

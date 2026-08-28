@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from api import schemas
 from api.differentials_panel import build_differential_rows
+from api.fixture_swing_panel import build_fixture_swing_rows
 from api.fixtures_view import DEFAULT_FIXTURE_TICKER_HORIZON, build_fixture_ticker_rows
 from api.panel import build_panel_rows, build_team_fixture_map
 from api.player_stats_panel import build_player_stats_rows
@@ -24,6 +25,8 @@ from api.state import get_app_state, get_squad_state, set_squad_state
 from engine.data.fpl_client import FPLClient, FPLClientError
 from engine.data.team_state_builder import build_my_team_state
 from features.differentials import DEFAULT_WINDOW_GAMEWEEKS, build_differentials
+from features.fixture_swing import DEFAULT_FAR_GAMEWEEKS, DEFAULT_NEAR_GAMEWEEKS
+from features.fixtures import HorizonDifficulty
 from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
 from features.squad_optimizer import PlayerCandidate, SquadOptimizerError, optimise_squad
@@ -130,6 +133,56 @@ def list_fixture_ticker(
         )
         for row in rows
     ]
+
+
+def _horizon_difficulty_out(
+    difficulty: HorizonDifficulty | None,
+) -> schemas.HorizonDifficultyOut | None:
+    if difficulty is None:
+        return None
+    return schemas.HorizonDifficultyOut(
+        attack_rating=difficulty.attack_rating,
+        defense_rating=difficulty.defense_rating,
+        mean_attack_factor=difficulty.mean_attack_factor,
+        mean_defense_factor=difficulty.mean_defense_factor,
+    )
+
+
+@app.get("/teams/fixture-swing", response_model=schemas.FixtureSwingResponseOut)
+def list_fixture_swing(
+    near: int = DEFAULT_NEAR_GAMEWEEKS,
+    far: int = DEFAULT_FAR_GAMEWEEKS,
+) -> schemas.FixtureSwingResponseOut:
+    """Fixture swing detection plan Phase 3: per-team fixture-difficulty swing between the next
+    ``near`` gameweeks and the ``far`` gameweeks after that -- is this team's run getting easier or
+    harder, distinct from any change in an individual player's own outlook.
+    """
+    if near < 1 or far < 1:
+        raise ValueError("near and far must each be at least 1")
+    app_state = get_app_state()
+    near_gameweeks = list(range(app_state.gameweek, app_state.gameweek + near))
+    far_gameweeks = list(range(near_gameweeks[-1] + 1, near_gameweeks[-1] + 1 + far))
+
+    squad_state = get_squad_state()
+    owned_ids = {player.player_id for player in squad_state.squad}
+    owned_team_ids = {app_state.team_id_by_player[pid] for pid in owned_ids}
+
+    rows = build_fixture_swing_rows(app_state, near_gameweeks, far_gameweeks, owned_team_ids)
+    return schemas.FixtureSwingResponseOut(
+        near_gameweeks=near_gameweeks,
+        far_gameweeks=far_gameweeks,
+        rows=[
+            schemas.TeamSwingRowOut(
+                team_id=row.swing.team_id,
+                near=_horizon_difficulty_out(row.swing.near),
+                far=_horizon_difficulty_out(row.swing.far),
+                attack_swing=row.swing.attack_swing,
+                defense_swing=row.swing.defense_swing,
+                has_owned_player=row.has_owned_player,
+            )
+            for row in rows
+        ],
+    )
 
 
 @app.get("/gameweek", response_model=schemas.GameweekOut)
