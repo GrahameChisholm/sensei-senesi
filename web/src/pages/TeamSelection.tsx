@@ -16,6 +16,7 @@ export function TeamSelection() {
   const [horizon, setHorizon] = useState<"next" | "three">("next");
   const [activeChip, setActiveChip] = useState<ActiveChip>(null);
   const [viewGameweek, setViewGameweek] = useState<number | null>(null);
+  const [swapSourceId, setSwapSourceId] = useState<number | null>(null);
 
   const { squad, error, loading, clearError } = squadState;
 
@@ -40,10 +41,34 @@ export function TeamSelection() {
     .map(([position]) => position);
 
   async function handleAutoBuild() {
+    setSwapSourceId(null);
     await squadState.optimise(
       activeChip === "bench_boost" ? "full_squad" : "starting_xi",
       activeChip === "triple_captain" ? 3.0 : 2.0,
     );
+  }
+
+  function handleSwapSelect(playerId: number) {
+    if (!squad) return;
+    if (swapSourceId === null) {
+      setSwapSourceId(playerId);
+      return;
+    }
+    if (swapSourceId === playerId) {
+      setSwapSourceId(null);
+      return;
+    }
+    const sourceIsBench = squad.bench_order.includes(swapSourceId);
+    const targetIsBench = squad.bench_order.includes(playerId);
+    if (sourceIsBench === targetIsBench) {
+      // Same side as the armed player -- treat this click as re-arming the selection instead.
+      setSwapSourceId(playerId);
+      return;
+    }
+    const outId = sourceIsBench ? playerId : swapSourceId;
+    const inId = sourceIsBench ? swapSourceId : playerId;
+    setSwapSourceId(null);
+    void squadState.substitute(outId, inId);
   }
 
   async function handleClearSquad() {
@@ -54,6 +79,7 @@ export function TeamSelection() {
     ) {
       return;
     }
+    setSwapSourceId(null);
     await squadState.clearSquad();
   }
 
@@ -71,7 +97,10 @@ export function TeamSelection() {
         onViewGameweekChange={setViewGameweek}
         onAutoBuild={() => void handleAutoBuild()}
         onClearSquad={() => void handleClearSquad()}
-        onImportSquad={(teamId) => void squadState.importSquad(teamId)}
+        onImportSquad={(teamId) => {
+          setSwapSourceId(null);
+          void squadState.importSquad(teamId);
+        }}
       />
 
       <ChipBar activeChip={activeChip} onChange={setActiveChip} />
@@ -83,8 +112,13 @@ export function TeamSelection() {
           teams={teams}
           horizon={horizon}
           pinnedGameweek={pinnedGameweek}
-          onRemove={(playerId) => void squadState.removePlayer(playerId)}
+          swapSourceId={swapSourceId}
+          onRemove={(playerId) => {
+            if (swapSourceId === playerId) setSwapSourceId(null);
+            void squadState.removePlayer(playerId);
+          }}
           onSetCaptain={(playerId, role) => void squadState.setCaptain(playerId, role)}
+          onSwapSelect={handleSwapSelect}
         />
 
         <PlayerPanel

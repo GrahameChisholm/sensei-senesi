@@ -39,6 +39,7 @@ from features.squad_rules import (
     remove_player,
     set_captain,
     set_vice_captain,
+    substitute,
     validate_xi,
 )
 from features.team_state import MyTeamState, SquadPlayer
@@ -344,6 +345,16 @@ def set_squad_bench_order(body: schemas.BenchOrderIn) -> schemas.SquadOut:
     new_team_state = replace(
         team_state, starting_xi=tuple(body.starting_xi), bench_order=tuple(body.bench_order)
     )
+    _save_team_state(state, new_team_state)
+    return _squad_out()
+
+
+@app.post("/squad/substitute", response_model=schemas.SquadOut)
+def substitute_squad_player(body: schemas.SubstituteIn) -> schemas.SquadOut:
+    """Swap one starting-XI player for one bench player."""
+    state, team_state = _require_team_state()
+    position_by_player = {player.player_id: player.position for player in state.squad}
+    new_team_state = substitute(team_state, body.out_id, body.in_id, position_by_player)
     _save_team_state(state, new_team_state)
     return _squad_out()
 

@@ -51,6 +51,7 @@ export function useSquad() {
       run(() => api.setCaptain(playerId, role)),
     setBenchOrder: (startingXi: number[], benchOrder: number[]) =>
       run(() => api.setBenchOrder(startingXi, benchOrder)),
+    substitute: (outId: number, inId: number) => run(() => api.substitute(outId, inId)),
     optimiseXi: () => run(() => api.optimiseXi()),
     optimise: (objective: "starting_xi" | "full_squad", captainMultiplier?: number) =>
       run(() => api.optimise(objective, captainMultiplier)),

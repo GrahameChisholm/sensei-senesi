@@ -26,8 +26,11 @@ interface PitchProps {
   /** When set, every card shows its points for this specific gameweek instead of following
    * ``horizon``, used to preview a future gameweek picked via the GameweekSelector. */
   pinnedGameweek?: number;
+  /** The player currently armed as the source of an in-progress substitution, if any. */
+  swapSourceId?: number | null;
   onRemove: (playerId: number) => void;
   onSetCaptain: (playerId: number, role: "captain" | "vice") => void;
+  onSwapSelect: (playerId: number) => void;
 }
 
 /** One pitch for every squad size from empty to a complete 15. Once a starting XI/bench split
@@ -37,19 +40,23 @@ interface PitchProps {
  * slot, since there's no arrangement yet to render a formation from. Removing a squad player is
  * instant (no draft, no confirm) -- the vacated slot just renders empty on the next render.
  * Captain/vice pills only ever show on starting-XI cards, since only they're eligible for the
- * armband. */
+ * armband. Swap pills only show once a starting XI/bench split exists, letting a caller arm one
+ * player as the source of a substitution then complete it by picking a second, opposite-side
+ * player elsewhere on the pitch. */
 export function Pitch({
   squad,
   directory,
   teams,
   horizon,
   pinnedGameweek,
+  swapSourceId,
   onRemove,
   onSetCaptain,
+  onSwapSelect,
 }: PitchProps) {
   const byId = Object.fromEntries(squad.squad.map((p) => [p.player_id, p]));
 
-  function renderCard(playerId: number, isBench: boolean) {
+  function renderCard(playerId: number, isBench: boolean, allowSwap: boolean) {
     const pick = byId[playerId];
     const row = directory[playerId];
     return (
@@ -64,9 +71,11 @@ export function Pitch({
         isCaptain={squad.captain_id === playerId}
         isVice={squad.vice_captain_id === playerId}
         lowConfidence={row?.low_confidence}
+        isSwapSource={swapSourceId === playerId}
         onRemove={() => onRemove(playerId)}
         onCaptain={isBench ? undefined : () => onSetCaptain(playerId, "captain")}
         onVice={isBench ? undefined : () => onSetCaptain(playerId, "vice")}
+        onSwap={allowSwap ? () => onSwapSelect(playerId) : undefined}
       />
     );
   }
@@ -81,12 +90,12 @@ export function Pitch({
       <div className="pitch">
         {POSITION_ORDER.map((position) => (
           <div className="pitch-row" key={position}>
-            {rowsByPosition[position].map((playerId) => renderCard(playerId, false))}
+            {rowsByPosition[position].map((playerId) => renderCard(playerId, false, true))}
           </div>
         ))}
         <div className="pitch-row bench-row">
           <div className="bench-label">Bench</div>
-          {squad.bench_order.map((playerId) => renderCard(playerId, true))}
+          {squad.bench_order.map((playerId) => renderCard(playerId, true, true))}
         </div>
       </div>
     );
@@ -102,7 +111,7 @@ export function Pitch({
         const emptyCount = Math.max(QUOTA[position] - picks.length, 0);
         return (
           <div className="pitch-row" key={position}>
-            {picks.map((pick) => renderCard(pick.player_id, false))}
+            {picks.map((pick) => renderCard(pick.player_id, false, false))}
             {Array.from({ length: emptyCount }, (_, index) => (
               <div key={`empty-${position}-${index}`} className="empty-slot">
                 <span>{position}</span>

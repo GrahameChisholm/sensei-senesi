@@ -236,6 +236,11 @@ class BenchOrderIn(BaseModel):
     bench_order: list[int]
 
 
+class SubstituteIn(BaseModel):
+    out_id: int
+    in_id: int
+
+
 class OptimiseIn(BaseModel):
     objective: str = "starting_xi"  # "starting_xi" | "full_squad" (Bench Boost active)
     captain_multiplier: float = 2.0  # 3.0 under Triple Captain

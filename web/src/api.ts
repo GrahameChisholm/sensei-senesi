@@ -256,6 +256,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ starting_xi, bench_order }),
     }),
+  substitute: (out_id: number, in_id: number) =>
+    request<SquadOut>("/squad/substitute", {
+      method: "POST",
+      body: JSON.stringify({ out_id, in_id }),
+    }),
   optimiseXi: () => request<SquadOut>("/squad/optimise-xi", { method: "POST" }),
   optimise: (objective: "starting_xi" | "full_squad" = "starting_xi", captainMultiplier = 2.0) =>
     request<SquadOut>("/squad/optimise", {

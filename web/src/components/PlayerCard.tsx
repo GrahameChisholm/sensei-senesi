@@ -20,6 +20,10 @@ interface PlayerCardProps {
   isCaptain?: boolean;
   isVice?: boolean;
   lowConfidence?: boolean;
+  /** True while this card is the armed source of an in-progress substitution, so a second click
+   * elsewhere on the pitch completes the swap. Highlights the card so the pending selection stays
+   * visible. */
+  isSwapSource?: boolean;
   /** Shows a small "x" in the top corner on hover, for marking this player for removal from the
    * squad; omit to hide it (there's currently no case where a card is shown without it). */
   onRemove?: () => void;
@@ -27,6 +31,10 @@ interface PlayerCardProps {
    * (only starting-XI players can be captain/vice, so bench cards never get these). */
   onCaptain?: () => void;
   onVice?: () => void;
+  /** Shows a small "⇄" pill in the bottom corner on hover, for arming/completing a starting-XI
+   * <-> bench substitution; omit to hide it (there's currently no case where a card is shown
+   * without it). */
+  onSwap?: () => void;
 }
 
 function fixtureLabel(fixture: CardFixture | undefined): string {
@@ -44,9 +52,11 @@ export function PlayerCard({
   isCaptain,
   isVice,
   lowConfidence,
+  isSwapSource,
   onRemove,
   onCaptain,
   onVice,
+  onSwap,
 }: PlayerCardProps) {
   const [hovered, setHovered] = useState(false);
   const primary =
@@ -56,7 +66,7 @@ export function PlayerCard({
 
   return (
     <div
-      className="player-card"
+      className={`player-card${isSwapSource ? " player-card-swap-source" : ""}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -142,6 +152,20 @@ export function PlayerCard({
             </div>
           ))}
         </div>
+      )}
+
+      {(hovered || isSwapSource) && onSwap && (
+        <button
+          type="button"
+          className="card-swap-button"
+          title="Substitute with another player"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSwap();
+          }}
+        >
+          ⇄
+        </button>
       )}
 
       {hovered && (
