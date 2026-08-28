@@ -63,6 +63,7 @@ from engine.data.live_horizon import (
 )
 from engine.data.player_history import PlayerGameweekActual, load_live_player_history
 from engine.data.snapshots import DEFAULT_BASE_DIR, load_snapshot_tables
+from engine.data.team_rates import TeamRateSnapshot, build_current_team_rates
 from engine.data.understat_client import UnderstatClient
 from engine.projections import (
     PlayerGameweekProjection,
@@ -314,6 +315,7 @@ def assemble_projection_cache(
     model_version: str,
     diagnostics: dict,
     player_history: dict[int, list[PlayerGameweekActual]] | None = None,
+    team_rates: dict[int, TeamRateSnapshot] | None = None,
 ) -> dict:
     """Build the exact JSON-serialisable cache dict §6.1 of the team-page plan specifies -- pure
     assembly from already-computed pieces, no I/O of its own.
@@ -321,7 +323,12 @@ def assemble_projection_cache(
     ``player_history`` (PLAYER_STATS_PLAN Phase 2) is optional so any caller/fixture built before
     the Player Stats page still assembles a valid cache; it defaults to no history for every
     player rather than requiring every call site to be updated.
+
+    ``team_rates`` (fixture-swing plan Phase 1) is likewise optional so a cache built before this
+    feature still assembles; it defaults to no rate for any team, which ``api/state.py`` treats the
+    same way as a team missing from a real, current pull (no snapshot yet, e.g. true GW1).
     """
+    team_rates = team_rates or {}
     player_history = player_history or {}
     team_name_by_id = {int(row.id): row.name for row in live_teams.itertuples()}
     team_short_name_by_id = {int(row.id): row.short_name for row in live_teams.itertuples()}
@@ -383,6 +390,15 @@ def assemble_projection_cache(
         "player_history": {
             str(player_id): _serialize_player_history(history)
             for player_id, history in player_history.items()
+        },
+        "team_rates": {
+            str(team_id): {
+                "home_xg_per_90": snapshot.home_xg_per_90,
+                "away_xg_per_90": snapshot.away_xg_per_90,
+                "home_xga_per_90": snapshot.home_xga_per_90,
+                "away_xga_per_90": snapshot.away_xga_per_90,
+            }
+            for team_id, snapshot in team_rates.items()
         },
     }
 
@@ -513,6 +529,16 @@ def build_projections(
             feature_inputs, prior_merged_gw, synthetic_teams, prior_player_histories
         )
 
+        # --- fixture-swing plan Phase 1: every team's current xG/xGA rate, live for the first
+        # time (previously only ever computed inside backtest's per-gameweek walk-forward replay).
+        team_id_by_name = {row.name: int(row.id) for row in live_teams.itertuples()}
+        team_rate_snapshots = build_current_team_rates(augmented.team_histories, captured_at)
+        team_rates = {
+            team_id_by_name[name]: snapshot
+            for name, snapshot in team_rate_snapshots.items()
+            if name in team_id_by_name
+        }
+
         # --- fit once, project every horizon gameweek ----------------------------------------
         # T-F: live_elements is already loaded above (deadline lookup, cold-start fallback), so
         # building the real chance_of_playing_next_round/status override here is free -- without
@@ -612,6 +638,7 @@ def build_projections(
             model_version,
             diagnostics,
             player_history,
+            team_rates,
         )
         path = write_projection_cache(cache, output_dir, season, gameweek)
         _print_summary(cache, diagnostics, path)

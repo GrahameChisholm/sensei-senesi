@@ -30,6 +30,7 @@ from engine.projections import (
     project_player_horizon,
 )
 from engine.simulate import PlayerSimulationSummary
+from features.fixtures import TeamRates
 
 __all__ = [
     "DEFAULT_PROJECTION_CACHE_DIR",
@@ -93,6 +94,15 @@ def _player_actual_from_dict(data: dict) -> PlayerGameweekActual:
     return PlayerGameweekActual(**data)
 
 
+def _team_rates_from_dict(data: dict) -> TeamRates:
+    return TeamRates(
+        home_xg_per_90=data["home_xg_per_90"],
+        away_xg_per_90=data["away_xg_per_90"],
+        home_xga_per_90=data["home_xga_per_90"],
+        away_xga_per_90=data["away_xga_per_90"],
+    )
+
+
 @dataclass
 class AppState:
     """One loaded projection cache (§6.1 of the team-page plan) — everything the API needs that
@@ -113,6 +123,11 @@ class AppState:
     # Player Stats page (D1/D4/G1) -- this season's actual per-gameweek performance, live only.
     # Empty for any cache built before this field existed (see load_projection_cache's .get()).
     player_history: dict[int, list[PlayerGameweekActual]] = field(default_factory=dict)
+    # Fixture-swing plan Phase 1 -- every team's current xG/xGA rate, live for the first time.
+    # Empty for any cache built before this field existed, or a team the live pull has no rate
+    # for yet (true GW1); every downstream caller of features.fixtures already handles a team
+    # missing from the rates mapping it's given.
+    team_rates: dict[int, TeamRates] = field(default_factory=dict)
     team_id_by_player: dict[int, int] = field(init=False)
     buy_prices: dict[int, int] = field(init=False)
     position_by_player: dict[int, str] = field(init=False)
@@ -146,6 +161,10 @@ def load_projection_cache(path: Path) -> AppState:
         int(player_id): [_player_actual_from_dict(row) for row in rows]
         for player_id, rows in raw.get("player_history", {}).items()
     }
+    team_rates = {
+        int(team_id): _team_rates_from_dict(data)
+        for team_id, data in raw.get("team_rates", {}).items()
+    }
     return AppState(
         season=raw["season"],
         gameweek=raw["gameweek"],
@@ -160,6 +179,7 @@ def load_projection_cache(path: Path) -> AppState:
         fixtures=raw["fixtures"],
         diagnostics=raw["diagnostics"],
         player_history=player_history,
+        team_rates=team_rates,
     )
 
 

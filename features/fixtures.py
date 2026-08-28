@@ -51,9 +51,15 @@ class TeamFixture:
 
 @dataclass(frozen=True)
 class TeamRates:
-    """A team's home/away-split attacking and defensive per-90 xG rates — the EWMA rates from
-    ``engine.rates``, split via ``engine.models.clean_sheets.split_by_venue`` before being fed in
-    here."""
+    """A team's home/away-split attacking and defensive per-90 xG rates.
+
+    Built from a full-sample, league-shrunk per-team rate (``engine.data.team_rates``) with a
+    separate, data-efficient home/away multiplier applied on top, not a true per-venue split of
+    the underlying rate itself. A direct venue split (``engine.models.clean_sheets.split_by_venue``)
+    was tried and reverted after it measurably made clean-sheet calibration worse than a constant
+    baseline: halving the sample behind every team rate cost more than the venue effect was worth.
+    See ``engine.data.team_rates``'s module docstring for the full rationale and the shrinkage
+    math this module's callers rely on to populate these fields."""
 
     home_xg_per_90: float
     away_xg_per_90: float
