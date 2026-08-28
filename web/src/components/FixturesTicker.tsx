@@ -34,14 +34,21 @@ function sortRows(
 
 interface FixturesTickerProps {
   teams: Record<number, TeamOut>;
+  // Empty (or omitted) means no filter -- every team shows, matching PlayerStats' own team-picker
+  // convention (features/player_stats filters use the same "empty selection = show all" rule).
+  selectedTeamIds?: Set<number>;
 }
 
-export function FixturesTicker({ teams }: FixturesTickerProps) {
+export function FixturesTicker({ teams, selectedTeamIds }: FixturesTickerProps) {
   const [horizon, setHorizon] = useState(5);
   const [sortKey, setSortKey] = useState<SortKey>("difficulty");
 
   const { rows: unsortedRows, loading } = useFixtureTicker(horizon);
-  const rows = useMemo(() => sortRows(unsortedRows, teams, sortKey), [unsortedRows, teams, sortKey]);
+  const rows = useMemo(() => {
+    const sorted = sortRows(unsortedRows, teams, sortKey);
+    if (!selectedTeamIds || selectedTeamIds.size === 0) return sorted;
+    return sorted.filter((row) => selectedTeamIds.has(row.team_id));
+  }, [unsortedRows, teams, sortKey, selectedTeamIds]);
 
   return (
     <div className="player-panel fixture-ticker">

@@ -150,18 +150,35 @@ def _horizon_difficulty_out(
 
 @app.get("/teams/fixture-swing", response_model=schemas.FixtureSwingResponseOut)
 def list_fixture_swing(
-    near: int = DEFAULT_NEAR_GAMEWEEKS,
-    far: int = DEFAULT_FAR_GAMEWEEKS,
+    near_from: int | None = None,
+    near_to: int | None = None,
+    far_from: int | None = None,
+    far_to: int | None = None,
 ) -> schemas.FixtureSwingResponseOut:
-    """Fixture swing detection plan Phase 3: per-team fixture-difficulty swing between the next
-    ``near`` gameweeks and the ``far`` gameweeks after that -- is this team's run getting easier or
-    harder, distinct from any change in an individual player's own outlook.
+    """Fixture swing detection plan Phase 3: per-team fixture-difficulty swing between an arbitrary
+    near gameweek range and an arbitrary far one -- is this team's run getting easier or harder,
+    distinct from any change in an individual player's own outlook.
+
+    Each bound defaults independently when omitted, chaining onto whatever was resolved just
+    before it so a caller can override only the window(s) they care about: ``near_from`` defaults
+    to the app's current gameweek, ``near_to`` to ``near_from + DEFAULT_NEAR_GAMEWEEKS - 1``,
+    ``far_from`` to right after the (possibly customized) near window ends, and ``far_to`` to
+    ``far_from + DEFAULT_FAR_GAMEWEEKS - 1`` -- reproducing the original locked-in 3-vs-5 default
+    when all four are omitted.
     """
-    if near < 1 or far < 1:
-        raise ValueError("near and far must each be at least 1")
     app_state = get_app_state()
-    near_gameweeks = list(range(app_state.gameweek, app_state.gameweek + near))
-    far_gameweeks = list(range(near_gameweeks[-1] + 1, near_gameweeks[-1] + 1 + far))
+    if near_from is None:
+        near_from = app_state.gameweek
+    if near_to is None:
+        near_to = near_from + DEFAULT_NEAR_GAMEWEEKS - 1
+    if far_from is None:
+        far_from = near_to + 1
+    if far_to is None:
+        far_to = far_from + DEFAULT_FAR_GAMEWEEKS - 1
+    if near_from < 1 or near_to < near_from or far_from < 1 or far_to < far_from:
+        raise ValueError("each window's `to` must be >= its `from`, and both must be at least 1")
+    near_gameweeks = list(range(near_from, near_to + 1))
+    far_gameweeks = list(range(far_from, far_to + 1))
 
     squad_state = get_squad_state()
     owned_ids = {player.player_id for player in squad_state.squad}

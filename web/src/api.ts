@@ -306,8 +306,20 @@ export const api = {
 
   getFixtureTicker: (horizon?: number) =>
     request<FixtureTickerRowOut[]>(`/fixtures${query({ horizon })}`),
-  getFixtureSwing: (near?: number, far?: number) =>
-    request<FixtureSwingResponseOut>(`/teams/fixture-swing${query({ near, far })}`),
+  getFixtureSwing: (
+    nearFrom?: number,
+    nearTo?: number,
+    farFrom?: number,
+    farTo?: number,
+  ) =>
+    request<FixtureSwingResponseOut>(
+      `/teams/fixture-swing${query({
+        near_from: nearFrom,
+        near_to: nearTo,
+        far_from: farFrom,
+        far_to: farTo,
+      })}`,
+    ),
   getPlayerStats: (gameweekFrom: number, gameweekTo: number) =>
     request<PlayerStatsRowOut[]>(
       `/players/stats${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,

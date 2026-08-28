@@ -62,14 +62,27 @@ interface FixtureSwingTableProps {
   teams: Record<number, TeamOut>;
   nearGameweeks: number[];
   farGameweeks: number[];
+  // Empty (or omitted) means no filter -- every team shows, matching FixturesTicker's own
+  // selectedTeamIds convention so both tables share one selection with identical semantics.
+  selectedTeamIds?: Set<number>;
 }
 
-export function FixtureSwingTable({ rows, teams, nearGameweeks, farGameweeks }: FixtureSwingTableProps) {
+export function FixtureSwingTable({
+  rows,
+  teams,
+  nearGameweeks,
+  farGameweeks,
+  selectedTeamIds,
+}: FixtureSwingTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("attack_swing");
   const [sortDescending, setSortDescending] = useState(true);
 
   const sortedRows = useMemo(() => {
-    const withValue = rows.map((row) => ({ row, value: sortValue(row, teams, sortKey) }));
+    const filtered =
+      !selectedTeamIds || selectedTeamIds.size === 0
+        ? rows
+        : rows.filter((row) => selectedTeamIds.has(row.team_id));
+    const withValue = filtered.map((row) => ({ row, value: sortValue(row, teams, sortKey) }));
     withValue.sort((a, b) => {
       if (typeof a.value === "string" || typeof b.value === "string") {
         return String(a.value).localeCompare(String(b.value)) * (sortDescending ? -1 : 1);
@@ -77,7 +90,7 @@ export function FixtureSwingTable({ rows, teams, nearGameweeks, farGameweeks }: 
       return (a.value - b.value) * (sortDescending ? -1 : 1);
     });
     return withValue.map((entry) => entry.row);
-  }, [rows, teams, sortKey, sortDescending]);
+  }, [rows, teams, sortKey, sortDescending, selectedTeamIds]);
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {

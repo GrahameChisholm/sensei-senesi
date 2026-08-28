@@ -3,10 +3,16 @@ import { api, FixtureSwingResponseOut } from "../api";
 
 const EMPTY: FixtureSwingResponseOut = { near_gameweeks: [], far_gameweeks: [], rows: [] };
 
-/** The Fixtures page's swing table -- refetches whenever the near/far window sizes change, since
- * those resolve server-side against the app's own current gameweek (features.fixture_swing),
- * matching useFixtureTicker's own horizon-refetch shape. */
-export function useFixtureSwing(near: number, far: number) {
+/** The Fixtures page's swing table -- refetches whenever either window's bounds change. Any bound
+ * left undefined resolves server-side against the app's own current gameweek
+ * (features.fixture_swing's locked-in defaults), matching useFixtureTicker's own
+ * horizon-refetch shape. */
+export function useFixtureSwing(
+  nearFrom?: number,
+  nearTo?: number,
+  farFrom?: number,
+  farTo?: number,
+) {
   const [data, setData] = useState<FixtureSwingResponseOut>(EMPTY);
   const [loading, setLoading] = useState(true);
 
@@ -14,7 +20,7 @@ export function useFixtureSwing(near: number, far: number) {
     setLoading(true);
     let cancelled = false;
     api
-      .getFixtureSwing(near, far)
+      .getFixtureSwing(nearFrom, nearTo, farFrom, farTo)
       .then((result) => {
         if (!cancelled) setData(result);
       })
@@ -24,7 +30,7 @@ export function useFixtureSwing(near: number, far: number) {
     return () => {
       cancelled = true;
     };
-  }, [near, far]);
+  }, [nearFrom, nearTo, farFrom, farTo]);
 
   return {
     nearGameweeks: data.near_gameweeks,

@@ -87,12 +87,48 @@ class TestFixtureSwing:
         assert body["near_gameweeks"] == [1, 2, 3]
         assert body["far_gameweeks"] == [4, 5, 6, 7, 8]
 
-    def test_explicit_windows_resolve_relative_to_the_current_gameweek(self, client):
-        response = client.get("/teams/fixture-swing", params={"near": 2, "far": 2})
+    def test_explicit_windows_can_be_set_directly_and_independently(self, client):
+        response = client.get(
+            "/teams/fixture-swing",
+            params={"near_from": 3, "near_to": 5, "far_from": 6, "far_to": 8},
+        )
         assert response.status_code == 200
         body = response.json()
-        assert body["near_gameweeks"] == [1, 2]
-        assert body["far_gameweeks"] == [3, 4]
+        assert body["near_gameweeks"] == [3, 4, 5]
+        assert body["far_gameweeks"] == [6, 7, 8]
+
+    def test_far_window_chains_after_a_customized_near_window_when_unset(self, client):
+        response = client.get("/teams/fixture-swing", params={"near_from": 1, "near_to": 1})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["near_gameweeks"] == [1]
+        # far_from defaults to right after the customized near window, far_to still uses the
+        # locked-in DEFAULT_FAR_GAMEWEEKS width.
+        assert body["far_gameweeks"] == [2, 3, 4, 5, 6]
+
+    def test_windows_can_be_set_independently_with_no_ordering_constraint(self, client):
+        # The two windows don't have to be adjacent or even in chronological order -- a caller can
+        # ask to compare any two arbitrary ranges, e.g. GW5-7 against GW2-8.
+        response = client.get(
+            "/teams/fixture-swing",
+            params={"near_from": 5, "near_to": 7, "far_from": 2, "far_to": 8},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["near_gameweeks"] == [5, 6, 7]
+        assert body["far_gameweeks"] == [2, 3, 4, 5, 6, 7, 8]
+
+    def test_near_to_before_near_from_is_rejected(self, client):
+        response = client.get("/teams/fixture-swing", params={"near_from": 5, "near_to": 3})
+        assert response.status_code == 400
+
+    def test_far_to_before_far_from_is_rejected(self, client):
+        response = client.get("/teams/fixture-swing", params={"far_from": 5, "far_to": 3})
+        assert response.status_code == 400
+
+    def test_zero_near_from_is_rejected(self, client):
+        response = client.get("/teams/fixture-swing", params={"near_from": 0, "near_to": 1})
+        assert response.status_code == 400
 
     def test_improving_run_has_a_positive_attack_swing(self, client):
         rows = client.get("/teams/fixture-swing").json()["rows"]
@@ -127,17 +163,9 @@ class TestFixtureSwing:
         rows = client.get("/teams/fixture-swing").json()["rows"]
         assert all(row["has_owned_player"] is False for row in rows)
 
-    def test_zero_near_is_rejected(self, client):
-        response = client.get("/teams/fixture-swing", params={"near": 0})
-        assert response.status_code == 400
 
-    def test_zero_far_is_rejected(self, client):
-        response = client.get("/teams/fixture-swing", params={"far": 0})
-        assert response.status_code == 400
-
-
-def test_no_team_rates_yet_returns_an_empty_row_list():
-    state_module.reset_state()
+def test_no_team_rates_yet_returns_an_empty_row_list(tmp_path):
+    state_module.reset_state(db_path=str(tmp_path / "test.sqlite"))
     state_module.set_app_state(_fixture_app_state(team_rates={}))
     from api.main import app
 
