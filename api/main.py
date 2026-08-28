@@ -142,6 +142,7 @@ def get_gameweek() -> schemas.GameweekOut:
         deadline_passed=state.deadline_passed,
         generated_at=state.generated_at.isoformat(),
         model_version=state.model_version,
+        horizon_gameweeks=state.horizon_gameweeks,
     )
 
 
@@ -401,12 +402,24 @@ def auto_build_squad(body: schemas.OptimiseIn) -> schemas.SquadOut:
 
 
 @app.get("/squad/points", response_model=schemas.SquadPointsOut)
-def get_squad_points(chip: str | None = None, horizon: int = 1) -> schemas.SquadPointsOut:
+def get_squad_points(
+    chip: str | None = None, horizon: int = 1, gameweek: int | None = None
+) -> schemas.SquadPointsOut:
     """Pass ``chip`` (``"bench_boost"`` or ``"triple_captain"``) to preview points under that
-    toggle — it's stateless, nothing is "spent" or remembered between calls."""
+    toggle — it's stateless, nothing is "spent" or remembered between calls. Pass ``gameweek`` to
+    rescore the saved starting XI as of a single future gameweek within the current horizon,
+    instead of summing ``horizon`` gameweeks from now."""
     _, team_state = _require_team_state()
     app_state = get_app_state()
-    gameweeks = app_state.horizon_gameweeks[: max(horizon, 1)] or [app_state.gameweek]
+    if gameweek is not None:
+        if gameweek not in app_state.horizon_gameweeks:
+            raise ValueError(
+                f"gameweek {gameweek} is outside the current horizon "
+                f"{app_state.horizon_gameweeks}"
+            )
+        gameweeks = [gameweek]
+    else:
+        gameweeks = app_state.horizon_gameweeks[: max(horizon, 1)] or [app_state.gameweek]
     result = projected_points(team_state, app_state.projections, gameweeks, chip=chip)
     return schemas.SquadPointsOut(
         total=result.total,

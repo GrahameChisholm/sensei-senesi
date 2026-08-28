@@ -569,6 +569,21 @@ class TestSquadPoints:
         response = client.get("/squad/points", params={"chip": "wildcard"})
         assert response.status_code == 400
 
+    def test_gameweek_param_rescores_for_a_future_gameweek(self, client):
+        _build_full_squad(client)
+        current_gw = state_module.get_app_state().gameweek
+        future_gw = state_module.get_app_state().horizon_gameweeks[-1]
+        current = client.get("/squad/points", params={"gameweek": current_gw}).json()
+        future = client.get("/squad/points", params={"gameweek": future_gw}).json()
+        assert current["per_gameweek"] == {str(current_gw): pytest.approx(current["total"])}
+        assert future["per_gameweek"] == {str(future_gw): pytest.approx(future["total"])}
+
+    def test_gameweek_param_outside_horizon_is_rejected(self, client):
+        _build_full_squad(client)
+        out_of_range = max(state_module.get_app_state().horizon_gameweeks) + 1
+        response = client.get("/squad/points", params={"gameweek": out_of_range})
+        assert response.status_code == 400
+
 
 class TestPlayersPanel:
     def test_list_players_returns_rows(self, client):

@@ -57,6 +57,7 @@ class GameweekOut(BaseModel):
     deadline_passed: bool
     generated_at: str
     model_version: str
+    horizon_gameweeks: list[int]
 
 
 class SquadOut(BaseModel):
