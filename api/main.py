@@ -105,12 +105,21 @@ def list_teams() -> list[schemas.TeamOut]:
 
 @app.get("/fixtures", response_model=list[schemas.FixtureTickerRowOut])
 def list_fixture_ticker(
-    horizon: int = DEFAULT_FIXTURE_TICKER_HORIZON,
+    gameweek_from: int | None = None,
+    gameweek_to: int | None = None,
 ) -> list[schemas.FixtureTickerRowOut]:
-    if horizon < 1:
-        raise ValueError("horizon must be at least 1")
+    """Each bound defaults independently when omitted, chaining the same way
+    ``/teams/fixture-swing``'s near/far bounds do: ``gameweek_from`` defaults to the app's current
+    gameweek, ``gameweek_to`` to ``gameweek_from + DEFAULT_FIXTURE_TICKER_HORIZON - 1``, so an
+    arbitrary window like GW4-6 is just as valid as the locked-in 5-gameweek default."""
     app_state = get_app_state()
-    gameweeks = list(range(app_state.gameweek, app_state.gameweek + horizon))
+    if gameweek_from is None:
+        gameweek_from = app_state.gameweek
+    if gameweek_to is None:
+        gameweek_to = gameweek_from + DEFAULT_FIXTURE_TICKER_HORIZON - 1
+    if gameweek_from < 1 or gameweek_to < gameweek_from:
+        raise ValueError("gameweek_to must be >= gameweek_from, and both must be at least 1")
+    gameweeks = list(range(gameweek_from, gameweek_to + 1))
     rows = build_fixture_ticker_rows(app_state.fixtures, app_state.teams.keys(), gameweeks)
     return [
         schemas.FixtureTickerRowOut(
