@@ -690,6 +690,10 @@ button {
   color: var(--text-muted);
 }
 
+.fixture-swing {
+  margin-top: 1rem;
+}
+
 /* --- Fixtures ticker --- */
 
 .ticker-fixture-entry {
@@ -1007,6 +1011,12 @@ button {
 .archetype-riding_luck {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.owned-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+  margin-left: 0.4rem;
 }
 
 .differentials-thesis-row td {
