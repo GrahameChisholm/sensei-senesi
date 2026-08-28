@@ -304,8 +304,10 @@ export const api = {
   getPlayer: (playerId: number, gameweek?: number) =>
     request<PlayerDetailOut>(`/players/${playerId}${query({ gameweek })}`),
 
-  getFixtureTicker: (horizon?: number) =>
-    request<FixtureTickerRowOut[]>(`/fixtures${query({ horizon })}`),
+  getFixtureTicker: (gameweekFrom?: number, gameweekTo?: number) =>
+    request<FixtureTickerRowOut[]>(
+      `/fixtures${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,
+    ),
   getFixtureSwing: (
     nearFrom?: number,
     nearTo?: number,

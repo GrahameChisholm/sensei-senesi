@@ -115,7 +115,7 @@ export function usePlayerPanel(filters: {
   return { rows, loading };
 }
 
-export function useFixtureTicker(horizon: number) {
+export function useFixtureTicker(gameweekFrom?: number, gameweekTo?: number) {
   const [rows, setRows] = useState<FixtureTickerRowOut[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -123,7 +123,7 @@ export function useFixtureTicker(horizon: number) {
     setLoading(true);
     let cancelled = false;
     api
-      .getFixtureTicker(horizon)
+      .getFixtureTicker(gameweekFrom, gameweekTo)
       .then((result) => {
         if (!cancelled) setRows(result);
       })
@@ -133,7 +133,7 @@ export function useFixtureTicker(horizon: number) {
     return () => {
       cancelled = true;
     };
-  }, [horizon]);
+  }, [gameweekFrom, gameweekTo]);
 
   return { rows, loading };
 }

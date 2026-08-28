@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { TeamOut, TeamSwingRowOut } from "../api";
 import { fixtureDifficultyColour, fixtureDifficultyTextColour } from "../lib/colours";
+import { GameweekStepper } from "./GameweekStepper";
 
 type SortKey =
   | "team"
@@ -62,9 +63,18 @@ interface FixtureSwingTableProps {
   teams: Record<number, TeamOut>;
   nearGameweeks: number[];
   farGameweeks: number[];
-  // Empty (or omitted) means no filter -- every team shows, matching FixturesTicker's own
-  // selectedTeamIds convention so both tables share one selection with identical semantics.
-  selectedTeamIds?: Set<number>;
+  // The near/far window bounds and their setters -- null until the page has seeded them from the
+  // app's current gameweek, matching FixturesPage's own rangeInitialized pattern.
+  nearFrom: number | null;
+  nearTo: number | null;
+  farFrom: number | null;
+  farTo: number | null;
+  onNearFromChange: (value: number) => void;
+  onNearToChange: (value: number) => void;
+  onFarFromChange: (value: number) => void;
+  onFarToChange: (value: number) => void;
+  minGameweek: number;
+  maxGameweek: number;
 }
 
 export function FixtureSwingTable({
@@ -72,17 +82,22 @@ export function FixtureSwingTable({
   teams,
   nearGameweeks,
   farGameweeks,
-  selectedTeamIds,
+  nearFrom,
+  nearTo,
+  farFrom,
+  farTo,
+  onNearFromChange,
+  onNearToChange,
+  onFarFromChange,
+  onFarToChange,
+  minGameweek,
+  maxGameweek,
 }: FixtureSwingTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("attack_swing");
   const [sortDescending, setSortDescending] = useState(true);
 
   const sortedRows = useMemo(() => {
-    const filtered =
-      !selectedTeamIds || selectedTeamIds.size === 0
-        ? rows
-        : rows.filter((row) => selectedTeamIds.has(row.team_id));
-    const withValue = filtered.map((row) => ({ row, value: sortValue(row, teams, sortKey) }));
+    const withValue = rows.map((row) => ({ row, value: sortValue(row, teams, sortKey) }));
     withValue.sort((a, b) => {
       if (typeof a.value === "string" || typeof b.value === "string") {
         return String(a.value).localeCompare(String(b.value)) * (sortDescending ? -1 : 1);
@@ -90,7 +105,7 @@ export function FixtureSwingTable({
       return (a.value - b.value) * (sortDescending ? -1 : 1);
     });
     return withValue.map((entry) => entry.row);
-  }, [rows, teams, sortKey, sortDescending, selectedTeamIds]);
+  }, [rows, teams, sortKey, sortDescending]);
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -120,6 +135,26 @@ export function FixtureSwingTable({
         Is this team's run of fixtures getting easier ({nearLabel} vs {farLabel})? A positive swing
         means the near-term fixtures are harder than what's coming -- buy in before it turns.
       </p>
+
+      {nearFrom !== null && nearTo !== null && farFrom !== null && farTo !== null && (
+        <div className="stats-filters-row fixture-swing-controls">
+          <label className="stats-range-label">
+            Near gameweeks
+            <span className="stats-range-inputs">
+              <GameweekStepper value={nearFrom} min={minGameweek} max={nearTo} onChange={onNearFromChange} />
+              <GameweekStepper value={nearTo} min={nearFrom} max={maxGameweek} onChange={onNearToChange} />
+            </span>
+          </label>
+
+          <label className="stats-range-label">
+            Far gameweeks
+            <span className="stats-range-inputs">
+              <GameweekStepper value={farFrom} min={minGameweek} max={farTo} onChange={onFarFromChange} />
+              <GameweekStepper value={farTo} min={farFrom} max={maxGameweek} onChange={onFarToChange} />
+            </span>
+          </label>
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <div className="differentials-empty">No team-rate data available yet.</div>
