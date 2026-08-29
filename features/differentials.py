@@ -26,6 +26,18 @@ the pitch at all.
 Layering matches ``features/player_stats.py`` and ``features/transfers.py`` exactly: this returns
 the whole matching pool unsorted (D10: no composite score, so there is no single ranking to
 apply), the API layer maps it to response rows, and click-to-sort happens in the browser.
+
+**Ownership is lens-dependent (MINI_LEAGUE_PLAN M24, supersedes DIFFERENTIALS_PLAN D1's original
+global-only framing).** D1 originally gated "differential" purely on FPL-wide ownership. A player
+at 4% globally who three of your league rivals happen to own is not a differential for you; a
+player at 25% globally nobody in your league owns is. Both the ownership percentage/count used for
+filtering and the ownership columns shown are therefore supplied by the caller as one
+:class:`OwnershipLens` -- either the FPL-wide percentage (the ``"global"`` lens, this module's
+original and still-supported behaviour) or a specific mini-league's captaincy-weighted effective
+ownership (the ``"league"`` lens, sourced from :mod:`features.mini_league`). This module never
+learns what a mini-league is; it only ever reads whichever lens it's handed, keeping the "which
+lens, and the fallback chain between them" decision entirely in the API layer (``api/main.py``),
+matching this module's existing "no I/O, no caller-specific knowledge" stance.
 """
 
 from __future__ import annotations
@@ -59,6 +71,7 @@ __all__ = [
     "DifferentialWindow",
     "PriceBracketBaseline",
     "PriceBracketBaselines",
+    "OwnershipLens",
     "PlayerDifferential",
     "resolve_window",
     "fit_price_bracket_baselines",
@@ -173,6 +186,35 @@ class PriceBracketBaselines:
         return self.by_position.get(position)
 
 
+GLOBAL_LENS = "global"
+LEAGUE_LENS = "league"
+
+
+@dataclass(frozen=True)
+class OwnershipLens:
+    """Per-player ownership under one lens (MINI_LEAGUE_PLAN M24/M26) -- either
+    :data:`GLOBAL_LENS` (FPL-wide ``selected_by_percent``) or :data:`LEAGUE_LENS` (one mini-league's
+    captaincy-weighted effective ownership, built from :mod:`features.mini_league`). A player
+    missing from any of these mappings is simply not owned/rated under this lens, not an error --
+    every lookup degrades to ``None``/``0``/``()``.
+
+    ``owner_count``/``eo_multiplier``/``owner_names`` are only ever populated under the league
+    lens: the global lens has no notion of "how many rivals" or "which of them by name", only a
+    single FPL-wide percentage.
+    """
+
+    source: str  # GLOBAL_LENS | LEAGUE_LENS
+    n_rivals: int | None  # number of rivals the league lens was computed over; None under global
+    percent: Mapping[int, float | None]
+    owner_count: Mapping[int, int]
+    eo_multiplier: Mapping[int, float]
+    owner_names: Mapping[int, tuple[str, ...]]
+
+    def __post_init__(self) -> None:
+        if self.source not in (GLOBAL_LENS, LEAGUE_LENS):
+            raise ValueError(f"unknown ownership lens source: {self.source!r}")
+
+
 @dataclass(frozen=True)
 class PlayerDifferential:
     """One player's window, fully computed. Every field here is a real, independently sortable
@@ -204,11 +246,23 @@ class PlayerDifferential:
     recent_vs_earlier_points_per_90: float | None
     minutes_trend: float | None
 
+    # Ownership under whichever OwnershipLens the caller supplied (M24/M26) -- the FPL-wide
+    # percentage under the global lens, or the league's captaincy-weighted EO percentage under the
+    # league lens. ``ownership_trend_pct_per_gw``/``net_transfers_per_gw`` are the two exceptions
+    # (M27): both are always FPL-wide market-momentum signals, sourced from PlayerGameweekActual's
+    # own global ``selected``/``transfers_in``/``transfers_out`` counters, regardless of lens --
+    # they measure something a single mini-league is too small to say anything useful about.
     current_ownership_percent: float | None
     ownership_trend_pct_per_gw: float | None
     net_transfers_per_gw: float | None
 
     archetype: Archetype
+
+    # League-lens-only columns (M28) -- ``None``/``()`` under the global lens, or for a player no
+    # rival owns under the league lens.
+    league_owner_count: int | None = None
+    league_eo_multiplier: float | None = None
+    league_owner_names: tuple[str, ...] = ()
 
 
 def resolve_window(latest_played_gameweek: int, requested_gameweeks: int) -> DifferentialWindow:
@@ -359,12 +413,20 @@ def compute_player_differential(
     current_ownership_percent: float | None = None,
     shrinkage_k: float = SHRINKAGE_K,
     total_managers: float = DEFAULT_TOTAL_MANAGERS,
+    league_owner_count: int | None = None,
+    league_eo_multiplier: float | None = None,
+    league_owner_names: tuple[str, ...] = (),
 ) -> PlayerDifferential | None:
     """One player's window, already filtered to the resolved :class:`DifferentialWindow` and
     sorted chronologically (:func:`_records_in_window`'s contract). Returns ``None`` for zero
     minutes (D7's only hard exclusion) or when no peer baseline exists at all for this position
     (only possible if literally nobody in the position played this window -- effectively the same
     preseason case :func:`resolve_window` already names, not a second designed gate).
+
+    ``current_ownership_percent`` is whichever :class:`OwnershipLens` the caller is using;
+    ``league_owner_count``/``league_eo_multiplier``/``league_owner_names`` (M28) are additionally
+    populated only when that lens is the league one -- left at their defaults otherwise, matching
+    every other "not applicable under this lens" field on :class:`PlayerDifferential`.
     """
     minutes = sum(r.minutes for r in records)
     if minutes <= 0:
@@ -449,7 +511,15 @@ def compute_player_differential(
         ownership_trend_pct_per_gw=ownership_trend_pct_per_gw,
         net_transfers_per_gw=net_transfers_per_gw,
         archetype=archetype,
+        league_owner_count=league_owner_count,
+        league_eo_multiplier=league_eo_multiplier,
+        league_owner_names=league_owner_names,
     )
+
+
+_EMPTY_GLOBAL_LENS = OwnershipLens(
+    source=GLOBAL_LENS, n_rivals=None, percent={}, owner_count={}, eo_multiplier={}, owner_names={}
+)
 
 
 def build_differentials(
@@ -458,18 +528,25 @@ def build_differentials(
     price_by_player: Mapping[int, int],
     latest_played_gameweek: int,
     window_gameweeks: int = DEFAULT_WINDOW_GAMEWEEKS,
-    current_ownership_by_player: Mapping[int, float | None] | None = None,
+    ownership: OwnershipLens | None = None,
     max_ownership_percent: float | None = None,
+    max_league_owners: int | None = None,
     total_managers: float = DEFAULT_TOTAL_MANAGERS,
 ) -> tuple[DifferentialWindow, list[PlayerDifferential]]:
     """Every player with real minutes in the resolved window (D7), unsorted -- D10's "no composite
     score", so there is no single ranking to apply here; the caller sorts on whichever column it
-    wants. ``max_ownership_percent`` is applied here rather than left to the API layer, per D1:
-    which players even count as "a differential" is FPL rule/domain logic, not a display filter.
-    A player with unknown current ownership is kept rather than dropped -- there is no ownership
-    figure to disprove they qualify.
+    wants.
+
+    ``ownership`` (M24/M26) supplies both the filter and the display columns; it defaults to an
+    empty global lens (no ownership data at all) when omitted, matching this function's original
+    behaviour before the league lens existed. Which filter parameter actually applies follows
+    ``ownership.source`` (M25): ``max_ownership_percent`` under the global lens (a player with
+    unknown percentage is kept rather than dropped, since there is no figure to disprove they
+    qualify), ``max_league_owners`` under the league lens (every player has a definite owner count,
+    0 if no rival owns them, so there is no "unknown" case to preserve there). Either filter is
+    domain logic applied here, per D1, not a display concern left to the API layer.
     """
-    current_ownership_by_player = current_ownership_by_player or {}
+    ownership = ownership if ownership is not None else _EMPTY_GLOBAL_LENS
     window = resolve_window(latest_played_gameweek, window_gameweeks)
     if window.gameweek_to < window.gameweek_from:
         return window, []
@@ -488,21 +565,31 @@ def build_differentials(
         price = price_by_player.get(player_id)
         if position is None or price is None:
             continue
-        ownership = current_ownership_by_player.get(player_id)
-        if (
-            max_ownership_percent is not None
-            and ownership is not None
-            and ownership > max_ownership_percent
-        ):
-            continue
+
+        percent = ownership.percent.get(player_id)
+        if ownership.source == GLOBAL_LENS:
+            if max_ownership_percent is not None and percent is not None:
+                if percent > max_ownership_percent:
+                    continue
+        else:
+            owner_count = ownership.owner_count.get(player_id, 0)
+            if max_league_owners is not None and owner_count > max_league_owners:
+                continue
+
+        is_league_lens = ownership.source == LEAGUE_LENS
         differential = compute_player_differential(
             player_id,
             position,
             price,
             records,
             baselines,
-            current_ownership_percent=ownership,
+            current_ownership_percent=percent,
             total_managers=total_managers,
+            league_owner_count=ownership.owner_count.get(player_id, 0) if is_league_lens else None,
+            league_eo_multiplier=(
+                ownership.eo_multiplier.get(player_id, 0.0) if is_league_lens else None
+            ),
+            league_owner_names=ownership.owner_names.get(player_id, ()) if is_league_lens else (),
         )
         if differential is not None:
             results.append(differential)

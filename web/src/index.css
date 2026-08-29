@@ -1093,6 +1093,13 @@ button {
   white-space: normal;
 }
 
+.differentials-inline-thesis {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  white-space: normal;
+  max-width: 16rem;
+}
+
 .confidence-dots {
   letter-spacing: 0.1em;
   color: var(--accent);

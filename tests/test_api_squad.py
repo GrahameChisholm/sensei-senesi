@@ -437,6 +437,17 @@ class TestImportSquad:
         response = client.post("/squad/import", json={"team_id": 123456})
         assert response.json()["budget_ceiling"] == 1000
 
+    def test_records_the_imported_team_id_as_the_app_wide_fpl_team_id(self, client, monkeypatch):
+        """MINI_LEAGUE_PLAN M14: importing your own squad is the one place this app already
+        learns which FPL entry is "you" -- the Mini League page needs that to exclude your own
+        entry from a league's effective-ownership field."""
+        self._stub_client(monkeypatch)
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200, response.json()
+
+        settings = client.get("/mini-league/leagues").json()
+        assert settings["fpl_team_id"] == 123456
+
     def test_overwrites_an_existing_squad(self, client, monkeypatch):
         _build_full_squad(client)
         self._stub_client(monkeypatch)
@@ -641,3 +652,36 @@ class TestPersistenceAcrossRestart:
         assert body["is_complete"] is False
         assert len(body["squad"]) == 1
         assert body["squad"][0]["player_id"] == GK1
+
+
+class TestMiniLeagueSettings:
+    """GET/POST /mini-league/leagues -- MINI_LEAGUE_PLAN M14's app-wide settings."""
+
+    def test_defaults_to_no_team_id_and_no_leagues(self, client):
+        body = client.get("/mini-league/leagues").json()
+        assert body == {"fpl_team_id": None, "mini_league_ids": []}
+
+    def test_saving_settings_round_trips(self, client):
+        response = client.post(
+            "/mini-league/leagues", json={"fpl_team_id": 555, "mini_league_ids": [111, 222]}
+        )
+        assert response.status_code == 200, response.json()
+        assert response.json() == {"fpl_team_id": 555, "mini_league_ids": [111, 222]}
+
+        assert client.get("/mini-league/leagues").json() == {
+            "fpl_team_id": 555,
+            "mini_league_ids": [111, 222],
+        }
+
+    def test_saving_settings_survives_a_simulated_restart(self, client):
+        client.post("/mini-league/leagues", json={"fpl_team_id": 555, "mini_league_ids": [111]})
+
+        db_path = state_module._db_path
+        app_state = state_module.get_app_state()
+        state_module.reset_state(db_path=db_path)
+        state_module.set_app_state(app_state)
+
+        assert client.get("/mini-league/leagues").json() == {
+            "fpl_team_id": 555,
+            "mini_league_ids": [111],
+        }

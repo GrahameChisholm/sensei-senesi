@@ -233,6 +233,7 @@ def _serialize_simulation(simulation) -> dict | None:
         "floor": simulation.floor,
         "ceiling": simulation.ceiling,
         "prob_big_haul": simulation.prob_big_haul,
+        "std": simulation.std,
     }
 
 

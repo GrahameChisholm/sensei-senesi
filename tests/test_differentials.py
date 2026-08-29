@@ -7,14 +7,42 @@ from __future__ import annotations
 from engine.data.player_history import PlayerGameweekActual
 from engine.scoring import GK, MID
 from features.differentials import (
+    GLOBAL_LENS,
+    LEAGUE_LENS,
     Archetype,
     Confidence,
     DifferentialWindow,
+    OwnershipLens,
     build_differentials,
     compute_player_differential,
     fit_price_bracket_baselines,
     resolve_window,
 )
+
+
+def _global_lens(percent: dict[int, float | None]) -> OwnershipLens:
+    return OwnershipLens(
+        source=GLOBAL_LENS,
+        n_rivals=None,
+        percent=percent,
+        owner_count={},
+        eo_multiplier={},
+        owner_names={},
+    )
+
+
+def _league_lens(
+    owner_count: dict[int, int], n_rivals: int, eo_multiplier: dict[int, float] | None = None
+) -> OwnershipLens:
+    eo_multiplier = eo_multiplier or {}
+    return OwnershipLens(
+        source=LEAGUE_LENS,
+        n_rivals=n_rivals,
+        percent={pid: mult * 100.0 for pid, mult in eo_multiplier.items()},
+        owner_count=owner_count,
+        eo_multiplier=eo_multiplier,
+        owner_names={},
+    )
 
 
 def _actual(gameweek: int, **overrides) -> PlayerGameweekActual:
@@ -346,14 +374,14 @@ def test_build_differentials_filters_by_max_ownership():
     }
     positions = {1: MID, 2: MID}
     prices = {1: 55, 2: 55}
-    ownership = {1: 3.0, 2: 15.0}
+    ownership = _global_lens({1: 3.0, 2: 15.0})
 
     _, results = build_differentials(
         history,
         positions,
         prices,
         latest_played_gameweek=1,
-        current_ownership_by_player=ownership,
+        ownership=ownership,
         max_ownership_percent=10.0,
     )
 
@@ -370,11 +398,109 @@ def test_build_differentials_keeps_players_with_unknown_ownership():
         positions,
         prices,
         latest_played_gameweek=1,
-        current_ownership_by_player={},
+        ownership=_global_lens({}),
         max_ownership_percent=10.0,
     )
 
     assert {d.player_id for d in results} == {1}
+
+
+def test_build_differentials_defaults_to_an_empty_global_lens_when_none_is_given():
+    """No ``ownership`` argument at all must behave exactly like the pre-league-lens default --
+    every player kept, no ownership columns populated."""
+    history = {1: [_actual(1, total_points=8, minutes=90)]}
+    positions = {1: MID}
+    prices = {1: 55}
+
+    _, results = build_differentials(history, positions, prices, latest_played_gameweek=1)
+
+    [result] = results
+    assert result.current_ownership_percent is None
+    assert result.league_owner_count is None
+
+
+class TestLeagueOwnershipLens:
+    def test_filters_by_max_league_owners_not_percentage(self):
+        history = {
+            1: [_actual(1, total_points=8, minutes=90)],
+            2: [_actual(1, total_points=8, minutes=90)],
+        }
+        positions = {1: MID, 2: MID}
+        prices = {1: 55, 2: 55}
+        ownership = _league_lens(owner_count={1: 0, 2: 5}, n_rivals=11)
+
+        _, results = build_differentials(
+            history,
+            positions,
+            prices,
+            latest_played_gameweek=1,
+            ownership=ownership,
+            max_league_owners=1,
+        )
+
+        assert {d.player_id for d in results} == {1}
+
+    def test_a_player_missing_from_owner_count_defaults_to_zero_not_unknown(self):
+        """Unlike the global lens's percentage (D1's original "unknown, so keep" rule), the league
+        lens always has a definite owner count -- 0 when no rival owns the player at all -- so
+        there is no ambiguous case for the filter to preserve."""
+        history = {1: [_actual(1, total_points=8, minutes=90)]}
+        positions = {1: MID}
+        prices = {1: 55}
+        ownership = _league_lens(owner_count={}, n_rivals=11)
+
+        _, results = build_differentials(
+            history,
+            positions,
+            prices,
+            latest_played_gameweek=1,
+            ownership=ownership,
+            max_league_owners=0,
+        )
+
+        assert {d.player_id for d in results} == {1}
+        assert results[0].league_owner_count == 0
+
+    def test_league_columns_are_populated_from_the_lens(self):
+        history = {1: [_actual(1, total_points=8, minutes=90)]}
+        positions = {1: MID}
+        prices = {1: 55}
+        ownership = OwnershipLens(
+            source=LEAGUE_LENS,
+            n_rivals=11,
+            percent={1: 18.2},
+            owner_count={1: 2},
+            eo_multiplier={1: 0.4},
+            owner_names={1: ("Dave", "Priya")},
+        )
+
+        _, results = build_differentials(
+            history, positions, prices, latest_played_gameweek=1, ownership=ownership
+        )
+
+        [result] = results
+        assert result.current_ownership_percent == 18.2
+        assert result.league_owner_count == 2
+        assert result.league_eo_multiplier == 0.4
+        assert result.league_owner_names == ("Dave", "Priya")
+
+    def test_global_lens_never_populates_league_columns(self):
+        history = {1: [_actual(1, total_points=8, minutes=90)]}
+        positions = {1: MID}
+        prices = {1: 55}
+
+        _, results = build_differentials(
+            history,
+            positions,
+            prices,
+            latest_played_gameweek=1,
+            ownership=_global_lens({1: 5.0}),
+        )
+
+        [result] = results
+        assert result.league_owner_count is None
+        assert result.league_eo_multiplier is None
+        assert result.league_owner_names == ()
 
 
 def test_build_differentials_preseason_returns_no_rows_without_raising():

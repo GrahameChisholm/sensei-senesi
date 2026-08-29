@@ -86,3 +86,26 @@ export function fixtureDifficultyTextColour(difficulty: number | null): string {
   if (difficulty === null) return BLANK_TEXT;
   return DIFFICULTY_COLOURS[difficultyBucket(difficulty)].text;
 }
+
+// Mini League exposure/swing (MINI_LEAGUE_PLAN M20): a signed value needs a diverging scale, not
+// the one-directional low/mid/high EP heatmap above -- reuses the same LOW (red)/HIGH (green)
+// tokens from that palette rather than inventing a new one, applied symmetrically around zero.
+const EXPOSURE_MAGNITUDE_BREAKPOINT = 6.0; // |expected_swing| at or beyond which the colour is fully saturated
+const NEUTRAL_BG_RGB = { r: 0xf0, g: 0xef, b: 0xec }; // --surface-muted
+const NEUTRAL_TEXT = "#767a80"; // --text-muted
+
+/** Background colour for one player's signed exposure/expected-swing cell. Symmetric around
+ * zero: strongly negative is as saturated red as strongly positive is saturated green. */
+export function exposureColour(value: number | null): string {
+  if (value === null) return BLANK_BG;
+  if (value === 0) return mixBg(NEUTRAL_BG_RGB, NEUTRAL_BG_RGB, 0);
+  const t = Math.min(1, Math.abs(value) / EXPOSURE_MAGNITUDE_BREAKPOINT);
+  return value > 0 ? mixBg(NEUTRAL_BG_RGB, HIGH.bg, t) : mixBg(NEUTRAL_BG_RGB, LOW.bg, t);
+}
+
+/** Text colour paired with {@link exposureColour} for the same value. */
+export function exposureTextColour(value: number | null): string {
+  if (value === null) return BLANK_TEXT;
+  if (value === 0) return NEUTRAL_TEXT;
+  return value > 0 ? HIGH.text : LOW.text;
+}

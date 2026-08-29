@@ -18,6 +18,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from api.persistence import load_squad_state, save_squad_state
+from api.settings import AppSettingsData, load_app_settings, save_app_settings
 from api.squad_state import SquadState
 from engine.aggregate import ComponentBreakdown
 from engine.data.player_history import PlayerGameweekActual
@@ -40,6 +41,8 @@ __all__ = [
     "set_app_state",
     "get_squad_state",
     "set_squad_state",
+    "get_app_settings",
+    "set_app_settings",
     "reset_state",
 ]
 
@@ -62,6 +65,13 @@ def _minutes_from_dict(data: dict) -> MinutesDistribution:
 def _simulation_from_dict(data: dict | None, player_id: int) -> PlayerSimulationSummary | None:
     if data is None:
         return None
+    # MINI_LEAGUE_PLAN M9: `std` is absent from any cache built before it existed. Fall back to the
+    # normal-distribution approximation from the persisted floor (P10)/ceiling (P90) -- that range
+    # spans 2 * 1.2816 standard deviations under normality. Strictly worse than a persisted std
+    # (FPL points are right-skewed, so this understates the tail), but keeps an old cache usable.
+    std = data.get("std")
+    if std is None:
+        std = (data["ceiling"] - data["floor"]) / 2.5631
     return PlayerSimulationSummary(
         player_id=player_id,
         mean=data["mean"],
@@ -70,6 +80,7 @@ def _simulation_from_dict(data: dict | None, player_id: int) -> PlayerSimulation
         ceiling=data["ceiling"],
         prob_big_haul=data["prob_big_haul"],
         raw_points=np.array([]),
+        std=std,
     )
 
 
@@ -281,6 +292,7 @@ def _latest_cache_path(cache_dir: Path, season: str) -> Path:
 
 _app_state: AppState | None = None
 _squad_state: SquadState | None = None
+_app_settings: AppSettingsData | None = None
 _db_path: str = DEFAULT_DB_PATH
 
 
@@ -344,9 +356,32 @@ def set_squad_state(state: SquadState) -> None:
     _squad_state = state
 
 
+def get_app_settings() -> AppSettingsData:
+    """Loads the saved app-wide settings (MINI_LEAGUE_PLAN M14) on first access. The very first
+    load carries over any league IDs already recorded on the squad's own (now-vestigial)
+    ``mini_league_ids`` field -- see :func:`~api.settings.load_app_settings`'s own docstring for
+    why that's a one-time thing rather than a standing fallback."""
+    global _app_settings
+    if _app_settings is None:
+        session = _get_session()
+        legacy_mini_league_ids = get_squad_state().mini_league_ids
+        _app_settings = load_app_settings(session, legacy_mini_league_ids)
+    return _app_settings
+
+
+def set_app_settings(settings: AppSettingsData) -> None:
+    """Persist new app-wide settings and update the process-wide singleton — every successful
+    mutation calls this, mirroring :func:`set_squad_state`."""
+    global _app_settings
+    session = _get_session()
+    save_app_settings(session, settings)
+    _app_settings = settings
+
+
 def reset_state(db_path: str = DEFAULT_DB_PATH) -> None:
     """Test-only: clear every process-wide singleton so the next access reloads from scratch."""
-    global _app_state, _squad_state, _db_path
+    global _app_state, _squad_state, _app_settings, _db_path
     _app_state = None
     _squad_state = None
+    _app_settings = None
     _db_path = db_path

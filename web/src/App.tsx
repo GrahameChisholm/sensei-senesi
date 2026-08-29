@@ -3,8 +3,9 @@ import { PlayerStats } from "./pages/PlayerStats";
 import { TeamSelection } from "./pages/TeamSelection";
 import { FixturesPage } from "./pages/FixturesPage";
 import { Differentials } from "./pages/Differentials";
+import { MiniLeague } from "./pages/MiniLeague";
 
-type Tab = "team" | "fixtures" | "stats" | "differentials";
+type Tab = "team" | "fixtures" | "stats" | "differentials" | "mini-league";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("team");
@@ -27,6 +28,12 @@ export default function App() {
         >
           Differentials
         </button>
+        <button
+          className={tab === "mini-league" ? "active" : ""}
+          onClick={() => setTab("mini-league")}
+        >
+          Mini League
+        </button>
       </nav>
       {tab === "team" ? (
         <TeamSelection />
@@ -34,8 +41,10 @@ export default function App() {
         <FixturesPage />
       ) : tab === "stats" ? (
         <PlayerStats />
-      ) : (
+      ) : tab === "differentials" ? (
         <Differentials />
+      ) : (
+        <MiniLeague />
       )}
     </div>
   );

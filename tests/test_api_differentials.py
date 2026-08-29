@@ -12,9 +12,13 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+import api.main as api_main
 import api.state as state_module
+from api.mini_league_panel import reset_snapshot_cache
+from api.settings import AppSettingsData
 from api.squad_state import SquadState
 from engine.aggregate import ComponentBreakdown
+from engine.data.fpl_client import FPLClientError
 from engine.data.player_history import PlayerGameweekActual
 from engine.models.minutes import MinutesDistribution
 from engine.projections import project_player_gameweek, project_player_horizon
@@ -184,10 +188,12 @@ def _fixture_app_state(gameweek: int = 7):
 def client(tmp_path):
     state_module.reset_state(db_path=str(tmp_path / "test.sqlite"))
     state_module.set_app_state(_fixture_app_state())
+    reset_snapshot_cache()
     from api.main import app
 
     with TestClient(app) as test_client:
         yield test_client
+    reset_snapshot_cache()
     state_module.reset_state()
 
 
@@ -287,3 +293,227 @@ def test_no_squad_yet_does_not_error_with_hide_owned(client: TestClient):
     response = client.get("/players/differentials", params={"hide_owned": True})
 
     assert response.status_code == 200
+
+
+def test_defaults_to_the_global_lens_when_no_league_is_configured(client: TestClient):
+    """MINI_LEAGUE_PLAN M24: the fallback chain's first link -- no fpl_team_id/mini_league_ids
+    saved at all, so Differentials must keep working exactly as it always has."""
+    response = client.get("/players/differentials")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ownership_lens"] == "global"
+    assert body["picks_gameweek"] is None
+    assert body["n_rivals"] is None
+    row = next(r for r in body["rows"] if r["player_id"] == 1)
+    assert row["league_owner_count"] is None
+
+
+MY_ENTRY_ID = 555
+
+
+def _league_standings(rival_picks: dict[int, dict[int, int]]) -> dict:
+    """One classic-league standings page for entries ``MY_ENTRY_ID`` plus each key of
+    ``rival_picks`` (rival entry_id -> {player_id: multiplier})."""
+    results = [
+        {"entry": MY_ENTRY_ID, "player_name": "Me", "entry_name": "My Team", "rank": 1, "total": 0}
+    ]
+    for rival_id in rival_picks:
+        results.append(
+            {
+                "entry": rival_id,
+                "player_name": f"Rival {rival_id}",
+                "entry_name": f"Team {rival_id}",
+                "rank": len(results) + 1,
+                "total": 0,
+            }
+        )
+    return {
+        "league": {"id": 999, "name": "Test League"},
+        "standings": {"has_next": False, "results": results},
+    }
+
+
+class _StubFPLClient:
+    def __init__(self, rival_picks: dict[int, dict[int, int]] | None = None, error=None):
+        self._rival_picks = rival_picks if rival_picks is not None else {}
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def get_league_standings(self, league_id, page=1):
+        if self._error is not None:
+            raise self._error
+        return _league_standings(self._rival_picks)
+
+    def get_entry(self, entry_id):
+        return {"id": entry_id, "current_event": 6}
+
+    def get_entry_picks(self, entry_id, gameweek):
+        picks = self._rival_picks.get(entry_id, {})
+        return {
+            "picks": [
+                {"element": pid, "position": i + 1, "multiplier": m}
+                for i, (pid, m) in enumerate(picks.items())
+            ]
+        }
+
+    def get_entry_history(self, entry_id):
+        return {"chips": []}
+
+
+class TestLeagueOwnershipLens:
+    """MINI_LEAGUE_PLAN M24/M28: once a league is configured and its live fetch succeeds, the
+    Differentials page switches to that league's own effective ownership."""
+
+    def _configure_league(self, monkeypatch, rival_picks: dict[int, dict[int, int]]):
+        state_module.set_app_settings(
+            AppSettingsData(fpl_team_id=MY_ENTRY_ID, mini_league_ids=(999,))
+        )
+        monkeypatch.setattr(api_main, "FPLClient", lambda: _StubFPLClient(rival_picks))
+
+    def test_switches_to_the_league_lens_once_configured(self, client: TestClient, monkeypatch):
+        self._configure_league(monkeypatch, {1: {1: 1}, 2: {1: 1}, 3: {1: 1}})
+
+        response = client.get("/players/differentials")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ownership_lens"] == "league"
+        assert body["picks_gameweek"] == 6
+        assert body["n_rivals"] == 3
+
+    def test_league_owner_count_reflects_the_snapshot_not_global_percent(
+        self, client: TestClient, monkeypatch
+    ):
+        # Player 1 is 3% owned globally (would pass any sane max_ownership); under the league lens
+        # every one of the three rivals owns him.
+        self._configure_league(monkeypatch, {1: {1: 1}, 2: {1: 1}, 3: {1: 1}})
+
+        response = client.get("/players/differentials")
+
+        row = next(r for r in response.json()["rows"] if r["player_id"] == 1)
+        assert row["league_owner_count"] == 3
+        assert row["league_eo_multiplier"] == pytest.approx(1.0)
+
+    def test_max_league_owners_filters_players_the_global_percentage_would_have_kept(
+        self, client: TestClient, monkeypatch
+    ):
+        # Player 2 is 25% owned globally -- already excluded by max_ownership tests above -- but
+        # here the real question is whether *league* ownership drives the filter instead.
+        self._configure_league(monkeypatch, {1: {2: 1}, 2: {2: 1}, 3: {2: 1}})
+
+        response = client.get(
+            "/players/differentials", params={"max_league_owners": 0, "max_ownership": 100.0}
+        )
+
+        player_ids = {row["player_id"] for row in response.json()["rows"]}
+        assert 2 not in player_ids  # owned by all 3 rivals under the league lens
+        assert 1 in player_ids  # owned by none
+
+    def test_falls_back_to_global_when_the_live_fetch_fails(self, client: TestClient, monkeypatch):
+        state_module.set_app_settings(
+            AppSettingsData(fpl_team_id=MY_ENTRY_ID, mini_league_ids=(999,))
+        )
+        monkeypatch.setattr(
+            api_main, "FPLClient", lambda: _StubFPLClient(error=FPLClientError("boom"))
+        )
+
+        response = client.get("/players/differentials")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ownership_lens"] == "global"
+        assert body["picks_gameweek"] is None
+
+    def test_falls_back_to_global_when_the_league_has_no_other_members(
+        self, client: TestClient, monkeypatch
+    ):
+        self._configure_league(monkeypatch, {})  # only "me" in the league
+
+        response = client.get("/players/differentials")
+
+        assert response.json()["ownership_lens"] == "global"
+
+    def test_league_id_query_param_overrides_the_saved_default(
+        self, client: TestClient, monkeypatch
+    ):
+        state_module.set_app_settings(
+            AppSettingsData(fpl_team_id=MY_ENTRY_ID, mini_league_ids=(999,))
+        )
+        seen_league_ids = []
+
+        class _RecordingStub(_StubFPLClient):
+            def get_league_standings(self, league_id, page=1):
+                seen_league_ids.append(league_id)
+                return super().get_league_standings(league_id, page)
+
+        monkeypatch.setattr(api_main, "FPLClient", lambda: _RecordingStub({1: {1: 1}}))
+
+        client.get("/players/differentials", params={"league_id": 424242})
+
+        assert seen_league_ids == [424242]
+
+
+class TestDifferentialsReplaces:
+    """The league lens's "Replaces" swap suggestion (features.mini_league.pair_with_weakest) --
+    pairs an unowned differential candidate with the weakest same-position starting-XI player by
+    expected swing. Requires both the league lens and a complete squad; either alone is not
+    enough."""
+
+    def _configure_league(self, monkeypatch, rival_picks: dict[int, dict[int, int]]):
+        state_module.set_app_settings(
+            AppSettingsData(fpl_team_id=MY_ENTRY_ID, mini_league_ids=(999,))
+        )
+        monkeypatch.setattr(api_main, "FPLClient", lambda: _StubFPLClient(rival_picks))
+
+    def _set_squad_with_player_one_starting(self):
+        # Player 1 is the only squad member with a real projection in _fixture_app_state, so it's
+        # the only possible "weakest starter" candidate regardless of which position slot it fills.
+        squad = _full_squad_containing(1, MID)
+        squad_ids = [p.player_id for p in squad]
+        state = SquadState(
+            squad=squad,
+            starting_xi=tuple(squad_ids[:11]),
+            bench_order=tuple(squad_ids[11:]),
+            captain_id=squad_ids[0],
+            vice_captain_id=squad_ids[1],
+        )
+        state_module.set_squad_state(state)
+
+    def test_none_under_the_global_lens_even_with_a_complete_squad(self, client: TestClient):
+        self._set_squad_with_player_one_starting()
+
+        response = client.get("/players/differentials")
+
+        rows = response.json()["rows"]
+        assert rows
+        assert all(row["replaces"] is None for row in rows)
+
+    def test_none_under_the_league_lens_without_a_complete_squad(
+        self, client: TestClient, monkeypatch
+    ):
+        self._configure_league(monkeypatch, {1: {1: 1}, 2: {1: 1}, 3: {1: 1}})
+
+        response = client.get("/players/differentials")
+
+        rows = response.json()["rows"]
+        assert rows
+        assert all(row["replaces"] is None for row in rows)
+
+    def test_pairs_an_unowned_candidate_with_the_weakest_same_position_starter(
+        self, client: TestClient, monkeypatch
+    ):
+        self._configure_league(monkeypatch, {1: {1: 1}, 2: {1: 1}, 3: {1: 1}})
+        self._set_squad_with_player_one_starting()
+
+        response = client.get("/players/differentials")
+
+        row = next(r for r in response.json()["rows"] if r["player_id"] == 2)
+        assert row["replaces"] is not None
+        assert row["replaces"]["incoming_player_id"] == 2
+        assert row["replaces"]["outgoing_player_id"] == 1

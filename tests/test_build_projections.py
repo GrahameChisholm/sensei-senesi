@@ -6,19 +6,24 @@ pure-function level.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
+import numpy as np
 import pandas as pd
+import pytest
 
-from api.state import _player_actual_from_dict
+from api.state import _player_actual_from_dict, _simulation_from_dict
 from engine.aggregate import ComponentBreakdown
 from engine.data.cold_start import fit_cold_start_priors
 from engine.data.player_history import PlayerGameweekActual
 from engine.models.minutes import MinutesDistribution
 from engine.projections import project_player_gameweek, project_player_horizon
+from engine.simulate import PlayerSimulationSummary
 from scripts.build_projections import (
     _deadline_times_for_gameweeks,
     _serialize_player_history,
+    _serialize_simulation,
     assemble_projection_cache,
     build_fixture_list,
     merge_cold_start_projections,
@@ -523,3 +528,43 @@ class TestDeadlineTimesForGameweeks:
         deadlines = _deadline_times_for_gameweeks(self._events(), [1, 2, 3])
 
         assert set(deadlines) == {1, 2}
+
+
+class TestSerializeSimulationStdRoundTrip:
+    """MINI_LEAGUE_PLAN M9: ``std`` must survive the full write -> JSON -> api.state read cycle,
+    and an old cache missing it must still load, falling back to the normal-distribution spread
+    approximation from floor (P10)/ceiling (P90) rather than raising or defaulting to zero."""
+
+    def _simulation(self) -> PlayerSimulationSummary:
+        return PlayerSimulationSummary(
+            player_id=1,
+            mean=5.0,
+            median=4.5,
+            floor=1.0,
+            ceiling=11.0,
+            prob_big_haul=0.2,
+            raw_points=np.array([]),
+            std=3.2,
+        )
+
+    def test_std_round_trips_through_json(self):
+        serialized = _serialize_simulation(self._simulation())
+        reloaded = json.loads(json.dumps(serialized))
+        simulation = _simulation_from_dict(reloaded, player_id=1)
+
+        assert simulation.std == 3.2
+
+    def test_a_cache_written_before_std_existed_falls_back_to_the_normal_approximation(self):
+        """Simulates an old on-disk cache: the dict simply has no ``std`` key, the same shape
+        ``_serialize_simulation`` produced before this change."""
+        old_style_row = {
+            "mean": 5.0,
+            "median": 4.5,
+            "floor": 1.0,
+            "ceiling": 11.0,
+            "prob_big_haul": 0.2,
+        }
+
+        simulation = _simulation_from_dict(old_style_row, player_id=1)
+
+        assert simulation.std == pytest.approx((11.0 - 1.0) / 2.5631)
