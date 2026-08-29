@@ -179,6 +179,25 @@ def test_build_merged_gw_target_row_converts_ownership_percent_to_a_count():
     assert target.loc[1, "transfers_balance"] == pytest.approx(1000.0 - 200.0)
 
 
+def test_build_merged_gw_treats_zero_ownership_as_below_reporting_resolution():
+    """FPL reports selected_by_percent to one decimal place, so 0.0 means "under 0.05%", not
+    "owned by nobody". Taking it literally sends ownership_log to log1p(0) and floors the
+    transfers_*_share denominator, which is what let an 8-minute substitute out-project Haaland on
+    a real 2026/27 GW3 build."""
+    elements = _elements()
+    elements.loc[elements["id"] == 1, "selected_by_percent"] = "0.0"
+
+    merged = build_merged_gw(
+        elements, _teams(), _fixtures(gameweek=3), _element_summary_histories(), gameweek=3
+    )
+    target = merged[merged["GW"] == 3].set_index("player_id")
+
+    selected = target.loc[1, "selected"]
+    assert selected > 1.0, "must not floor the transfers_*_share denominator"
+    # Still far below the smallest genuinely reportable ownership (0.1%).
+    assert selected < 0.001 * DEFAULT_TOTAL_MANAGERS
+
+
 def test_build_merged_gw_target_row_has_no_leaked_outcome_data():
     merged = build_merged_gw(
         _elements(), _teams(), _fixtures(gameweek=3), _element_summary_histories(), gameweek=3

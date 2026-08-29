@@ -103,6 +103,7 @@ from engine.models.goals import (
     realized_penalty_goals,
 )
 from engine.models.minutes import FEATURE_COLUMNS as MINUTES_FEATURE_COLUMNS
+from engine.models.minutes import MAX_TRANSFER_SHARE as MINUTES_MAX_TRANSFER_SHARE
 from engine.models.minutes import MinutesDistribution, MinutesModel, encode_status
 from engine.models.saves import (
     fit_away_shot_multiplier,
@@ -1099,11 +1100,21 @@ def engineer_features(
     # gameweek before fully trusting this feature set live; if it turns out to be end-of-gameweek,
     # fall back to a strictly-lagged (shift-by-one-gameweek) version of these four columns instead
     # — measured to still improve AUC to 0.8710, a smaller but real gain.
+    #
+    # Both shares are additionally clipped to +/- MINUTES_MAX_TRANSFER_SHARE. The `clip(lower=1.0)`
+    # below only guards against dividing by zero; it does not stop the result being a bare transfer
+    # count rather than a share once the denominator actually hits that floor, which is exactly what
+    # a live pull does for every player under FPL's 0.05% ownership reporting resolution. See that
+    # constant's own comment in engine.models.minutes for the real 2026/27 case this bounds.
     gw["price"] = gw["value"].astype(float)
     gw["ownership_log"] = np.log1p(gw["selected"].astype(float))
     _selected_denom = gw["selected"].astype(float).clip(lower=1.0)
-    gw["transfers_out_share"] = gw["transfers_out"].astype(float) / _selected_denom
-    gw["transfers_balance_share"] = gw["transfers_balance"].astype(float) / _selected_denom
+    gw["transfers_out_share"] = (gw["transfers_out"].astype(float) / _selected_denom).clip(
+        lower=-MINUTES_MAX_TRANSFER_SHARE, upper=MINUTES_MAX_TRANSFER_SHARE
+    )
+    gw["transfers_balance_share"] = (gw["transfers_balance"].astype(float) / _selected_denom).clip(
+        lower=-MINUTES_MAX_TRANSFER_SHARE, upper=MINUTES_MAX_TRANSFER_SHARE
+    )
 
     # --- shared per-90 rates already in the vaastav frame itself --------------------------------
     # Multi-season backtest Phase 2: defensive contribution's raw inputs (and the outcome column

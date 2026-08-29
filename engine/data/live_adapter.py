@@ -91,6 +91,17 @@ __all__ = [
 # against a real live pull — see this module's own docstring.
 DEFAULT_TOTAL_MANAGERS = 11_000_000.0
 
+# FPL reports ``selected_by_percent`` to one decimal place, so a literal 0.0 means "somewhere in
+# [0, 0.05)", not "owned by nobody". Reading it as an exact zero is wrong in both directions: it
+# sends `ownership_log` to log1p(0) = 0.0 against a training median of 11.3, and it floors the
+# `transfers_*_share` denominator (see engine.models.minutes.MAX_TRANSFER_SHARE). A real 2026/27
+# GW3 pull had 131 of 622 players reporting exactly 0.0, so this is the common case for fringe
+# players, not an edge case. Imputing the midpoint of the unresolved band is a better estimate than
+# either endpoint, and is still tiny enough that a genuinely unowned player stays clearly separated
+# from an actually-popular one.
+SELECTED_BY_PERCENT_RESOLUTION = 0.1
+SUB_THRESHOLD_SELECTED_BY_PERCENT = SELECTED_BY_PERCENT_RESOLUTION / 4.0
+
 # Outcome/outcome-derived columns the target gameweek's synthesized rows can't know yet. Filled
 # with 0, safe for that row's own features only, because engineer_features never reads a row's own
 # value for these when computing that same row's features (every per-player rate is a
@@ -294,6 +305,10 @@ def _target_row(
     total_managers: float,
 ) -> dict:
     selected_by_percent = float(getattr(element, "selected_by_percent", 0.0) or 0.0)
+    if selected_by_percent <= 0.0:
+        # Below FPL's own reporting resolution, not genuinely zero. See
+        # SUB_THRESHOLD_SELECTED_BY_PERCENT.
+        selected_by_percent = SUB_THRESHOLD_SELECTED_BY_PERCENT
     transfers_in = float(getattr(element, "transfers_in_event", 0.0) or 0.0)
     transfers_out = float(getattr(element, "transfers_out_event", 0.0) or 0.0)
     # T-K: FPL's bootstrap elements table leaves penalties_order null for a non-taker, and this

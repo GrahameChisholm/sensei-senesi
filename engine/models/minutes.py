@@ -86,6 +86,23 @@ FEATURE_COLUMNS = [
     "is_goalkeeper",
 ]
 
+# Ceiling on the magnitude of the two transfer "share" features, applied by
+# ``backtest.run_season.engineer_features`` where they are computed. Both are a transfer count
+# divided by the player's own owner count, so they are only meaningful when that denominator is a
+# real ownership base. It is not always: the archive's `selected` is a genuine raw count (only 2 of
+# 14,120 real training rows fall to the divide-by-zero floor), but the live path derives it from
+# FPL's `selected_by_percent`, which is reported to one decimal place and so reads exactly 0.0 for
+# every player under 0.05% ownership. On a real 2026/27 GW3 pull that was 73 of 486 projected
+# players, and the floored denominator turned their "share" into a bare transfer count: one 8-minute
+# substitute scored transfers_balance_share 351.0 against a training standard deviation of 0.127,
+# which standardizes to 2,756 sigma and saturates the start classifier to a near-certain start.
+# Clipping bounds that blow-up on both paths regardless of what the denominator does, the same
+# fix-the-input-at-the-source approach as engine.models.goals' MAX_NPXG_PER_90_PER_MATCH. Set
+# comfortably above the real training range (observed max 1.5, 99th percentile 0.46) so a genuine
+# high-churn gameweek is untouched, and applied symmetrically since transfers_balance_share is
+# signed.
+MAX_TRANSFER_SHARE = 2.0
+
 # FPL's `status` code -> a coarse numeric availability proxy. `news` free text is deliberately
 # NOT parsed into a feature (BUILD_PLAN 2.1: display flag only) — chance_of_playing_next_round
 # and status already carry the same information as a clean structured number. `n` (not in squad,

@@ -41,6 +41,7 @@ from backtest.run_season import (
 )
 from engine.data.crosswalk import CrosswalkEntry
 from engine.models.goals import MAX_NPXG_PER_90_PER_MATCH
+from engine.models.minutes import MAX_TRANSFER_SHARE as MINUTES_MAX_TRANSFER_SHARE
 from engine.models.minutes import encode_status
 
 
@@ -708,6 +709,42 @@ def test_engineer_features_computes_crowd_features_from_value_selected_transfers
     )
     for col in ["price", "ownership_log", "transfers_out_share", "transfers_balance_share"]:
         assert engineered[col].notna().all()
+
+
+def test_transfer_shares_are_bounded_when_ownership_is_below_reporting_resolution():
+    """A player FPL reports as 0.0% owned floors the share denominator to 1.0, turning the ratio
+    into a bare transfer count. Unbounded, a real 2026/27 GW3 pull produced
+    transfers_balance_share 351.0 against a training standard deviation of 0.127, which
+    standardizes to thousands of sigma and saturates the minutes model's start classifier."""
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    merged_gw = merged_gw.copy()
+    unowned = merged_gw["element"] == 1
+    merged_gw.loc[unowned, "selected"] = 0
+    merged_gw.loc[unowned, "transfers_out"] = 39
+    merged_gw.loc[unowned, "transfers_balance"] = 351
+
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+
+    assert engineered["transfers_out_share"].abs().max() <= MINUTES_MAX_TRANSFER_SHARE
+    assert engineered["transfers_balance_share"].abs().max() <= MINUTES_MAX_TRANSFER_SHARE
+    # The clip must be a ceiling only, never a rewrite of an already-sane value.
+    owned = engineered[engineered["player_id"] != 1]
+    assert (owned["transfers_out_share"].abs() < MINUTES_MAX_TRANSFER_SHARE).all()
+
+
+def test_transfer_shares_are_signed_so_the_clip_must_be_symmetric():
+    """transfers_balance is transfers_in minus transfers_out, so a heavily sold sub-threshold
+    player blows up negatively by exactly the same mechanism."""
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    merged_gw = merged_gw.copy()
+    unowned = merged_gw["element"] == 1
+    merged_gw.loc[unowned, "selected"] = 0
+    merged_gw.loc[unowned, "transfers_balance"] = -351
+
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+
+    clipped = engineered[engineered["player_id"] == 1]["transfers_balance_share"]
+    assert clipped.tolist() == pytest.approx([-MINUTES_MAX_TRANSFER_SHARE] * len(clipped))
 
 
 def test_compute_coverage_report_surfaces_unmatched_significant_players():
