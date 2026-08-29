@@ -67,6 +67,50 @@ def test_ewma_rate_asof_respects_custom_halflife():
     assert short.iloc[-1] < long.iloc[-1]
 
 
+def test_latest_ewma_rate_all_cameo_history_without_cap_is_physically_implausible():
+    # A player whose entire sample is short cameos, one of which had a fluke high-xG kick (0.68 xG
+    # in 1 minute = 61.2 per-90), has no long "normal" history to dilute it against, unlike the
+    # low_minutes_cameo test above. Uncapped, the resulting rate is implausibly high for any real
+    # striker, the exact failure mode a real Understat pull surfaced.
+    matches = _matches([0.0, 0.0, 0.0, 0.68], [15, 10, 2, 1])
+    result = latest_ewma_rate(matches, "npxG")
+    assert result > 2.0
+
+
+def test_latest_ewma_rate_max_rate_per_90_caps_all_cameo_history():
+    # Same all-cameo history as above, but with a cap: the fluke 1-minute kick can contribute at
+    # most `max_rate_per_90` worth of evidence, not the raw 61.2/90 the match literally implies.
+    matches = _matches([0.0, 0.0, 0.0, 0.68], [15, 10, 2, 1])
+    result = latest_ewma_rate(matches, "npxG", max_rate_per_90=2.5)
+    assert result < 2.5
+
+
+def test_ewma_rate_asof_max_rate_per_90_caps_a_fluke_cameo_row():
+    matches = _matches([0.0, 0.0, 0.68, 0.1], [15, 10, 1, 90])
+    uncapped = ewma_rate_asof(matches, "npxG")
+    capped = ewma_rate_asof(matches, "npxG", max_rate_per_90=2.5)
+    assert capped.iloc[-1] < uncapped.iloc[-1]
+
+
+def test_ewma_rate_asof_max_rate_per_90_first_row_still_nan():
+    matches = _matches([0.68, 0.1], [1, 90])
+    result = ewma_rate_asof(matches, "npxG", max_rate_per_90=2.5)
+    assert np.isnan(result.iloc[0])
+
+
+def test_latest_ewma_rate_max_rate_per_90_none_matches_uncapped():
+    matches = _matches([0.3] * 20 + [1.0], [90] * 20 + [5])
+    assert latest_ewma_rate(matches, "npxG", max_rate_per_90=None) == latest_ewma_rate(
+        matches, "npxG"
+    )
+
+
+def test_latest_ewma_rate_rejects_non_positive_max_rate_per_90():
+    matches = _matches([0.3], [90])
+    with pytest.raises(ValueError):
+        latest_ewma_rate(matches, "npxG", max_rate_per_90=0.0)
+
+
 def test_effective_sample_minutes_grows_with_more_matches():
     thin = _matches([0.3], [90])
     thick = _matches([0.3] * 30, [90] * 30)

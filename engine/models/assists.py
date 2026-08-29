@@ -29,6 +29,12 @@ from engine.scoring import ASSIST_POINTS
 # not asserted precise; Phase 3 backtesting is what actually calibrates this.
 DEFAULT_ASSIST_SHARE_OF_TEAM_XG = 0.12
 
+# Ceiling on a single match's implied xA/90, passed to engine.rates.latest_ewma_rate /
+# ewma_rate_asof so a sub-appearance fluke can't dominate a thin sample, symmetric with goals.py's
+# MAX_NPXG_PER_90_PER_MATCH. Set from the real historical distribution of match-level xA/90 among
+# 60+ minute appearances (99.9th percentile ~1.5, max ~2.4 across a decade of Understat data).
+MAX_XA_PER_90_PER_MATCH = 2.0
+
 
 def expected_assist_rate(
     player_xa_per_90: float,

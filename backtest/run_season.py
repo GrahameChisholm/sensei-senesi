@@ -80,7 +80,11 @@ from engine.data.understat_client import (
     league_data_to_dataframes,
     player_data_to_dataframe,
 )
-from engine.models.assists import expected_assist_rate, fit_assist_share_of_team_xg
+from engine.models.assists import (
+    MAX_XA_PER_90_PER_MATCH,
+    expected_assist_rate,
+    fit_assist_share_of_team_xg,
+)
 from engine.models.bonus import BonusModel
 from engine.models.clean_sheets import (
     clean_sheet_probability,
@@ -93,6 +97,7 @@ from engine.models.defensive_contribution import (
     fit_overdispersion,
 )
 from engine.models.goals import (
+    MAX_NPXG_PER_90_PER_MATCH,
     expected_non_penalty_goal_rate,
     fit_penalty_conversion_rates,
     realized_penalty_goals,
@@ -769,7 +774,11 @@ def build_match_level_frame(training_history: pd.DataFrame) -> pd.DataFrame:
 
 
 def _understat_rate_asof(
-    player_histories: dict[int, pd.DataFrame], player_id: int, stat_col: str, before: pd.Timestamp
+    player_histories: dict[int, pd.DataFrame],
+    player_id: int,
+    stat_col: str,
+    before: pd.Timestamp,
+    max_rate_per_90: float | None = None,
 ) -> float:
     history = player_histories.get(player_id)
     if history is None or history.empty:
@@ -777,7 +786,7 @@ def _understat_rate_asof(
     prior = history[history["date"] < before]
     if prior.empty:
         return float("nan")
-    return latest_ewma_rate(prior, stat_col, minutes_col="time")
+    return latest_ewma_rate(prior, stat_col, minutes_col="time", max_rate_per_90=max_rate_per_90)
 
 
 def _understat_effective_minutes_asof(
@@ -1149,13 +1158,21 @@ def engineer_features(
     # --- Tier 1.3: real (Understat) non-penalty xG/xA + penalty sub-model inputs ----------------
     gw["npxg_per_90"] = gw.apply(
         lambda r: _understat_rate_asof(
-            player_histories, int(r["player_id"]), "npxG", r["kickoff_time"]
+            player_histories,
+            int(r["player_id"]),
+            "npxG",
+            r["kickoff_time"],
+            max_rate_per_90=MAX_NPXG_PER_90_PER_MATCH,
         ),
         axis=1,
     )
     gw["xa_per_90"] = gw.apply(
         lambda r: _understat_rate_asof(
-            player_histories, int(r["player_id"]), "xA", r["kickoff_time"]
+            player_histories,
+            int(r["player_id"]),
+            "xA",
+            r["kickoff_time"],
+            max_rate_per_90=MAX_XA_PER_90_PER_MATCH,
         ),
         axis=1,
     )
@@ -1167,9 +1184,11 @@ def engineer_features(
     is_gk = gw["position"] == GK
     gw.loc[is_gk, "npxg_per_90"] = gw.loc[is_gk, "npxg_per_90"].fillna(0.0)
     gw.loc[is_gk, "xa_per_90"] = gw.loc[is_gk, "xa_per_90"].fillna(0.0)
-    # ENGINE_IMPROVEMENTS_2.md B.2: evidence weight behind each row's own npxg_per_90/xa_per_90 —
-    # the shrinkage target for players whose real Understat point-in-time rates are thin-sample
-    # outliers (up to 35.4 npxG/90 for a sub-90-minute cameo).
+    # ENGINE_IMPROVEMENTS_2.md B.2: evidence weight behind each row's own npxg_per_90/xa_per_90,
+    # the shrinkage target for thin-sample players. npxg_per_90/xa_per_90 above are now also
+    # winsorized per match (MAX_NPXG_PER_90_PER_MATCH/MAX_XA_PER_90_PER_MATCH), so a sub-90-minute
+    # cameo can no longer imply a physically-impossible rate (real pulls showed up to 35.4 npxG/90)
+    # before shrinkage even gets a chance to pull it back down.
     gw["understat_effective_minutes"] = gw.apply(
         lambda r: _understat_effective_minutes_asof(
             player_histories, int(r["player_id"]), r["kickoff_time"]

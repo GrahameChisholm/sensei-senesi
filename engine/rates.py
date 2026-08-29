@@ -48,18 +48,49 @@ def _ewma(series: pd.Series, config: EwmaRateConfig) -> pd.Series:
     return series.astype(float).ewm(halflife=config.halflife_matches, adjust=True).mean()
 
 
+def _winsorized_stat(
+    matches: pd.DataFrame,
+    stat_col: str,
+    minutes_col: str,
+    max_rate_per_90: float | None,
+) -> pd.Series:
+    """``stat_col``, clipped per-match to what ``max_rate_per_90`` implies for that match's own
+    minutes, when a cap is given.
+
+    Minutes-weighting the EWMA (see module docstring) still lets a single sub-appearance dominate
+    when nearly *all* of a player's history is cameos, since nothing bounds how large ``stat_col``
+    can be relative to the minutes it was recorded in. A real Understat pull showed non-penalty
+    xG/90 rates up to 35.4, concentrated entirely in players with well under 90 minutes of total
+    prior history — a fluke high-xG kick taken in 1-2 minutes on the pitch. Capping each match's own
+    implied per-90 rate before it enters the EWMA fixes the input at the source rather than relying
+    on shrinkage alone to pull an already-extreme rate back down.
+    """
+    stat = matches[stat_col].astype(float)
+    if max_rate_per_90 is None:
+        return stat
+    if max_rate_per_90 <= 0:
+        raise ValueError("max_rate_per_90 must be positive")
+    cap = max_rate_per_90 * matches[minutes_col].astype(float) / 90.0
+    return stat.clip(upper=cap)
+
+
 def ewma_rate_asof(
     matches: pd.DataFrame,
     stat_col: str,
     minutes_col: str = "time",
     config: EwmaRateConfig = DEFAULT_CONFIG,
+    max_rate_per_90: float | None = None,
 ) -> pd.Series:
     """Point-in-time per-90 EWMA rate of ``stat_col``, one value per row of ``matches``.
 
     ``matches`` must already be sorted chronologically (oldest first). Row *i*'s value reflects
     only rows strictly before *i* — the first row is always ``NaN`` (no prior history).
+
+    ``max_rate_per_90``, when given, winsorizes each match's contribution first — see
+    :func:`_winsorized_stat`.
     """
-    ewm_stat = _ewma(matches[stat_col], config)
+    stat = _winsorized_stat(matches, stat_col, minutes_col, max_rate_per_90)
+    ewm_stat = _ewma(stat, config)
     ewm_minutes = _ewma(matches[minutes_col], config)
     rate = (ewm_stat / ewm_minutes.replace(0.0, np.nan)) * 90.0
     return rate.shift(1)
@@ -70,12 +101,18 @@ def latest_ewma_rate(
     stat_col: str,
     minutes_col: str = "time",
     config: EwmaRateConfig = DEFAULT_CONFIG,
+    max_rate_per_90: float | None = None,
 ) -> float:
     """Current per-90 EWMA rate of ``stat_col`` using every row in ``matches`` — for projecting a
-    not-yet-played gameweek. ``matches`` must be sorted chronologically (oldest first)."""
+    not-yet-played gameweek. ``matches`` must be sorted chronologically (oldest first).
+
+    ``max_rate_per_90``, when given, winsorizes each match's contribution first — see
+    :func:`_winsorized_stat`.
+    """
     if len(matches) == 0:
         return float("nan")
-    ewm_stat = _ewma(matches[stat_col], config)
+    stat = _winsorized_stat(matches, stat_col, minutes_col, max_rate_per_90)
+    ewm_stat = _ewma(stat, config)
     ewm_minutes = _ewma(matches[minutes_col], config)
     minutes_total = ewm_minutes.iloc[-1]
     if not minutes_total:

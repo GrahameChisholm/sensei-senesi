@@ -40,6 +40,7 @@ from backtest.run_season import (
     simulate_gameweek_pool,
 )
 from engine.data.crosswalk import CrosswalkEntry
+from engine.models.goals import MAX_NPXG_PER_90_PER_MATCH
 from engine.models.minutes import encode_status
 
 
@@ -808,6 +809,33 @@ def test_engineer_features_includes_goalkeepers_with_zeroed_npxg_xa():
     assert (gk["xa_per_90"] == 0.0).all()
     assert gk["own_save_rate_per_90"].notna().all()
     assert (gk["own_save_rate_per_90"] > 0).any()  # picked up the real saves history
+
+
+def test_engineer_features_caps_npxg_per_90_for_a_cameo_heavy_player():
+    # A player whose entire Understat history is short cameos, one of which had a fluke high-xG
+    # kick in a single minute, should not come out of the real feature pipeline with a
+    # physically-impossible npxg_per_90 -- this is the exact shape of data that produced real
+    # npxG/90 outliers up to 35.4 before MAX_NPXG_PER_90_PER_MATCH was wired into
+    # _understat_rate_asof.
+    merged_gw, teams, team_histories, player_histories = _synthetic_season()
+    kickoffs = pd.date_range("2025-08-16", periods=5, freq="7D", tz="UTC")
+    player_histories = dict(player_histories)
+    player_histories[4] = pd.DataFrame(
+        {
+            "date": kickoffs,
+            "npxG": [0.0, 0.0, 0.0, 0.68, 0.0],
+            "xA": [0.0] * 5,
+            "goals": [0] * 5,
+            "npg": [0] * 5,
+            "time": [15, 10, 2, 1, 20],
+            "season": ["2025"] * 5,
+        }
+    )
+
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+
+    player_4 = engineered[engineered["player_id"] == 4].sort_values("gameweek")
+    assert player_4["npxg_per_90"].max() < MAX_NPXG_PER_90_PER_MATCH + 0.5
 
 
 def test_engineer_features_live_availability_overrides_only_the_target_gameweek():

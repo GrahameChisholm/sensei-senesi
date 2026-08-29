@@ -40,6 +40,13 @@ DEFAULT_PENALTY_CONVERSION_RATE = 0.76
 # prior-history players, because unlike xA (2.3) this rate had no shrinkage path wired in at all.
 DEFAULT_NPXG_SHARE_OF_TEAM_XG = 0.12
 
+# Ceiling on a single match's implied npxG/90, passed to engine.rates.latest_ewma_rate /
+# ewma_rate_asof so a sub-appearance fluke can't dominate a thin sample the way the outliers above
+# did. Set from the real historical distribution of match-level npxG/90 among 60+ minute
+# appearances (99.9th percentile ~2.1, max ~4.3 across a decade of Understat data), so this leaves
+# headroom for a genuinely explosive full match while still bounding the sub-90-minute flukes.
+MAX_NPXG_PER_90_PER_MATCH = 2.5
+
 
 def realized_penalty_goals(
     player_matches: pd.DataFrame, goals_col: str = "goals", npg_col: str = "npg"
