@@ -12,8 +12,8 @@ const CHIPS: { key: "bench_boost" | "triple_captain"; label: string; hint: strin
 
 /** Bench Boost/Triple Captain as plain, always-available toggles: no scarcity, no "used this
  * half" tracking, no separate play step -- toggling one just changes how the predicted points
- * total (and, for Bench Boost, an auto-build) are computed. Only one can be active at a time,
- * since the points-preview call only ever takes a single chip. */
+ * total is computed (Triple Captain also changes Auto Build's captain multiplier). Only one can
+ * be active at a time, since the points-preview call only ever takes a single chip. */
 export function ChipBar({ activeChip, onChange }: ChipBarProps) {
   return (
     <div className="chip-bar">

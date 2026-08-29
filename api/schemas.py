@@ -303,7 +303,7 @@ class SubstituteIn(BaseModel):
 
 
 class OptimiseIn(BaseModel):
-    objective: str = "starting_xi"  # "starting_xi" | "full_squad" (Bench Boost active)
+    objective: str = "full_squad"  # "full_squad" | "starting_xi" (bench treated as worthless)
     captain_multiplier: float = 2.0  # 3.0 under Triple Captain
 
 

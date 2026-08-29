@@ -42,10 +42,11 @@ export function TeamSelection() {
 
   async function handleAutoBuild() {
     setSwapSourceId(null);
-    await squadState.optimise(
-      activeChip === "bench_boost" ? "full_squad" : "starting_xi",
-      activeChip === "triple_captain" ? 3.0 : 2.0,
-    );
+    // "full_squad" values every one of the 15 picks, not just the XI, so the bench holds real
+    // squad depth (autosubs, price rises, future gameweeks) instead of minimum-cost fodder --
+    // independent of the starting XI itself, which features.formation.select_starting_xi always
+    // derives afterward from just the 11 highest-EV picks, chip or no chip.
+    await squadState.optimise("full_squad", activeChip === "triple_captain" ? 3.0 : 2.0);
   }
 
   function handleSwapSelect(playerId: number) {

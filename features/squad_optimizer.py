@@ -6,10 +6,14 @@ Filling every slot from empty and filling only a few just-vacated slots are the 
 already-picked players are simply constrained to stay in the result (``locked_player_ids``), so a
 full rebuild is just the trivial case of zero locked players.
 
-``objective="starting_xi"`` maximizes only the starting XI's points (bench players contribute
-nothing, so the solver spends the remaining budget on the XI and fills the bench with whatever's
-cheapest-but-legal) — the right objective when Bench Boost isn't active. ``objective="full_squad"``
-maximizes all 15 players' points instead, for when Bench Boost is active and bench points count.
+``objective="full_squad"`` maximizes all 15 players' points, so the bench holds real squad depth
+(autosubs, price rises, future gameweeks) rather than minimum-cost fodder — the default for
+building or rebuilding a squad, and also correct when Bench Boost is active and bench points
+count directly. ``objective="starting_xi"`` maximizes only the starting XI's points, spending the
+entire remaining budget there and leaving the bench however cheap-but-legal falls out; only ever
+right when the bench is truly worth nothing, which real usage never actually is. Either way, the
+starting XI itself always comes out of :func:`~features.formation.select_starting_xi`'s own
+highest-EV-of-the-15 pick afterward, never baked into the objective.
 
 Captain/vice are chosen post-hoc (the two highest-EV starting-XI players), not baked into the ILP
 objective: doubling one player's score is a nonlinear max-selection that would need extra binaries

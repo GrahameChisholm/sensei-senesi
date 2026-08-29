@@ -512,7 +512,7 @@ class TestAutoBuild:
         squad_ids = {p["player_id"] for p in body["squad"]}
         assert {GK1, DEF_IDS[0], MID_IDS[0]}.issubset(squad_ids)
 
-    def test_default_objective_is_starting_xi(self, client):
+    def test_default_objective_is_accepted(self, client):
         response = client.post("/squad/optimise", json={})
         assert response.status_code == 200
 

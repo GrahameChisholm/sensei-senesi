@@ -422,7 +422,7 @@ export const api = {
       body: JSON.stringify({ out_id, in_id }),
     }),
   optimiseXi: () => request<SquadOut>("/squad/optimise-xi", { method: "POST" }),
-  optimise: (objective: "starting_xi" | "full_squad" = "starting_xi", captainMultiplier = 2.0) =>
+  optimise: (objective: "full_squad" | "starting_xi" = "full_squad", captainMultiplier = 2.0) =>
     request<SquadOut>("/squad/optimise", {
       method: "POST",
       body: JSON.stringify({ objective, captain_multiplier: captainMultiplier }),

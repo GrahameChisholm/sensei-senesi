@@ -650,8 +650,11 @@ def auto_build_squad(body: schemas.OptimiseIn) -> schemas.SquadOut:
     """The best-possible-squad solver: keeps whatever's currently in the squad and fills any
     remaining slots with the legal combination that maximizes projected points (an empty squad and
     a squad missing a few players are the same call — nothing already picked is ever locked
-    differently). ``objective="full_squad"`` should be passed when Bench Boost is active, since
-    bench points count then and are worth spending budget on.
+    differently). ``objective="full_squad"`` values every one of the 15 picks, not just the XI, so
+    the bench holds real depth rather than minimum-cost fodder; the web app always sends this for
+    Auto Build. The starting XI itself is unaffected either way — it always comes out of
+    :func:`~features.formation.select_starting_xi`'s own highest-EV-of-the-15 pick afterward, so
+    only the 11 starters' own points ever decide who starts.
     """
     state = get_squad_state()
     app_state = get_app_state()
