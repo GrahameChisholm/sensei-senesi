@@ -115,6 +115,17 @@ class FPLClient:
         ``chips`` (name + event of every chip already played this season)."""
         return self._get(f"/entry/{entry_id}/history/")
 
+    def get_league_standings(self, league_id: int, page: int = 1) -> dict[str, Any]:
+        """One page (50 entries) of a classic mini-league's standings (MINI_LEAGUE_PLAN M16):
+        ``league`` (name and metadata) plus ``standings`` (``has_next`` and ``results``, each entry
+        carrying ``entry`` (the manager's real FPL entry/team ID -- **not** ``id``, an unrelated
+        per-row identifier some standings responses also carry that is not a usable entry ID at
+        all), ``entry_name``, ``player_name``, ``rank``, ``total``, ``event_total``). A caller
+        wanting the whole league pages through this itself, stopping once ``has_next`` is false or
+        its own rival cap is reached -- this method is a plain one-request wrapper like every
+        other endpoint on this client, not a batch-fetch convenience."""
+        return self._get(f"/leagues-classic/{league_id}/standings/?page_standings={page}")
+
 
 def _drop_nested_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Drop any column holding raw dicts/lists (e.g. events' ``overrides``/``chip_plays``,

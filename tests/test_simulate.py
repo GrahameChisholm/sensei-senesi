@@ -93,6 +93,7 @@ def test_simulate_fixture_summary_fields_are_well_formed():
         assert summary.floor <= summary.median <= summary.ceiling
         assert 0.0 <= summary.prob_big_haul <= 1.0
         assert np.isfinite(summary.mean)
+        assert summary.std is not None and summary.std >= 0.0
 
 
 def test_simulate_fixture_is_reproducible_with_same_seed():

@@ -15,18 +15,37 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api import schemas
-from api.differentials_panel import build_differential_rows
+from api.differentials_panel import DifferentialRow, build_differential_rows
 from api.fixture_swing_panel import build_fixture_swing_rows
 from api.fixtures_view import DEFAULT_FIXTURE_TICKER_HORIZON, build_fixture_ticker_rows
+from api.mini_league_panel import (
+    MiniLeaguePanel,
+    build_mini_league_panel,
+    get_cached_league_snapshot,
+)
 from api.panel import build_panel_rows, build_team_fixture_map
 from api.player_stats_panel import build_player_stats_rows
 from api.squad_state import SquadState
-from api.state import get_app_state, get_squad_state, set_squad_state
+from api.state import (
+    get_app_settings,
+    get_app_state,
+    get_squad_state,
+    set_app_settings,
+    set_squad_state,
+)
 from engine.data.fpl_client import FPLClient, FPLClientError
+from engine.data.league_state_builder import DEFAULT_RIVAL_LIMIT
 from engine.data.team_state_builder import build_my_team_state
-from features.differentials import DEFAULT_WINDOW_GAMEWEEKS, build_differentials
+from features.differentials import (
+    DEFAULT_WINDOW_GAMEWEEKS,
+    GLOBAL_LENS,
+    LEAGUE_LENS,
+    OwnershipLens,
+    build_differentials,
+)
 from features.fixture_swing import DEFAULT_FAR_GAMEWEEKS, DEFAULT_NEAR_GAMEWEEKS
 from features.fixtures import HorizonDifficulty
+from features.mini_league import compute_league_ownership, prospective_swing
 from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
 from features.squad_optimizer import PlayerCandidate, SquadOptimizerError, optimise_squad
@@ -366,6 +385,11 @@ def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
     saved a transfer for it -- before that, the upcoming gameweek's picks endpoint 404s and
     ``current_event`` is the most recent gameweek that does have one (the manager's real current
     squad either way, since nothing has changed since).
+
+    Also records ``team_id`` as the app-wide ``fpl_team_id`` setting (MINI_LEAGUE_PLAN M14) --
+    importing your own squad by ID is the one place this app already learns which FPL entry is
+    "you", and the Mini League page needs exactly that to exclude your own entry from a league's
+    effective-ownership field.
     """
     app_state = get_app_state()
     with FPLClient() as client:
@@ -390,7 +414,155 @@ def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
             budget_ceiling=budget_ceiling,
         )
     )
+    settings = get_app_settings()
+    set_app_settings(replace(settings, fpl_team_id=payload.team_id))
     return _squad_out()
+
+
+# --- Mini League settings (MINI_LEAGUE_PLAN M14) -------------------------------------------------
+
+
+@app.get("/mini-league/leagues", response_model=schemas.MiniLeagueSettingsOut)
+def get_mini_league_settings() -> schemas.MiniLeagueSettingsOut:
+    settings = get_app_settings()
+    return schemas.MiniLeagueSettingsOut(
+        fpl_team_id=settings.fpl_team_id, mini_league_ids=list(settings.mini_league_ids)
+    )
+
+
+@app.post("/mini-league/leagues", response_model=schemas.MiniLeagueSettingsOut)
+def set_mini_league_settings(body: schemas.MiniLeagueSettingsIn) -> schemas.MiniLeagueSettingsOut:
+    """Only ``fpl_team_id``/``mini_league_ids`` are settable here -- built on top of whatever
+    settings already exist (via ``replace``) so this never resets ``planning_horizon_gameweeks``
+    back to its default as a side effect of saving a league ID."""
+    settings = replace(
+        get_app_settings(),
+        fpl_team_id=body.fpl_team_id,
+        mini_league_ids=tuple(body.mini_league_ids),
+    )
+    set_app_settings(settings)
+    return schemas.MiniLeagueSettingsOut(
+        fpl_team_id=settings.fpl_team_id, mini_league_ids=list(settings.mini_league_ids)
+    )
+
+
+def _mini_league_panel_out(panel: MiniLeaguePanel) -> schemas.MiniLeaguePanelOut:
+    return schemas.MiniLeaguePanelOut(
+        league_id=panel.league_id,
+        league_name=panel.league_name,
+        picks_gameweek=panel.picks_gameweek,
+        gameweek=panel.gameweek,
+        my_rank=panel.my_rank,
+        my_total_points=panel.my_total_points,
+        coverage=panel.coverage,
+        template_xi=list(panel.template_xi),
+        exposures=[
+            schemas.PlayerExposureOut(
+                player_id=exposure.player_id,
+                your_multiplier=exposure.your_multiplier,
+                ownership=schemas.PlayerOwnershipOut(
+                    player_id=exposure.ownership.player_id,
+                    raw_ownership_percent=exposure.ownership.raw_ownership_percent,
+                    eo_multiplier=exposure.ownership.eo_multiplier,
+                    eo_percent=exposure.ownership.eo_percent,
+                    captain_share_percent=exposure.ownership.captain_share_percent,
+                    owner_names=list(exposure.ownership.owner_names),
+                ),
+                expected_points=exposure.expected_points,
+                exposure=exposure.exposure,
+                expected_swing=exposure.expected_swing,
+            )
+            for exposure in panel.exposures
+        ],
+        captain_options=[
+            schemas.CaptainOptionOut(
+                player_id=option.player_id,
+                expected_points=option.expected_points,
+                captain_share_percent=option.captain_share_percent,
+                eo_multiplier=option.eo_multiplier,
+                net_captain_ev=option.net_captain_ev,
+                net_captain_std=option.net_captain_std,
+            )
+            for option in panel.captain_options
+        ],
+        rivals=[
+            schemas.MiniLeagueRivalOut(
+                entry_id=rival.entry_id,
+                manager_name=rival.manager_name,
+                team_name=rival.team_name,
+                rank=rival.rank,
+                total_points=rival.total_points,
+                gameweek_points=rival.gameweek_points,
+                chip_state=schemas.RivalChipStateOut(
+                    entry_id=rival.chip_state.entry_id,
+                    used_chip_names=list(rival.chip_state.used_chip_names),
+                    remaining_chip_names=list(rival.chip_state.remaining_chip_names),
+                ),
+                posture=schemas.RivalPostureOut(
+                    rival_entry_id=rival.posture.rival_entry_id,
+                    projected_final_gap=rival.posture.projected_final_gap,
+                    p_finish_ahead=rival.posture.p_finish_ahead,
+                    variance_preference=rival.posture.variance_preference,
+                    sensitivity=rival.posture.sensitivity,
+                ),
+                head_to_head=schemas.HeadToHeadOut(
+                    rival_entry_id=rival.head_to_head.rival_entry_id,
+                    shared_count=rival.head_to_head.shared_count,
+                    differentials=[
+                        schemas.DifferentialPickOut(
+                            player_id=pick.player_id,
+                            your_multiplier=pick.your_multiplier,
+                            rival_multiplier=pick.rival_multiplier,
+                            expected_points=pick.expected_points,
+                            expected_gap_contribution=pick.expected_gap_contribution,
+                        )
+                        for pick in rival.head_to_head.differentials
+                    ],
+                    expected_gap=rival.head_to_head.expected_gap,
+                    gap_std=rival.head_to_head.gap_std,
+                    p_outscore=rival.head_to_head.p_outscore,
+                ),
+            )
+            for rival in panel.rivals
+        ],
+    )
+
+
+@app.get("/mini-league/{league_id}", response_model=schemas.MiniLeaguePanelOut)
+def get_mini_league(
+    league_id: int,
+    limit: int = DEFAULT_RIVAL_LIMIT,
+    refresh: bool = False,
+    chip: str | None = None,
+) -> schemas.MiniLeaguePanelOut:
+    """The Mini League page's one bulk round trip (M17): standings, chip state, exposure, the
+    captain grid, the league template, and a full head-to-head decomposition for every rival, all
+    computed for the app's current gameweek against a live-fetched (and TTL-cached, M15) league
+    snapshot.
+
+    Requires a complete 15-player squad (``_require_team_state``, the same requirement every other
+    squad-dependent endpoint on this page already has) and a saved ``fpl_team_id`` (M14) -- without
+    knowing which entry is "you", there is no sensible "the field, excluding me" to compute.
+    """
+    settings = get_app_settings()
+    if settings.fpl_team_id is None:
+        raise ValueError(
+            "no FPL team ID is configured -- import your squad via /squad/import, or save one "
+            "directly via /mini-league/leagues, before requesting mini-league data"
+        )
+    app_state = get_app_state()
+    _, team_state = _require_team_state()
+
+    with FPLClient() as client:
+        try:
+            snapshot = get_cached_league_snapshot(client, league_id, limit=limit, refresh=refresh)
+        except FPLClientError as exc:
+            raise ValueError(f"could not fetch mini-league {league_id}: {exc}") from exc
+
+    panel = build_mini_league_panel(
+        app_state, team_state, snapshot, settings.fpl_team_id, chip=chip
+    )
+    return _mini_league_panel_out(panel)
 
 
 @app.post("/squad/captain", response_model=schemas.SquadOut)
@@ -675,10 +847,77 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> list[schemas.Play
     ]
 
 
+def _global_ownership_lens() -> OwnershipLens:
+    app_state = get_app_state()
+    percent = {pid: data.get("selected_by_percent") for pid, data in app_state.players.items()}
+    return OwnershipLens(
+        source=GLOBAL_LENS,
+        n_rivals=None,
+        percent=percent,
+        owner_count={},
+        eo_multiplier={},
+        owner_names={},
+    )
+
+
+def _resolve_differentials_ownership(league_id: int | None) -> tuple[OwnershipLens, int | None]:
+    """Resolve which ownership lens the Differentials page uses (MINI_LEAGUE_PLAN M24): the
+    requested (or first tracked) league's effective ownership when a league is configured, its
+    live fetch succeeds, and it actually has rivals to measure against; the FPL-wide percentage
+    otherwise. Falls back silently to the global lens rather than raising -- Differentials has
+    never had a live-fetch dependency before, and a manager who hasn't set up a mini-league (or
+    whose league fetch hits a transient FPL problem) should still get a fully working page, just
+    on the lens that's always been available. The caller reports which lens actually won via the
+    response's own ``ownership_lens`` field, never left for the frontend to guess. Returns
+    ``(lens, picks_gameweek)`` -- ``picks_gameweek`` is ``None`` under the global lens, where the
+    concept (M1) doesn't apply.
+    """
+    settings = get_app_settings()
+    resolved_league_id = (
+        league_id
+        if league_id is not None
+        else (settings.mini_league_ids[0] if settings.mini_league_ids else None)
+    )
+    if resolved_league_id is None or settings.fpl_team_id is None:
+        return _global_ownership_lens(), None
+
+    try:
+        with FPLClient() as client:
+            snapshot = get_cached_league_snapshot(client, resolved_league_id)
+    except FPLClientError:
+        return _global_ownership_lens(), None
+
+    ownership_by_player = compute_league_ownership(snapshot, exclude_entry_id=settings.fpl_team_id)
+    n_rivals = sum(1 for entry in snapshot.entries if entry.entry_id != settings.fpl_team_id)
+    if n_rivals == 0:
+        return _global_ownership_lens(), None
+
+    lens = OwnershipLens(
+        source=LEAGUE_LENS,
+        n_rivals=n_rivals,
+        percent={pid: o.eo_percent for pid, o in ownership_by_player.items()},
+        owner_count={pid: o.owner_count for pid, o in ownership_by_player.items()},
+        eo_multiplier={pid: o.eo_multiplier for pid, o in ownership_by_player.items()},
+        owner_names={pid: o.owner_names for pid, o in ownership_by_player.items()},
+    )
+    return lens, snapshot.picks_gameweek
+
+
+def _prospective_swing(row: DifferentialRow, current_gameweek: int) -> float | None:
+    if row.differential.league_eo_multiplier is None:
+        return None
+    cell = next((c for c in row.fixtures if c.gameweek == current_gameweek), None)
+    if cell is None or cell.expected_points is None:
+        return None
+    return prospective_swing(row.differential.league_eo_multiplier, cell.expected_points)
+
+
 @app.get("/players/differentials", response_model=schemas.DifferentialsResponseOut)
 def list_differentials(
     window: int = DEFAULT_WINDOW_GAMEWEEKS,
     max_ownership: float | None = None,
+    max_league_owners: int | None = None,
+    league_id: int | None = None,
     hide_owned: bool = True,
 ) -> schemas.DifferentialsResponseOut:
     """DIFFERENTIALS_PLAN Phase 3: players sustainedly outperforming their own position/price
@@ -687,9 +926,16 @@ def list_differentials(
 
     ``window`` is the requested gameweek count, clamped to whatever has actually been played this
     season (D5/D6) -- the response's own ``window`` field reports the resolved range, since it
-    frequently differs from what was requested early in a season. ``max_ownership`` and
-    ``hide_owned`` are the two differentiating filters (D1): a player already in the committed
-    squad is excluded by default rather than shown as a "differential" against yourself.
+    frequently differs from what was requested early in a season. ``hide_owned`` excludes a
+    player already in the committed squad by default, rather than showing them as a "differential"
+    against yourself.
+
+    Ownership is lens-dependent (MINI_LEAGUE_PLAN M24, supersedes D1's original global-only
+    framing): ``max_ownership`` filters against the FPL-wide percentage under the global lens,
+    ``max_league_owners`` against a plain rival count under the league lens -- see
+    :func:`_resolve_differentials_ownership` for the fallback chain between them, and
+    ``features.differentials``'s own module docstring for why a percentage ceiling stops making
+    sense once "the league" means 11 rivals rather than the whole FPL player base.
 
     Registered *before* ``/players/{player_id}`` below, for the same route-order reason
     ``/players/stats`` above already documents -- a literal path registered after the
@@ -697,9 +943,8 @@ def list_differentials(
     """
     app_state = get_app_state()
     player_names = {pid: data["web_name"] for pid, data in app_state.players.items()}
-    ownership_by_player = {
-        pid: data.get("selected_by_percent") for pid, data in app_state.players.items()
-    }
+
+    ownership_lens, picks_gameweek = _resolve_differentials_ownership(league_id)
 
     resolved_window, differentials = build_differentials(
         app_state.player_history,
@@ -707,8 +952,9 @@ def list_differentials(
         app_state.buy_prices,
         latest_played_gameweek=app_state.gameweek - 1,
         window_gameweeks=window,
-        current_ownership_by_player=ownership_by_player,
+        ownership=ownership_lens,
         max_ownership_percent=max_ownership,
+        max_league_owners=max_league_owners,
     )
 
     if hide_owned:
@@ -731,6 +977,9 @@ def list_differentials(
             gameweek_to=resolved_window.gameweek_to,
             requested_gameweeks=resolved_window.requested_gameweeks,
         ),
+        ownership_lens=ownership_lens.source,
+        picks_gameweek=picks_gameweek,
+        n_rivals=ownership_lens.n_rivals,
         rows=[
             schemas.DifferentialRowOut(
                 player_id=row.differential.player_id,
@@ -759,6 +1008,10 @@ def list_differentials(
                 ownership_trend_pct_per_gw=row.differential.ownership_trend_pct_per_gw,
                 net_transfers_per_gw=row.differential.net_transfers_per_gw,
                 archetype=row.differential.archetype.value,
+                league_owner_count=row.differential.league_owner_count,
+                league_eo_multiplier=row.differential.league_eo_multiplier,
+                league_owner_names=list(row.differential.league_owner_names),
+                expected_swing=_prospective_swing(row, app_state.gameweek),
                 fixtures=[
                     schemas.FixtureCellOut(
                         gameweek=cell.gameweek,

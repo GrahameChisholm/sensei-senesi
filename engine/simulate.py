@@ -122,6 +122,10 @@ class PlayerSimulationSummary:
     ceiling: float
     prob_big_haul: float
     raw_points: np.ndarray = field(repr=False)
+    # MINI_LEAGUE_PLAN M9: persisted so head-to-head gap variance doesn't have to fall back to the
+    # cruder (ceiling - floor) / 2.5631 normal-spread approximation. Optional so a summary built
+    # (or deserialized) before this field existed remains a valid construction.
+    std: float | None = None
 
 
 @dataclass(frozen=True)
@@ -468,6 +472,7 @@ def _score_team(
             ceiling=float(np.percentile(points, CEILING_PERCENTILE)),
             prob_big_haul=float(np.mean(points >= BIG_HAUL_THRESHOLD)),
             raw_points=points,
+            std=float(np.std(points)),
         )
     return summaries
 

@@ -1,15 +1,17 @@
 import { Fragment, useMemo, useState } from "react";
-import { Archetype, Confidence, DifferentialRowOut, TeamOut } from "../api";
-import { expectedPointsColour, expectedPointsTextColour } from "../lib/colours";
+import { Archetype, Confidence, DifferentialRowOut, OwnershipLensSource, TeamOut } from "../api";
+import { expectedPointsColour, expectedPointsTextColour, exposureTextColour } from "../lib/colours";
 import { BreakdownPopover } from "./BreakdownPopover";
 
 type SortKey =
   | "name"
   | "price"
   | "current_ownership_percent"
+  | "league_owner_count"
   | "ownership_trend_pct_per_gw"
   | "shrunk_points_per_90"
   | "surplus_vs_bracket"
+  | "expected_swing"
   | "xgi_per_90"
   | "defensive_contribution_per_90"
   | "confidence";
@@ -53,9 +55,12 @@ function sortValue(row: DifferentialRowOut, sortKey: SortKey): number | string {
 interface DifferentialsTableProps {
   rows: DifferentialRowOut[];
   teams: Record<number, TeamOut>;
+  ownershipLens: OwnershipLensSource;
+  nRivals: number | null;
 }
 
-export function DifferentialsTable({ rows, teams }: DifferentialsTableProps) {
+export function DifferentialsTable({ rows, teams, ownershipLens, nRivals }: DifferentialsTableProps) {
+  const isLeagueLens = ownershipLens === "league";
   const [sortKey, setSortKey] = useState<SortKey>("surplus_vs_bracket");
   const [sortDescending, setSortDescending] = useState(true);
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -97,39 +102,103 @@ export function DifferentialsTable({ rows, teams }: DifferentialsTableProps) {
     );
   }
 
+  // MINI_LEAGUE_PLAN M27: ownership_trend_pct_per_gw is always an FPL-wide market-momentum signal,
+  // regardless of lens -- grouped under its own "Market" header so it never reads as if it shared
+  // a scale with the league-lens ownership column sitting right next to it.
+  const baseColumnCount = isLeagueLens ? 10 : 9;
+
   return (
     <div className="stats-table-scroll">
       <table className="stats-table">
         <thead>
           <tr>
-            <th className="sortable" onClick={() => toggleSort("name")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("name")}
+              title="Player name and club"
+            >
               Player{sortIndicator("name")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("price")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("price")}
+              title="Current price"
+            >
               Price{sortIndicator("price")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("current_ownership_percent")}>
-              Own%{sortIndicator("current_ownership_percent")}
+            {isLeagueLens ? (
+              <th
+                className="sortable"
+                onClick={() => toggleSort("league_owner_count")}
+                title="How many of your league rivals own this player, out of the total tracked. Hover a value to see who."
+              >
+                Owned{sortIndicator("league_owner_count")}
+              </th>
+            ) : (
+              <th
+                className="sortable"
+                onClick={() => toggleSort("current_ownership_percent")}
+                title="Percentage of all FPL managers who currently own this player"
+              >
+                Own%{sortIndicator("current_ownership_percent")}
+              </th>
+            )}
+            <th
+              className="sortable differentials-muted-header"
+              onClick={() => toggleSort("ownership_trend_pct_per_gw")}
+              title="How fast this player's ownership is changing per gameweek, from FPL's own wide transfer data. Always global, regardless of the ownership view selected above."
+            >
+              Market Trend{sortIndicator("ownership_trend_pct_per_gw")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("ownership_trend_pct_per_gw")}>
-              Trend{sortIndicator("ownership_trend_pct_per_gw")}
-            </th>
-            <th className="sortable" onClick={() => toggleSort("shrunk_points_per_90")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("shrunk_points_per_90")}
+              title="Points per 90 minutes, shrunk toward the median for players at the same position and price so a small sample doesn't overstate it"
+            >
               Pts/90{sortIndicator("shrunk_points_per_90")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("surplus_vs_bracket")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("surplus_vs_bracket")}
+              title="Shrunk points per 90 minus the median for the same position and price bracket. Positive means outperforming what this price should deliver."
+            >
               vs Bracket{sortIndicator("surplus_vs_bracket")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("xgi_per_90")}>
+            {isLeagueLens && (
+              <th
+                className="sortable"
+                onClick={() => toggleSort("expected_swing")}
+                title="What this player would be worth in expected swing points if brought into your starting XI: (1 minus league effective ownership) times expected points"
+              >
+                Swing{sortIndicator("expected_swing")}
+              </th>
+            )}
+            <th
+              className="sortable"
+              onClick={() => toggleSort("xgi_per_90")}
+              title="Expected goals plus expected assists per 90 minutes, the underlying attacking involvement rate"
+            >
               xGI/90{sortIndicator("xgi_per_90")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("defensive_contribution_per_90")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("defensive_contribution_per_90")}
+              title="Defensive contribution points per 90 minutes, from tackles, interceptions, clearances and recoveries"
+            >
               DC/90{sortIndicator("defensive_contribution_per_90")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("confidence")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("confidence")}
+              title="How much evidence backs this player's rate, based on minutes played in the window"
+            >
               Conf{sortIndicator("confidence")}
             </th>
-            <th colSpan={3} className="differentials-muted-header" title="Display only -- not part of the ranking (D4)">
+            <th
+              colSpan={3}
+              className="differentials-muted-header"
+              title="Display only, not part of the ranking (D4): each gameweek's expected points and opponent"
+            >
               Next 3
             </th>
           </tr>
@@ -159,12 +228,19 @@ export function DifferentialsTable({ rows, teams }: DifferentialsTableProps) {
                     </span>
                   </td>
                   <td>£{(row.price / 10).toFixed(1)}m</td>
-                  <td>
-                    {row.current_ownership_percent !== null
-                      ? `${row.current_ownership_percent.toFixed(1)}%`
-                      : "—"}
-                  </td>
-                  <td>
+                  {isLeagueLens ? (
+                    <td title={row.league_owner_names.join(", ") || "Owned by nobody in the league"}>
+                      {row.league_owner_count ?? 0}
+                      {nRivals !== null ? ` of ${nRivals}` : ""}
+                    </td>
+                  ) : (
+                    <td>
+                      {row.current_ownership_percent !== null
+                        ? `${row.current_ownership_percent.toFixed(1)}%`
+                        : "—"}
+                    </td>
+                  )}
+                  <td className="differentials-muted-cell">
                     {row.ownership_trend_pct_per_gw !== null
                       ? `${row.ownership_trend_pct_per_gw >= 0 ? "▲" : "▼"}${Math.abs(
                           row.ownership_trend_pct_per_gw,
@@ -176,6 +252,13 @@ export function DifferentialsTable({ rows, teams }: DifferentialsTableProps) {
                     {row.surplus_vs_bracket >= 0 ? "+" : ""}
                     {row.surplus_vs_bracket.toFixed(1)}
                   </td>
+                  {isLeagueLens && (
+                    <td style={{ color: exposureTextColour(row.expected_swing), fontWeight: 700 }}>
+                      {row.expected_swing !== null
+                        ? `${row.expected_swing >= 0 ? "+" : ""}${row.expected_swing.toFixed(1)}`
+                        : "—"}
+                    </td>
+                  )}
                   <td>{row.xgi_per_90.toFixed(2)}</td>
                   <td>{row.defensive_contribution_per_90.toFixed(1)}</td>
                   <td className="confidence-dots" title={row.confidence}>
@@ -219,7 +302,7 @@ export function DifferentialsTable({ rows, teams }: DifferentialsTableProps) {
                 </tr>
                 {isExpanded && hasThesis && (
                   <tr className="differentials-thesis-row">
-                    <td colSpan={9 + 3}>{thesis(row)}</td>
+                    <td colSpan={baseColumnCount + 3}>{thesis(row)}</td>
                   </tr>
                 )}
               </Fragment>

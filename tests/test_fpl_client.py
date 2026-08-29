@@ -156,6 +156,33 @@ def test_get_entry_history_hits_correct_path():
     assert client.get_entry_history(123) == history
 
 
+def test_get_league_standings_defaults_to_page_one():
+    standings = {
+        "league": {"id": 999, "name": "Sunday League"},
+        "standings": {"has_next": False, "results": [{"id": 1, "rank": 1, "total": 100}]},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/leagues-classic/999/standings/"
+        assert request.url.query == b"page_standings=1"
+        return httpx.Response(200, json=standings)
+
+    client = _client(handler)
+    assert client.get_league_standings(999) == standings
+
+
+def test_get_league_standings_with_explicit_page():
+    standings = {"league": {"id": 999}, "standings": {"has_next": False, "results": []}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/leagues-classic/999/standings/"
+        assert request.url.query == b"page_standings=2"
+        return httpx.Response(200, json=standings)
+
+    client = _client(handler)
+    client.get_league_standings(999, page=2)
+
+
 def test_bootstrap_to_dataframes_shapes():
     tables = bootstrap_to_dataframes(BOOTSTRAP)
     assert set(tables) == {"elements", "teams", "element_types", "events"}

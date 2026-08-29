@@ -228,11 +228,117 @@ export interface DifferentialRowOut {
   net_transfers_per_gw: number | null;
   archetype: Archetype;
   fixtures: FixtureCellOut[];
+  // League ownership lens columns (MINI_LEAGUE_PLAN M28) -- null/[] under the global lens, or for
+  // a player no rival owns under the league lens.
+  league_owner_count: number | null;
+  league_eo_multiplier: number | null;
+  league_owner_names: string[];
+  // Prospective swing: what this player would be worth in expected-swing terms if brought into
+  // the starting XI. League lens only.
+  expected_swing: number | null;
 }
+
+export type OwnershipLensSource = "global" | "league";
 
 export interface DifferentialsResponseOut {
   window: DifferentialsWindowOut;
+  ownership_lens: OwnershipLensSource;
+  picks_gameweek: number | null;
+  n_rivals: number | null;
   rows: DifferentialRowOut[];
+}
+
+// --- Mini League page -----------------------------------------------------------------------
+
+export interface MiniLeagueSettingsOut {
+  fpl_team_id: number | null;
+  mini_league_ids: number[];
+}
+
+export interface PlayerOwnershipOut {
+  player_id: number;
+  raw_ownership_percent: number;
+  eo_multiplier: number;
+  eo_percent: number;
+  captain_share_percent: number;
+  owner_names: string[];
+}
+
+export interface PlayerExposureOut {
+  player_id: number;
+  your_multiplier: number;
+  ownership: PlayerOwnershipOut;
+  expected_points: number | null;
+  exposure: number;
+  expected_swing: number | null;
+}
+
+export interface CaptainOptionOut {
+  player_id: number;
+  expected_points: number | null;
+  captain_share_percent: number;
+  eo_multiplier: number;
+  net_captain_ev: number | null;
+  net_captain_std: number | null;
+}
+
+export interface DifferentialPickOut {
+  player_id: number;
+  your_multiplier: number;
+  rival_multiplier: number;
+  expected_points: number | null;
+  expected_gap_contribution: number;
+}
+
+export interface HeadToHeadOut {
+  rival_entry_id: number;
+  shared_count: number;
+  differentials: DifferentialPickOut[];
+  expected_gap: number;
+  gap_std: number;
+  p_outscore: number;
+}
+
+export interface RivalChipStateOut {
+  entry_id: number;
+  used_chip_names: string[];
+  remaining_chip_names: string[];
+}
+
+export type VariancePreference = "increase" | "decrease" | "neutral";
+
+export interface RivalPostureOut {
+  rival_entry_id: number;
+  projected_final_gap: number;
+  p_finish_ahead: number;
+  variance_preference: VariancePreference;
+  sensitivity: number;
+}
+
+export interface MiniLeagueRivalOut {
+  entry_id: number;
+  manager_name: string;
+  team_name: string;
+  rank: number;
+  total_points: number;
+  gameweek_points: number;
+  chip_state: RivalChipStateOut;
+  posture: RivalPostureOut;
+  head_to_head: HeadToHeadOut;
+}
+
+export interface MiniLeaguePanelOut {
+  league_id: number;
+  league_name: string;
+  picks_gameweek: number;
+  gameweek: number;
+  my_rank: number;
+  my_total_points: number;
+  coverage: number;
+  template_xi: number[];
+  exposures: PlayerExposureOut[];
+  captain_options: CaptainOptionOut[];
+  rivals: MiniLeagueRivalOut[];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -331,12 +437,31 @@ export const api = {
     request<PlayerStatsRowOut[]>(
       `/players/stats${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,
     ),
-  getDifferentials: (window: number, maxOwnership?: number, hideOwned: boolean = true) =>
+  getDifferentials: (options: {
+    window: number;
+    maxOwnership?: number;
+    maxLeagueOwners?: number;
+    leagueId?: number;
+    hideOwned?: boolean;
+  }) =>
     request<DifferentialsResponseOut>(
       `/players/differentials${query({
-        window,
-        max_ownership: maxOwnership,
-        hide_owned: hideOwned,
+        window: options.window,
+        max_ownership: options.maxOwnership,
+        max_league_owners: options.maxLeagueOwners,
+        league_id: options.leagueId,
+        hide_owned: options.hideOwned ?? true,
       })}`,
+    ),
+
+  getMiniLeagueSettings: () => request<MiniLeagueSettingsOut>("/mini-league/leagues"),
+  setMiniLeagueSettings: (fplTeamId: number | null, miniLeagueIds: number[]) =>
+    request<MiniLeagueSettingsOut>("/mini-league/leagues", {
+      method: "POST",
+      body: JSON.stringify({ fpl_team_id: fplTeamId, mini_league_ids: miniLeagueIds }),
+    }),
+  getMiniLeague: (leagueId: number, options?: { refresh?: boolean; chip?: string | null }) =>
+    request<MiniLeaguePanelOut>(
+      `/mini-league/${leagueId}${query({ refresh: options?.refresh, chip: options?.chip })}`,
     ),
 };

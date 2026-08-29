@@ -232,10 +232,25 @@ class DifferentialRowOut(BaseModel):
     net_transfers_per_gw: float | None
     archetype: str
     fixtures: list[FixtureCellOut]
+    # League ownership lens columns (MINI_LEAGUE_PLAN M28) -- None/[] under the global lens, or
+    # for a player no rival owns under the league lens.
+    league_owner_count: int | None = None
+    league_eo_multiplier: float | None = None
+    league_owner_names: list[str] = []
+    # Prospective swing (M28): what this player would be worth in expected-swing terms if brought
+    # into the starting XI, league lens only.
+    expected_swing: float | None = None
 
 
 class DifferentialsResponseOut(BaseModel):
     window: DifferentialsWindowOut
+    ownership_lens: str  # "global" | "league"
+    # The gameweek the league lens's rival picks actually reflect (MINI_LEAGUE_PLAN M1/M31) --
+    # None under the global lens, where the concept doesn't apply.
+    picks_gameweek: int | None = None
+    # Number of rivals the league lens was computed over -- None under the global lens. Lets the
+    # UI render "owned by N of M rivals" instead of a bare count.
+    n_rivals: int | None = None
     rows: list[DifferentialRowOut]
 
 
@@ -270,3 +285,97 @@ class OptimiseIn(BaseModel):
 
 class ImportSquadIn(BaseModel):
     team_id: int = Field(gt=0)
+
+
+class MiniLeagueSettingsOut(BaseModel):
+    fpl_team_id: int | None
+    mini_league_ids: list[int]
+
+
+class MiniLeagueSettingsIn(BaseModel):
+    fpl_team_id: int | None = None
+    mini_league_ids: list[int] = []
+
+
+class PlayerOwnershipOut(BaseModel):
+    player_id: int
+    raw_ownership_percent: float
+    eo_multiplier: float
+    eo_percent: float
+    captain_share_percent: float
+    owner_names: list[str]
+
+
+class PlayerExposureOut(BaseModel):
+    player_id: int
+    your_multiplier: float
+    ownership: PlayerOwnershipOut
+    expected_points: float | None
+    exposure: float
+    expected_swing: float | None
+
+
+class CaptainOptionOut(BaseModel):
+    player_id: int
+    expected_points: float | None
+    captain_share_percent: float
+    eo_multiplier: float
+    net_captain_ev: float | None
+    net_captain_std: float | None
+
+
+class DifferentialPickOut(BaseModel):
+    player_id: int
+    your_multiplier: float
+    rival_multiplier: float
+    expected_points: float | None
+    expected_gap_contribution: float
+
+
+class HeadToHeadOut(BaseModel):
+    rival_entry_id: int
+    shared_count: int
+    differentials: list[DifferentialPickOut]
+    expected_gap: float
+    gap_std: float
+    p_outscore: float
+
+
+class RivalChipStateOut(BaseModel):
+    entry_id: int
+    used_chip_names: list[str]
+    remaining_chip_names: list[str]
+
+
+class RivalPostureOut(BaseModel):
+    rival_entry_id: int
+    projected_final_gap: float
+    p_finish_ahead: float
+    variance_preference: str  # "increase" | "decrease" | "neutral"
+    sensitivity: float
+
+
+class MiniLeagueRivalOut(BaseModel):
+    entry_id: int
+    manager_name: str
+    team_name: str
+    rank: int
+    total_points: int
+    gameweek_points: int
+    chip_state: RivalChipStateOut
+    posture: RivalPostureOut
+    head_to_head: HeadToHeadOut
+
+
+class MiniLeaguePanelOut(BaseModel):
+    league_id: int
+    league_name: str
+    picks_gameweek: int
+    gameweek: int
+    my_rank: int
+    my_total_points: int
+    coverage: float
+    template_xi: list[int]
+    exposures: list[PlayerExposureOut]
+    captain_options: list[CaptainOptionOut]
+    rivals: list[MiniLeagueRivalOut]
