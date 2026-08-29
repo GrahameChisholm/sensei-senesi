@@ -4,9 +4,11 @@ import { CaptainEoGrid } from "../components/CaptainEoGrid";
 import { ExposureTable } from "../components/ExposureTable";
 import { LeagueStandingsTable } from "../components/LeagueStandingsTable";
 import { LeagueTemplateXi } from "../components/LeagueTemplateXi";
+import { LeagueWeekSummary } from "../components/LeagueWeekSummary";
 import { MiniLeagueHeader } from "../components/MiniLeagueHeader";
 import { MiniLeagueSetup } from "../components/MiniLeagueSetup";
 import { RivalHeadToHead } from "../components/RivalHeadToHead";
+import { useStoredState } from "../hooks/useStoredState";
 import { useSquad } from "../hooks/useSquad";
 import { useMiniLeaguePanel, useMiniLeagueSettings } from "../hooks/useMiniLeague";
 import { usePlayerDirectory, useTeams } from "../hooks/useProjections";
@@ -37,13 +39,21 @@ export function MiniLeague() {
     selectedLeagueId,
     null,
   );
-  const [targetRivalId, setTargetRivalId] = useState<number | null>(null);
+  // Persisted per league (item 7): a target rival's entry ID from one league is meaningless in
+  // another, so switching leagues must never restore a stale ID from the previous one.
+  const [targetRivalId, setTargetRivalId] = useStoredState<number | null>(
+    `mini-league.targetRival.${selectedLeagueId ?? "none"}`,
+    null,
+  );
 
   useEffect(() => {
-    if (panel && targetRivalId === null) {
+    if (!panel) return;
+    const stillExists = panel.rivals.some((rival) => rival.entry_id === targetRivalId);
+    if (targetRivalId === null || !stillExists) {
       setTargetRivalId(defaultTargetRivalId(panel));
     }
-  }, [panel, targetRivalId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panel]);
 
   const { squad } = useSquad();
   const teams = useTeams();
@@ -76,10 +86,7 @@ export function MiniLeague() {
             <button
               key={leagueId}
               className={leagueId === selectedLeagueId ? "active" : ""}
-              onClick={() => {
-                setSelectedLeagueId(leagueId);
-                setTargetRivalId(null);
-              }}
+              onClick={() => setSelectedLeagueId(leagueId)}
             >
               League {leagueId}
             </button>
@@ -111,6 +118,8 @@ export function MiniLeague() {
             onTargetRivalChange={setTargetRivalId}
             onRefresh={refresh}
           />
+
+          <LeagueWeekSummary insights={panel.insights} directory={directory} />
 
           {squad && (
             <ExposureTable

@@ -200,6 +200,15 @@ export interface DifferentialsWindowOut {
 export type Confidence = "low" | "medium" | "high";
 export type Archetype = "proven" | "emerging" | "riding_luck" | "none";
 
+export interface SwapCandidateOut {
+  incoming_player_id: number;
+  outgoing_player_id: number;
+  incoming_swing: number;
+  outgoing_swing: number;
+  net_swing_delta: number;
+  price_delta: number;
+}
+
 export interface DifferentialRowOut {
   player_id: number;
   name: string;
@@ -236,6 +245,9 @@ export interface DifferentialRowOut {
   // Prospective swing: what this player would be worth in expected-swing terms if brought into
   // the starting XI. League lens only.
   expected_swing: number | null;
+  // Which of your own starting XI this player would most sensibly replace by expected swing.
+  // League lens with a complete squad only; a swing comparison, not a budget/legality check.
+  replaces: SwapCandidateOut | null;
 }
 
 export type OwnershipLensSource = "global" | "league";
@@ -327,6 +339,17 @@ export interface MiniLeagueRivalOut {
   head_to_head: HeadToHeadOut;
 }
 
+export type LeagueInsightKind = "edge" | "drag" | "captain";
+
+export interface LeagueInsightOut {
+  kind: LeagueInsightKind;
+  player_id: number;
+  reference_player_id: number | null;
+  value: number;
+  owner_count: number;
+  n_rivals: number;
+}
+
 export interface MiniLeaguePanelOut {
   league_id: number;
   league_name: string;
@@ -338,6 +361,7 @@ export interface MiniLeaguePanelOut {
   template_xi: number[];
   exposures: PlayerExposureOut[];
   captain_options: CaptainOptionOut[];
+  insights: LeagueInsightOut[];
   rivals: MiniLeagueRivalOut[];
 }
 
