@@ -36,6 +36,11 @@ export function GameweekHeader({
   onImportSquad,
 }: GameweekHeaderProps) {
   const isPreviewing = viewGameweek !== null;
+  // The server advanced the decision gameweek past the one the cache was built for, which it does
+  // on its own once a deadline passes. Worth saying out loud: the projections still work, they
+  // were just fit before that deadline, and a rebuild produces fresher ones.
+  const projectionsAreStale =
+    gameweek !== null && gameweek.projections_gameweek !== gameweek.gameweek;
 
   return (
     <div className="gameweek-header">
@@ -43,7 +48,7 @@ export function GameweekHeader({
         <div className="gameweek-title">
           <h2>Gameweek {gameweek?.gameweek ?? "—"}</h2>
           {isPreviewing && <p className="previewing-badge">Previewing GW{viewGameweek}</p>}
-          {gameweek && !isPreviewing && (
+          {gameweek && !isPreviewing && !gameweek.deadline_passed && (
             <p className="deadline">
               Deadline:{" "}
               {new Date(gameweek.deadline_time).toLocaleString(undefined, {
@@ -53,6 +58,22 @@ export function GameweekHeader({
                 hour: "2-digit",
                 minute: "2-digit",
               })}
+            </p>
+          )}
+          {gameweek && !isPreviewing && gameweek.deadline_passed && (
+            <p
+              className="deadline-passed"
+              title="Every gameweek this cache projects has already kicked off, so nothing here can still be changed. Rebuild projections to plan the next one."
+            >
+              Deadline passed, nothing here can be changed
+            </p>
+          )}
+          {gameweek && !isPreviewing && projectionsAreStale && (
+            <p
+              className="stale-projections"
+              title={`These projections were built for GW${gameweek.projections_gameweek}, before the last deadline. Rebuild them for numbers fit on everything since.`}
+            >
+              Projections built for GW{gameweek.projections_gameweek}
             </p>
           )}
         </div>

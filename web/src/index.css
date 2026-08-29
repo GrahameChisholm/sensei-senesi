@@ -1151,6 +1151,22 @@ button {
   font-weight: 600;
 }
 
+.deadline-passed {
+  margin: 3px 0 0;
+  color: var(--danger);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: help;
+}
+
+.stale-projections {
+  margin: 3px 0 0;
+  color: var(--gold);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: help;
+}
+
 .differentials-empty {
   background: var(--surface);
   border: 1px solid var(--border);

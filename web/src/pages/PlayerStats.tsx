@@ -20,7 +20,10 @@ export function PlayerStats() {
 
   useEffect(() => {
     if (gameweek !== null && !rangeInitialized) {
-      setGameweekTo(gameweek.gameweek);
+      // The cache's own gameweek, not the decision one: this page reads actual performance out of
+      // the same snapshot the cache was built from, so it knows nothing about any gameweek played
+      // since, and following the decision gameweek would only widen the range over empty rows.
+      setGameweekTo(gameweek.projections_gameweek);
       setRangeInitialized(true);
     }
   }, [gameweek, rangeInitialized]);

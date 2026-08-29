@@ -28,11 +28,19 @@ export interface TeamOut {
 
 export interface GameweekOut {
   season: string;
+  /** The decision gameweek: the earliest one still open, which advances at a deadline rather than
+   * when a gameweek's matches finish. */
   gameweek: number;
+  /** The gameweek the loaded projection cache was built for. Behind `gameweek` when a deadline has
+   * passed since the last build, which means the numbers are fit on older data than a rebuild
+   * would use. */
+  projections_gameweek: number;
+  /** `gameweek`'s own deadline, and whether it has passed, both against the clock now. */
   deadline_time: string;
   deadline_passed: boolean;
   generated_at: string;
   model_version: string;
+  /** `gameweek` onward, with any already-locked gameweeks dropped. */
   horizon_gameweeks: number[];
 }
 
