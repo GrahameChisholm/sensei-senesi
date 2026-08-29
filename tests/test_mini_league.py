@@ -19,7 +19,10 @@ from engine.scoring import DEF, FWD, GK, MID
 from engine.simulate import PlayerSimulationSummary
 from features.mini_league import (
     KNOWN_CHIPS,
+    CaptainOption,
     HeadToHead,
+    PlayerExposure,
+    PlayerOwnership,
     compute_chip_states,
     compute_coverage,
     compute_exposures,
@@ -27,8 +30,10 @@ from features.mini_league import (
     compute_league_ownership,
     compute_posture,
     league_template_xi,
+    pair_with_weakest,
     prospective_swing,
     rank_captain_options,
+    summarise_week,
 )
 from features.team_state import MyTeamState, SquadPlayer
 
@@ -121,6 +126,39 @@ def _rival(
         gameweek_points=0,
         picks=picks,
         chips=chips,
+    )
+
+
+def _exposure(player_id: int, expected_swing: float | None, owner_count: int = 0) -> PlayerExposure:
+    ownership = PlayerOwnership(
+        player_id=player_id,
+        raw_ownership_percent=0.0,
+        owner_count=owner_count,
+        eo_multiplier=0.0,
+        eo_percent=0.0,
+        captain_share_percent=0.0,
+        owner_names=(),
+    )
+    return PlayerExposure(
+        player_id=player_id,
+        your_multiplier=1.0,
+        ownership=ownership,
+        expected_points=None if expected_swing is None else abs(expected_swing),
+        exposure=0.0,
+        expected_swing=expected_swing,
+    )
+
+
+def _captain_option(
+    player_id: int, net_captain_ev: float | None, captain_share_percent: float = 0.0
+) -> CaptainOption:
+    return CaptainOption(
+        player_id=player_id,
+        expected_points=None if net_captain_ev is None else abs(net_captain_ev),
+        captain_share_percent=captain_share_percent,
+        eo_multiplier=0.0,
+        net_captain_ev=net_captain_ev,
+        net_captain_std=None,
     )
 
 
@@ -588,3 +626,133 @@ class TestComputeCoverage:
         state = _team_state()
         # numerator = min(your=0.0, eo=1.0) = 0.0; denominator = eo = 1.0 -> coverage 0.0
         assert compute_coverage(state, ownership) == pytest.approx(0.0)
+
+
+class TestSummariseWeek:
+    def test_edge_is_the_highest_positive_swing_exposure(self):
+        exposures = [_exposure(1, 4.2), _exposure(2, 1.0), _exposure(3, -3.0)]
+        insights = summarise_week(exposures, [], current_captain_id=None, n_rivals=10)
+        edge = next(i for i in insights if i.kind == "edge")
+        assert edge.player_id == 1
+        assert edge.value == pytest.approx(4.2)
+
+    def test_drag_is_the_lowest_negative_swing_exposure(self):
+        exposures = [_exposure(1, 4.2), _exposure(2, -1.0), _exposure(3, -3.0)]
+        insights = summarise_week(exposures, [], current_captain_id=None, n_rivals=10)
+        drag = next(i for i in insights if i.kind == "drag")
+        assert drag.player_id == 3
+        assert drag.value == pytest.approx(-3.0)
+
+    def test_omits_edge_when_no_positive_swing_exists(self):
+        exposures = [_exposure(1, -1.0), _exposure(2, None)]
+        insights = summarise_week(exposures, [], current_captain_id=None, n_rivals=10)
+        assert not any(i.kind == "edge" for i in insights)
+
+    def test_omits_drag_when_no_negative_swing_exists(self):
+        exposures = [_exposure(1, 1.0), _exposure(2, None)]
+        insights = summarise_week(exposures, [], current_captain_id=None, n_rivals=10)
+        assert not any(i.kind == "drag" for i in insights)
+
+    def test_none_expected_swing_is_never_picked(self):
+        exposures = [_exposure(1, None)]
+        insights = summarise_week(exposures, [], current_captain_id=None, n_rivals=10)
+        assert insights == ()
+
+    def test_captain_insight_reports_the_delta_over_the_current_captain(self):
+        options = [
+            _captain_option(10, net_captain_ev=5.0, captain_share_percent=70.0),
+            _captain_option(20, net_captain_ev=8.0, captain_share_percent=5.0),
+        ]
+        insights = summarise_week([], options, current_captain_id=10, n_rivals=10)
+        captain_insight = next(i for i in insights if i.kind == "captain")
+        assert captain_insight.player_id == 20
+        assert captain_insight.reference_player_id == 10
+        assert captain_insight.value == pytest.approx(3.0)
+        # 70% of 10 rivals captained the current captain (player 10).
+        assert captain_insight.owner_count == 7
+
+    def test_omits_captain_insight_when_current_captain_is_already_best(self):
+        options = [
+            _captain_option(10, net_captain_ev=8.0),
+            _captain_option(20, net_captain_ev=5.0),
+        ]
+        insights = summarise_week([], options, current_captain_id=10, n_rivals=10)
+        assert not any(i.kind == "captain" for i in insights)
+
+    def test_omits_captain_insight_when_no_current_captain_id(self):
+        options = [_captain_option(10, net_captain_ev=5.0)]
+        insights = summarise_week([], options, current_captain_id=None, n_rivals=10)
+        assert not any(i.kind == "captain" for i in insights)
+
+    def test_omits_captain_insight_when_current_captain_has_no_projection(self):
+        options = [
+            _captain_option(10, net_captain_ev=None),
+            _captain_option(20, net_captain_ev=8.0),
+        ]
+        insights = summarise_week([], options, current_captain_id=10, n_rivals=10)
+        assert not any(i.kind == "captain" for i in insights)
+
+    def test_returns_at_most_three_insights(self):
+        exposures = [_exposure(1, 5.0), _exposure(2, -5.0)]
+        options = [
+            _captain_option(10, net_captain_ev=5.0),
+            _captain_option(20, net_captain_ev=8.0),
+        ]
+        insights = summarise_week(exposures, options, current_captain_id=10, n_rivals=10)
+        assert len(insights) == 3
+
+
+class TestPairWithWeakest:
+    def test_pairs_incoming_with_the_lowest_swing_starting_xi_player_at_the_same_position(self):
+        starting_xi = [
+            _exposure(MID_IDS[0], expected_swing=3.0),
+            _exposure(MID_IDS[1], expected_swing=-2.0),  # weakest MID
+            _exposure(FWD_IDS[0], expected_swing=-5.0),  # different position, ignored
+        ]
+        position_by_player = {MID_IDS[0]: MID, MID_IDS[1]: MID, FWD_IDS[0]: FWD, 900: MID}
+        prices = {MID_IDS[0]: 80, MID_IDS[1]: 60, FWD_IDS[0]: 90, 900: 75}
+        result = pair_with_weakest([900], starting_xi, position_by_player, prices, {900: 4.0})
+        candidate = result[900]
+        assert candidate.outgoing_player_id == MID_IDS[1]
+        assert candidate.incoming_swing == pytest.approx(4.0)
+        assert candidate.outgoing_swing == pytest.approx(-2.0)
+        assert candidate.net_swing_delta == pytest.approx(6.0)
+        assert candidate.price_delta == 15
+
+    def test_omitted_when_no_starting_xi_player_shares_the_position(self):
+        starting_xi = [_exposure(MID_IDS[0], expected_swing=1.0)]
+        position_by_player = {MID_IDS[0]: MID, 900: FWD}
+        prices = {MID_IDS[0]: 80, 900: 75}
+        result = pair_with_weakest([900], starting_xi, position_by_player, prices, {900: 4.0})
+        assert 900 not in result
+
+    def test_omitted_when_incoming_swing_is_missing(self):
+        starting_xi = [_exposure(MID_IDS[0], expected_swing=1.0)]
+        position_by_player = {MID_IDS[0]: MID, 900: MID}
+        prices = {MID_IDS[0]: 80, 900: 75}
+        result = pair_with_weakest([900], starting_xi, position_by_player, prices, {})
+        assert 900 not in result
+
+    def test_omitted_when_incoming_price_is_missing(self):
+        starting_xi = [_exposure(MID_IDS[0], expected_swing=1.0)]
+        position_by_player = {MID_IDS[0]: MID, 900: MID}
+        prices = {MID_IDS[0]: 80}
+        result = pair_with_weakest([900], starting_xi, position_by_player, prices, {900: 4.0})
+        assert 900 not in result
+
+    def test_starting_xi_players_with_no_projection_are_never_matched(self):
+        starting_xi = [_exposure(MID_IDS[0], expected_swing=None)]
+        position_by_player = {MID_IDS[0]: MID, 900: MID}
+        prices = {MID_IDS[0]: 80, 900: 75}
+        result = pair_with_weakest([900], starting_xi, position_by_player, prices, {900: 4.0})
+        assert 900 not in result
+
+    def test_ties_broken_by_player_id_for_determinism(self):
+        starting_xi = [
+            _exposure(MID_IDS[1], expected_swing=1.0),
+            _exposure(MID_IDS[0], expected_swing=1.0),
+        ]
+        position_by_player = {MID_IDS[0]: MID, MID_IDS[1]: MID, 900: MID}
+        prices = {MID_IDS[0]: 80, MID_IDS[1]: 80, 900: 75}
+        result = pair_with_weakest([900], starting_xi, position_by_player, prices, {900: 4.0})
+        assert result[900].outgoing_player_id == MID_IDS[0]

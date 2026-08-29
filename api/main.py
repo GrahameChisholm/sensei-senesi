@@ -7,6 +7,7 @@ mutation delegates to ``features.squad_rules``/``features.squad_draft``; a
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import replace
 
 import pandas as pd
@@ -27,6 +28,7 @@ from api.panel import build_panel_rows, build_team_fixture_map
 from api.player_stats_panel import build_player_stats_rows
 from api.squad_state import SquadState
 from api.state import (
+    AppState,
     get_app_settings,
     get_app_state,
     get_squad_state,
@@ -45,7 +47,14 @@ from features.differentials import (
 )
 from features.fixture_swing import DEFAULT_FAR_GAMEWEEKS, DEFAULT_NEAR_GAMEWEEKS
 from features.fixtures import HorizonDifficulty
-from features.mini_league import compute_league_ownership, prospective_swing
+from features.mini_league import (
+    PlayerOwnership,
+    SwapCandidate,
+    compute_exposures,
+    compute_league_ownership,
+    pair_with_weakest,
+    prospective_swing,
+)
 from features.player_stats import build_actual_stats_by_player
 from features.players import get_player_detail
 from features.squad_optimizer import PlayerCandidate, SquadOptimizerError, optimise_squad
@@ -485,6 +494,17 @@ def _mini_league_panel_out(panel: MiniLeaguePanel) -> schemas.MiniLeaguePanelOut
             )
             for option in panel.captain_options
         ],
+        insights=[
+            schemas.LeagueInsightOut(
+                kind=insight.kind,
+                player_id=insight.player_id,
+                reference_player_id=insight.reference_player_id,
+                value=insight.value,
+                owner_count=insight.owner_count,
+                n_rivals=insight.n_rivals,
+            )
+            for insight in panel.insights
+        ],
         rivals=[
             schemas.MiniLeagueRivalOut(
                 entry_id=rival.entry_id,
@@ -860,7 +880,9 @@ def _global_ownership_lens() -> OwnershipLens:
     )
 
 
-def _resolve_differentials_ownership(league_id: int | None) -> tuple[OwnershipLens, int | None]:
+def _resolve_differentials_ownership(
+    league_id: int | None,
+) -> tuple[OwnershipLens, int | None, Mapping[int, PlayerOwnership]]:
     """Resolve which ownership lens the Differentials page uses (MINI_LEAGUE_PLAN M24): the
     requested (or first tracked) league's effective ownership when a league is configured, its
     live fetch succeeds, and it actually has rivals to measure against; the FPL-wide percentage
@@ -869,8 +891,11 @@ def _resolve_differentials_ownership(league_id: int | None) -> tuple[OwnershipLe
     whose league fetch hits a transient FPL problem) should still get a fully working page, just
     on the lens that's always been available. The caller reports which lens actually won via the
     response's own ``ownership_lens`` field, never left for the frontend to guess. Returns
-    ``(lens, picks_gameweek)`` -- ``picks_gameweek`` is ``None`` under the global lens, where the
-    concept (M1) doesn't apply.
+    ``(lens, picks_gameweek, ownership_by_player)`` -- ``picks_gameweek`` is ``None`` under the
+    global lens, where the concept (M1) doesn't apply; ``ownership_by_player`` is the raw
+    per-player :class:`~features.mini_league.PlayerOwnership` map the league lens was built from
+    (empty under the global lens), which the "Replaces" swap suggestion needs and the flattened
+    ``OwnershipLens`` dicts don't carry.
     """
     settings = get_app_settings()
     resolved_league_id = (
@@ -879,18 +904,18 @@ def _resolve_differentials_ownership(league_id: int | None) -> tuple[OwnershipLe
         else (settings.mini_league_ids[0] if settings.mini_league_ids else None)
     )
     if resolved_league_id is None or settings.fpl_team_id is None:
-        return _global_ownership_lens(), None
+        return _global_ownership_lens(), None, {}
 
     try:
         with FPLClient() as client:
             snapshot = get_cached_league_snapshot(client, resolved_league_id)
     except FPLClientError:
-        return _global_ownership_lens(), None
+        return _global_ownership_lens(), None, {}
 
     ownership_by_player = compute_league_ownership(snapshot, exclude_entry_id=settings.fpl_team_id)
     n_rivals = sum(1 for entry in snapshot.entries if entry.entry_id != settings.fpl_team_id)
     if n_rivals == 0:
-        return _global_ownership_lens(), None
+        return _global_ownership_lens(), None, {}
 
     lens = OwnershipLens(
         source=LEAGUE_LENS,
@@ -900,7 +925,7 @@ def _resolve_differentials_ownership(league_id: int | None) -> tuple[OwnershipLe
         eo_multiplier={pid: o.eo_multiplier for pid, o in ownership_by_player.items()},
         owner_names={pid: o.owner_names for pid, o in ownership_by_player.items()},
     )
-    return lens, snapshot.picks_gameweek
+    return lens, snapshot.picks_gameweek, ownership_by_player
 
 
 def _prospective_swing(row: DifferentialRow, current_gameweek: int) -> float | None:
@@ -910,6 +935,51 @@ def _prospective_swing(row: DifferentialRow, current_gameweek: int) -> float | N
     if cell is None or cell.expected_points is None:
         return None
     return prospective_swing(row.differential.league_eo_multiplier, cell.expected_points)
+
+
+def _differentials_replacements(
+    app_state: AppState,
+    ownership_by_player: Mapping[int, PlayerOwnership],
+    swing_by_player: Mapping[int, float],
+    current_gameweek: int,
+) -> dict[int, SwapCandidate]:
+    """Pairs each differential with the weakest same-position starting-XI player by expected
+    swing, for the league lens's "Replaces" column. Returns an empty dict, never raises, when
+    there is no complete 15-player squad to compare against -- Differentials has always worked
+    without a squad and must keep doing so, unlike the Mini League page's own
+    ``_require_team_state`` which is allowed to demand one.
+    """
+    squad_state = get_squad_state()
+    if (
+        len(squad_state.squad) != SQUAD_SIZE
+        or squad_state.captain_id is None
+        or squad_state.vice_captain_id is None
+    ):
+        return {}
+
+    team_state = MyTeamState(
+        squad=squad_state.squad,
+        starting_xi=squad_state.starting_xi,
+        bench_order=squad_state.bench_order,
+        captain_id=squad_state.captain_id,
+        vice_captain_id=squad_state.vice_captain_id,
+        mini_league_ids=squad_state.mini_league_ids,
+    )
+    projections = {
+        player_id: horizon.gameweeks[current_gameweek]
+        for player_id, horizon in app_state.projections.items()
+        if current_gameweek in horizon.gameweeks
+    }
+    starting_xi_exposures = compute_exposures(
+        team_state.starting_xi, team_state, ownership_by_player, projections
+    )
+    return pair_with_weakest(
+        swing_by_player.keys(),
+        starting_xi_exposures,
+        app_state.position_by_player,
+        app_state.buy_prices,
+        swing_by_player,
+    )
 
 
 @app.get("/players/differentials", response_model=schemas.DifferentialsResponseOut)
@@ -944,7 +1014,9 @@ def list_differentials(
     app_state = get_app_state()
     player_names = {pid: data["web_name"] for pid, data in app_state.players.items()}
 
-    ownership_lens, picks_gameweek = _resolve_differentials_ownership(league_id)
+    ownership_lens, picks_gameweek, ownership_by_player = _resolve_differentials_ownership(
+        league_id
+    )
 
     resolved_window, differentials = build_differentials(
         app_state.player_history,
@@ -971,6 +1043,20 @@ def list_differentials(
         fixture_map,
         app_state.horizon_gameweeks,
     )
+
+    swing_by_player = {
+        row.differential.player_id: swing
+        for row in rows
+        if (swing := _prospective_swing(row, app_state.gameweek)) is not None
+    }
+    replacements = (
+        _differentials_replacements(
+            app_state, ownership_by_player, swing_by_player, app_state.gameweek
+        )
+        if ownership_lens.source == LEAGUE_LENS
+        else {}
+    )
+
     return schemas.DifferentialsResponseOut(
         window=schemas.DifferentialsWindowOut(
             gameweek_from=resolved_window.gameweek_from,
@@ -1011,7 +1097,19 @@ def list_differentials(
                 league_owner_count=row.differential.league_owner_count,
                 league_eo_multiplier=row.differential.league_eo_multiplier,
                 league_owner_names=list(row.differential.league_owner_names),
-                expected_swing=_prospective_swing(row, app_state.gameweek),
+                expected_swing=swing_by_player.get(row.differential.player_id),
+                replaces=(
+                    schemas.SwapCandidateOut(
+                        incoming_player_id=swap.incoming_player_id,
+                        outgoing_player_id=swap.outgoing_player_id,
+                        incoming_swing=swap.incoming_swing,
+                        outgoing_swing=swap.outgoing_swing,
+                        net_swing_delta=swap.net_swing_delta,
+                        price_delta=swap.price_delta,
+                    )
+                    if (swap := replacements.get(row.differential.player_id)) is not None
+                    else None
+                ),
                 fixtures=[
                     schemas.FixtureCellOut(
                         gameweek=cell.gameweek,

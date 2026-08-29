@@ -204,6 +204,15 @@ class DifferentialsWindowOut(BaseModel):
     requested_gameweeks: int
 
 
+class SwapCandidateOut(BaseModel):
+    incoming_player_id: int
+    outgoing_player_id: int
+    incoming_swing: float
+    outgoing_swing: float
+    net_swing_delta: float
+    price_delta: int
+
+
 class DifferentialRowOut(BaseModel):
     player_id: int
     name: str
@@ -240,6 +249,9 @@ class DifferentialRowOut(BaseModel):
     # Prospective swing (M28): what this player would be worth in expected-swing terms if brought
     # into the starting XI, league lens only.
     expected_swing: float | None = None
+    # Which of your own starting XI this player would most sensibly replace by expected swing
+    # (league lens, complete squad, only). A swing comparison, not a budget or legality check.
+    replaces: SwapCandidateOut | None = None
 
 
 class DifferentialsResponseOut(BaseModel):
@@ -367,6 +379,15 @@ class MiniLeagueRivalOut(BaseModel):
     head_to_head: HeadToHeadOut
 
 
+class LeagueInsightOut(BaseModel):
+    kind: str  # "edge" | "drag" | "captain"
+    player_id: int
+    reference_player_id: int | None
+    value: float
+    owner_count: int
+    n_rivals: int
+
+
 class MiniLeaguePanelOut(BaseModel):
     league_id: int
     league_name: str
@@ -378,4 +399,5 @@ class MiniLeaguePanelOut(BaseModel):
     template_xi: list[int]
     exposures: list[PlayerExposureOut]
     captain_options: list[CaptainOptionOut]
+    insights: list[LeagueInsightOut]
     rivals: list[MiniLeagueRivalOut]

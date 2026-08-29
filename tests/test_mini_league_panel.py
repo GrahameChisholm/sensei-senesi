@@ -219,6 +219,28 @@ class TestBuildMiniLeaguePanel:
         assert rival.head_to_head.expected_gap == 0.0
         assert rival.posture.projected_final_gap < 0
 
+    def test_insights_reflect_a_league_owned_player_you_are_missing(self):
+        """A player heavily owned by the field but sitting on your bench nets a negative exposure
+        (drag), and a player you start that nobody else owns nets a positive one (edge) -- both
+        should surface in panel.insights, sourced straight from the already-computed exposures."""
+        state = _team_state()
+        benched_id = DEF_IDS[4]  # on the bench in _team_state()
+        exclusive_starter_id = MID_IDS[0]  # started by you, owned by nobody else
+        snapshot = _snapshot(
+            [_rival(MY_ENTRY_ID, {}), _rival(1, {benched_id: 2}), _rival(2, {benched_id: 2})]
+        )
+        panel = build_mini_league_panel(_app_state(), state, snapshot, MY_ENTRY_ID)
+        assert any(i.kind == "drag" and i.player_id == benched_id for i in panel.insights)
+        assert any(i.kind == "edge" and i.player_id == exclusive_starter_id for i in panel.insights)
+
+    def test_no_edge_or_drag_when_a_rival_mirrors_your_exact_squad(self):
+        """A rival who mirrors your exact squad produces zero exposure for every player, so
+        neither an edge nor a drag insight has anything to point at."""
+        state = _team_state()
+        snapshot = _snapshot([_rival(MY_ENTRY_ID, {}), _rival(1, _mirrored_picks(state))])
+        panel = build_mini_league_panel(_app_state(), state, snapshot, MY_ENTRY_ID)
+        assert not any(i.kind in ("edge", "drag") for i in panel.insights)
+
 
 class _CountingClient:
     def __init__(self, snapshot_builder):

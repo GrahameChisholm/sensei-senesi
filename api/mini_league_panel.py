@@ -31,6 +31,7 @@ from engine.projections import PlayerGameweekProjection
 from features.mini_league import (
     CaptainOption,
     HeadToHead,
+    LeagueInsight,
     PlayerExposure,
     RivalChipState,
     RivalPosture,
@@ -42,6 +43,7 @@ from features.mini_league import (
     compute_posture,
     league_template_xi,
     rank_captain_options,
+    summarise_week,
 )
 from features.team_state import MyTeamState
 
@@ -98,6 +100,7 @@ class MiniLeaguePanel:
     template_xi: tuple[int, ...]
     exposures: tuple[PlayerExposure, ...]
     captain_options: tuple[CaptainOption, ...]
+    insights: tuple[LeagueInsight, ...]
     rivals: tuple[RivalRow, ...]
 
 
@@ -141,6 +144,8 @@ def build_mini_league_panel(
     captain_options = tuple(rank_captain_options(team_state.starting_xi, ownership, projections))
     coverage = compute_coverage(team_state, ownership, chip=chip)
     template_xi = league_template_xi(ownership, n=DEFAULT_TEMPLATE_XI_SIZE)
+    n_rivals = sum(1 for entry in snapshot.entries if entry.entry_id != my_entry_id)
+    insights = summarise_week(exposures, captain_options, team_state.captain_id, n_rivals)
 
     gameweeks_remaining = max(season_length_gameweeks - gameweek, 0)
     chip_state_by_entry = {state.entry_id: state for state in compute_chip_states(snapshot.entries)}
@@ -176,6 +181,7 @@ def build_mini_league_panel(
         template_xi=template_xi,
         exposures=exposures,
         captain_options=captain_options,
+        insights=insights,
         rivals=tuple(rivals),
     )
 

@@ -456,3 +456,63 @@ class TestLeagueOwnershipLens:
         client.get("/players/differentials", params={"league_id": 424242})
 
         assert seen_league_ids == [424242]
+
+
+class TestDifferentialsReplaces:
+    """The league lens's "Replaces" swap suggestion (features.mini_league.pair_with_weakest) --
+    pairs an unowned differential candidate with the weakest same-position starting-XI player by
+    expected swing. Requires both the league lens and a complete squad; either alone is not
+    enough."""
+
+    def _configure_league(self, monkeypatch, rival_picks: dict[int, dict[int, int]]):
+        state_module.set_app_settings(
+            AppSettingsData(fpl_team_id=MY_ENTRY_ID, mini_league_ids=(999,))
+        )
+        monkeypatch.setattr(api_main, "FPLClient", lambda: _StubFPLClient(rival_picks))
+
+    def _set_squad_with_player_one_starting(self):
+        # Player 1 is the only squad member with a real projection in _fixture_app_state, so it's
+        # the only possible "weakest starter" candidate regardless of which position slot it fills.
+        squad = _full_squad_containing(1, MID)
+        squad_ids = [p.player_id for p in squad]
+        state = SquadState(
+            squad=squad,
+            starting_xi=tuple(squad_ids[:11]),
+            bench_order=tuple(squad_ids[11:]),
+            captain_id=squad_ids[0],
+            vice_captain_id=squad_ids[1],
+        )
+        state_module.set_squad_state(state)
+
+    def test_none_under_the_global_lens_even_with_a_complete_squad(self, client: TestClient):
+        self._set_squad_with_player_one_starting()
+
+        response = client.get("/players/differentials")
+
+        rows = response.json()["rows"]
+        assert rows
+        assert all(row["replaces"] is None for row in rows)
+
+    def test_none_under_the_league_lens_without_a_complete_squad(
+        self, client: TestClient, monkeypatch
+    ):
+        self._configure_league(monkeypatch, {1: {1: 1}, 2: {1: 1}, 3: {1: 1}})
+
+        response = client.get("/players/differentials")
+
+        rows = response.json()["rows"]
+        assert rows
+        assert all(row["replaces"] is None for row in rows)
+
+    def test_pairs_an_unowned_candidate_with_the_weakest_same_position_starter(
+        self, client: TestClient, monkeypatch
+    ):
+        self._configure_league(monkeypatch, {1: {1: 1}, 2: {1: 1}, 3: {1: 1}})
+        self._set_squad_with_player_one_starting()
+
+        response = client.get("/players/differentials")
+
+        row = next(r for r in response.json()["rows"] if r["player_id"] == 2)
+        assert row["replaces"] is not None
+        assert row["replaces"]["incoming_player_id"] == 2
+        assert row["replaces"]["outgoing_player_id"] == 1

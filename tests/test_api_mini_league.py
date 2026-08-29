@@ -214,6 +214,8 @@ class TestGetMiniLeague:
         assert {rival["entry_id"] for rival in body["rivals"]} == {1}
         assert len(body["captain_options"]) == 11
         assert len(body["template_xi"]) <= 11
+        assert isinstance(body["insights"], list)
+        assert all(insight["kind"] in ("edge", "drag", "captain") for insight in body["insights"])
 
     def test_my_own_entry_never_appears_in_rivals(self, client, monkeypatch):
         _build_full_squad(client)

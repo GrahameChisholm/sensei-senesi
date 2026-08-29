@@ -55,6 +55,8 @@ __all__ = [
     "CaptainOption",
     "RivalChipState",
     "RivalPosture",
+    "LeagueInsight",
+    "SwapCandidate",
     "compute_league_ownership",
     "compute_exposures",
     "prospective_swing",
@@ -64,6 +66,8 @@ __all__ = [
     "compute_posture",
     "league_template_xi",
     "compute_coverage",
+    "summarise_week",
+    "pair_with_weakest",
 ]
 
 # FPL's own internal chip name strings, carried through verbatim rather than mapped onto a fixed
@@ -521,3 +525,157 @@ def compute_coverage(
         denominator += eo_multiplier
 
     return numerator / denominator if denominator > 0 else 0.0
+
+
+@dataclass(frozen=True)
+class LeagueInsight:
+    """One sentence's worth of the week's single most actionable signal, for the Mini League
+    page's week-summary card. At most three ever exist for a given week (:func:`summarise_week`
+    returns them together): the biggest edge you hold, the biggest drag against you, and the best
+    captaincy swap available, each carrying just enough structured data for the caller to render
+    one plain sentence without recomputing anything. ``reference_player_id`` is only meaningful
+    for ``kind == "captain"`` (your current captain, being compared against); ``owner_count`` is
+    the league owner count of ``player_id`` for ``"edge"``/``"drag"``, and of
+    ``reference_player_id`` (the current captain) for ``"captain"``, since that is the number each
+    kind's sentence actually needs.
+    """
+
+    kind: str  # "edge" | "drag" | "captain"
+    player_id: int
+    reference_player_id: int | None
+    value: float
+    owner_count: int
+    n_rivals: int
+
+
+def summarise_week(
+    exposures: Sequence[PlayerExposure],
+    captain_options: Sequence[CaptainOption],
+    current_captain_id: int | None,
+    n_rivals: int,
+) -> tuple[LeagueInsight, ...]:
+    """The week's headline signals, derived entirely from already-computed
+    :func:`compute_exposures`/:func:`rank_captain_options` output -- no new math, just picking out
+    the three numbers worth reading first. Any of the three is omitted rather than fabricated when
+    its inputs are missing: no positive-swing exposure means no edge, no current captain (or no
+    captain option better than the current one) means no captain insight."""
+    insights: list[LeagueInsight] = []
+
+    positive = [e for e in exposures if e.expected_swing is not None and e.expected_swing > 0]
+    if positive:
+        edge = max(positive, key=lambda e: e.expected_swing)
+        insights.append(
+            LeagueInsight(
+                kind="edge",
+                player_id=edge.player_id,
+                reference_player_id=None,
+                value=edge.expected_swing,
+                owner_count=edge.ownership.owner_count,
+                n_rivals=n_rivals,
+            )
+        )
+
+    negative = [e for e in exposures if e.expected_swing is not None and e.expected_swing < 0]
+    if negative:
+        drag = min(negative, key=lambda e: e.expected_swing)
+        insights.append(
+            LeagueInsight(
+                kind="drag",
+                player_id=drag.player_id,
+                reference_player_id=None,
+                value=drag.expected_swing,
+                owner_count=drag.ownership.owner_count,
+                n_rivals=n_rivals,
+            )
+        )
+
+    if current_captain_id is not None:
+        current_option = next(
+            (option for option in captain_options if option.player_id == current_captain_id),
+            None,
+        )
+        candidates = [option for option in captain_options if option.net_captain_ev is not None]
+        if current_option is not None and current_option.net_captain_ev is not None and candidates:
+            best = max(candidates, key=lambda option: option.net_captain_ev)
+            delta = best.net_captain_ev - current_option.net_captain_ev
+            if best.player_id != current_captain_id and delta > 0:
+                current_owner_count = round(current_option.captain_share_percent / 100.0 * n_rivals)
+                insights.append(
+                    LeagueInsight(
+                        kind="captain",
+                        player_id=best.player_id,
+                        reference_player_id=current_captain_id,
+                        value=delta,
+                        owner_count=current_owner_count,
+                        n_rivals=n_rivals,
+                    )
+                )
+
+    return tuple(insights)
+
+
+@dataclass(frozen=True)
+class SwapCandidate:
+    """A not-yet-owned player paired against the weakest same-position starting-XI player by
+    expected swing (Differentials' league-lens "Replaces" column). A swing comparison only -- it
+    does not check budget or squad legality, that is ``features.squad_optimizer``'s job, not this
+    module's. ``price_delta`` is ``incoming`` minus ``outgoing``, in tenths of a million, shown as
+    context alongside the swing numbers so the suggestion never reads as an unconditional
+    recommendation."""
+
+    incoming_player_id: int
+    outgoing_player_id: int
+    incoming_swing: float
+    outgoing_swing: float
+    net_swing_delta: float
+    price_delta: int
+
+
+def pair_with_weakest(
+    incoming_player_ids: Iterable[int],
+    starting_xi_exposures: Sequence[PlayerExposure],
+    position_by_player: Mapping[int, str],
+    prices: Mapping[int, int],
+    incoming_prospective_swing: Mapping[int, float],
+) -> dict[int, SwapCandidate]:
+    """For each id in ``incoming_player_ids``, pairs it with whichever ``starting_xi_exposures``
+    entry at the same position has the lowest ``expected_swing`` (ties broken by ``player_id`` for
+    a deterministic result). An incoming player is simply absent from the returned dict, never an
+    error, when there is no starting-XI player at the same position, its own prospective swing or
+    price is missing, or the matched starting-XI player's price is missing -- matching this
+    module's "a real answer, never a crash" stance on missing data everywhere else.
+    """
+    by_position: dict[str, list[PlayerExposure]] = {}
+    for exposure in starting_xi_exposures:
+        if exposure.expected_swing is None:
+            continue
+        position = position_by_player.get(exposure.player_id)
+        if position is None:
+            continue
+        by_position.setdefault(position, []).append(exposure)
+
+    results: dict[int, SwapCandidate] = {}
+    for player_id in incoming_player_ids:
+        position = position_by_player.get(player_id)
+        candidates = by_position.get(position) if position is not None else None
+        if not candidates:
+            continue
+        incoming_swing = incoming_prospective_swing.get(player_id)
+        incoming_price = prices.get(player_id)
+        if incoming_swing is None or incoming_price is None:
+            continue
+
+        weakest = min(candidates, key=lambda e: (e.expected_swing, e.player_id))
+        outgoing_price = prices.get(weakest.player_id)
+        if outgoing_price is None:
+            continue
+
+        results[player_id] = SwapCandidate(
+            incoming_player_id=player_id,
+            outgoing_player_id=weakest.player_id,
+            incoming_swing=incoming_swing,
+            outgoing_swing=weakest.expected_swing,
+            net_swing_delta=incoming_swing - weakest.expected_swing,
+            price_delta=incoming_price - outgoing_price,
+        )
+    return results
