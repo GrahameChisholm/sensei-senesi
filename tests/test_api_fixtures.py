@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 import api.state as state_module
 from api.state import AppState
+from tests.conftest import UPCOMING_DEADLINE
 
 TEAM_A, TEAM_B, TEAM_C = 1, 2, 3
 
@@ -52,7 +53,7 @@ def _fixture_app_state() -> AppState:
         horizon_gameweeks=[1, 2, 3],
         deadline_passed=False,
         generated_at=datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
-        deadline_time=datetime(2026, 8, 21, 17, 30, tzinfo=UTC),
+        deadline_time=UPCOMING_DEADLINE,
         model_version="test",
         projections={},
         players={},

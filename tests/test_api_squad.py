@@ -22,6 +22,7 @@ from engine.models.minutes import MinutesDistribution
 from engine.projections import project_player_gameweek, project_player_horizon
 from engine.scoring import DEF, FWD, GK, MID
 from features.team_state import SquadPlayer
+from tests.conftest import UPCOMING_DEADLINE
 
 GK1, GK2 = 1, 2
 DEF_IDS = [11, 12, 13, 14, 15]
@@ -116,7 +117,7 @@ def _fixture_app_state():
         horizon_gameweeks=[1, 2, 3],
         deadline_passed=False,
         generated_at=datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
-        deadline_time=datetime(2026, 8, 21, 17, 30, tzinfo=UTC),
+        deadline_time=UPCOMING_DEADLINE,
         model_version="test",
         projections=projections,
         players=players,

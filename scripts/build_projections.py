@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -316,6 +316,7 @@ def assemble_projection_cache(
     diagnostics: dict,
     player_history: dict[int, list[PlayerGameweekActual]] | None = None,
     team_rates: dict[int, TeamRateSnapshot] | None = None,
+    deadline_times: Mapping[int, datetime] | None = None,
 ) -> dict:
     """Build the exact JSON-serialisable cache dict §6.1 of the team-page plan specifies -- pure
     assembly from already-computed pieces, no I/O of its own.
@@ -327,6 +328,11 @@ def assemble_projection_cache(
     ``team_rates`` (fixture-swing plan Phase 1) is likewise optional so a cache built before this
     feature still assembles; it defaults to no rate for any team, which ``api/state.py`` treats the
     same way as a team missing from a real, current pull (no snapshot yet, e.g. true GW1).
+
+    ``deadline_times`` is every horizon gameweek's real FPL deadline, which is what lets the API
+    decide at read time which gameweek is still open rather than trusting the single
+    ``deadline_passed`` flag frozen here at build time. Optional for the same round-trip reason as
+    the two above; ``api/state.py`` falls back to 90 minutes before a gameweek's first kickoff.
     """
     team_rates = team_rates or {}
     player_history = player_history or {}
@@ -378,6 +384,10 @@ def assemble_projection_cache(
         "deadline_passed": deadline_passed,
         "generated_at": _isoformat(generated_at),
         "deadline_time": _isoformat(deadline_time),
+        "deadline_times": {
+            str(horizon_gameweek): _isoformat(value)
+            for horizon_gameweek, value in (deadline_times or {}).items()
+        },
         "model_version": model_version,
         "projections": {
             str(player_id): _serialize_horizon_projection(horizon)
@@ -420,6 +430,22 @@ def _deadline_time_for_gameweek(events: pd.DataFrame, gameweek: int) -> datetime
     if matches.empty:
         raise ValueError(f"no event found for gameweek {gameweek}")
     return pd.to_datetime(matches.iloc[0]["deadline_time"], utc=True).to_pydatetime()
+
+
+def _deadline_times_for_gameweeks(
+    events: pd.DataFrame, gameweeks: Sequence[int]
+) -> dict[int, datetime]:
+    """Every one of ``gameweeks`` that FPL has published an event for, skipping any it has not.
+    Silently skipping is right here: a missing deadline just leaves ``api/state.py`` on its
+    first-kickoff fallback for that gameweek, whereas raising would fail the whole build over a
+    horizon gameweek nobody has scheduled yet."""
+    deadlines = {}
+    for gameweek in gameweeks:
+        try:
+            deadlines[gameweek] = _deadline_time_for_gameweek(events, gameweek)
+        except ValueError:
+            continue
+    return deadlines
 
 
 # =================================================================================================
@@ -614,6 +640,7 @@ def build_projections(
 
         deadline_time = _deadline_time_for_gameweek(events, gameweek)
         deadline_passed = captured_at >= deadline_time
+        deadline_times = _deadline_times_for_gameweeks(events, target_gameweeks)
 
         diagnostics = {
             "training_rows": int(len(augmented.merged_gw)),
@@ -639,6 +666,7 @@ def build_projections(
             diagnostics,
             player_history,
             team_rates,
+            deadline_times,
         )
         path = write_projection_cache(cache, output_dir, season, gameweek)
         _print_summary(cache, diagnostics, path)

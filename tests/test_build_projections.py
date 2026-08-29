@@ -17,6 +17,7 @@ from engine.data.player_history import PlayerGameweekActual
 from engine.models.minutes import MinutesDistribution
 from engine.projections import project_player_gameweek, project_player_horizon
 from scripts.build_projections import (
+    _deadline_times_for_gameweeks,
     _serialize_player_history,
     assemble_projection_cache,
     build_fixture_list,
@@ -317,6 +318,10 @@ class TestAssembleProjectionCache:
             deadline_passed=False,
             model_version="test-version",
             diagnostics={"training_rows": 100},
+            deadline_times={
+                1: datetime(2026, 8, 21, 17, 30, tzinfo=UTC),
+                2: datetime(2026, 8, 28, 17, 30, tzinfo=UTC),
+            },
         )
 
     def test_top_level_shape(self):
@@ -334,8 +339,18 @@ class TestAssembleProjectionCache:
             "teams",
             "fixtures",
             "diagnostics",
+            "deadline_times",
         ):
             assert key in cache
+
+    def test_carries_a_deadline_for_every_horizon_gameweek(self):
+        # api/state.py resolves the decision gameweek from these, so every horizon gameweek needs
+        # one, not just the gameweek the cache was built for.
+        cache = self._cache()
+        assert cache["deadline_times"] == {
+            "1": "2026-08-21T17:30:00+00:00",
+            "2": "2026-08-28T17:30:00+00:00",
+        }
 
     def test_every_live_player_present_except_the_one_with_no_fixture(self):
         cache = self._cache()
@@ -483,3 +498,28 @@ class TestSerializePlayerHistoryRoundTrip:
         assert actual.transfers_in is None
         assert actual.transfers_out is None
         assert actual.bps is None
+
+
+class TestDeadlineTimesForGameweeks:
+    def _events(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"id": 1, "deadline_time": "2026-08-21T17:30:00Z"},
+                {"id": 2, "deadline_time": "2026-08-28T17:30:00Z"},
+            ]
+        )
+
+    def test_returns_one_deadline_per_scheduled_gameweek(self):
+        deadlines = _deadline_times_for_gameweeks(self._events(), [1, 2])
+
+        assert deadlines == {
+            1: datetime(2026, 8, 21, 17, 30, tzinfo=UTC),
+            2: datetime(2026, 8, 28, 17, 30, tzinfo=UTC),
+        }
+
+    def test_skips_a_gameweek_fpl_has_not_scheduled_yet(self):
+        # Skipping rather than raising keeps a whole build from failing over one unscheduled
+        # horizon gameweek; api/state.py just falls back to that gameweek's first kickoff.
+        deadlines = _deadline_times_for_gameweeks(self._events(), [1, 2, 3])
+
+        assert set(deadlines) == {1, 2}

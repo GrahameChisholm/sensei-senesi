@@ -110,12 +110,13 @@ def list_fixture_ticker(
     gameweek_to: int | None = None,
 ) -> list[schemas.FixtureTickerRowOut]:
     """Each bound defaults independently when omitted, chaining the same way
-    ``/teams/fixture-swing``'s near/far bounds do: ``gameweek_from`` defaults to the app's current
-    gameweek, ``gameweek_to`` to ``gameweek_from + DEFAULT_FIXTURE_TICKER_HORIZON - 1``, so an
-    arbitrary window like GW4-6 is just as valid as the locked-in 5-gameweek default."""
+    ``/teams/fixture-swing``'s near/far bounds do: ``gameweek_from`` defaults to the app's
+    decision gameweek, ``gameweek_to`` to
+    ``gameweek_from + DEFAULT_FIXTURE_TICKER_HORIZON - 1``, so an arbitrary window like GW4-6 is
+    just as valid as the locked-in 5-gameweek default."""
     app_state = get_app_state()
     if gameweek_from is None:
-        gameweek_from = app_state.gameweek
+        gameweek_from = app_state.decision_gameweek
     if gameweek_to is None:
         gameweek_to = gameweek_from + DEFAULT_FIXTURE_TICKER_HORIZON - 1
     if gameweek_from < 1 or gameweek_to < gameweek_from:
@@ -171,14 +172,14 @@ def list_fixture_swing(
 
     Each bound defaults independently when omitted, chaining onto whatever was resolved just
     before it so a caller can override only the window(s) they care about: ``near_from`` defaults
-    to the app's current gameweek, ``near_to`` to ``near_from + DEFAULT_NEAR_GAMEWEEKS - 1``,
+    to the app's decision gameweek, ``near_to`` to ``near_from + DEFAULT_NEAR_GAMEWEEKS - 1``,
     ``far_from`` to right after the (possibly customized) near window ends, and ``far_to`` to
     ``far_from + DEFAULT_FAR_GAMEWEEKS - 1`` -- reproducing the original locked-in 3-vs-5 default
     when all four are omitted.
     """
     app_state = get_app_state()
     if near_from is None:
-        near_from = app_state.gameweek
+        near_from = app_state.decision_gameweek
     if near_to is None:
         near_to = near_from + DEFAULT_NEAR_GAMEWEEKS - 1
     if far_from is None:
@@ -215,14 +216,17 @@ def list_fixture_swing(
 @app.get("/gameweek", response_model=schemas.GameweekOut)
 def get_gameweek() -> schemas.GameweekOut:
     state = get_app_state()
+    decision_gameweek = state.decision_gameweek
+    deadline_time = state.deadline_for(decision_gameweek) or state.deadline_time
     return schemas.GameweekOut(
         season=state.season,
-        gameweek=state.gameweek,
-        deadline_time=state.deadline_time.isoformat(),
-        deadline_passed=state.deadline_passed,
+        gameweek=decision_gameweek,
+        projections_gameweek=state.gameweek,
+        deadline_time=deadline_time.isoformat(),
+        deadline_passed=state.is_deadline_passed(),
         generated_at=state.generated_at.isoformat(),
         model_version=state.model_version,
-        horizon_gameweeks=state.horizon_gameweeks,
+        horizon_gameweeks=state.remaining_horizon_gameweeks,
     )
 
 
@@ -509,7 +513,7 @@ def get_squad_points(
             )
         gameweeks = [gameweek]
     else:
-        gameweeks = app_state.horizon_gameweeks[: max(horizon, 1)] or [app_state.gameweek]
+        gameweeks = app_state.remaining_horizon_gameweeks[: max(horizon, 1)]
     result = projected_points(team_state, app_state.projections, gameweeks, chip=chip)
     return schemas.SquadPointsOut(
         total=result.total,
@@ -545,7 +549,7 @@ def list_players(
         app_state.team_id_by_player,
         low_confidence_ids,
         fixture_map,
-        app_state.horizon_gameweeks,
+        app_state.remaining_horizon_gameweeks,
         search=search,
         position=position,
         max_price=max_price,
@@ -613,7 +617,7 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> list[schemas.Play
         app_state.position_by_player,
         low_confidence_ids,
         fixture_map,
-        app_state.horizon_gameweeks,
+        app_state.remaining_horizon_gameweeks,
     )
     return [
         schemas.PlayerStatsRowOut(
@@ -705,6 +709,9 @@ def list_differentials(
         app_state.player_history,
         app_state.position_by_player,
         app_state.buy_prices,
+        # The cache's own gameweek, not `decision_gameweek`: this reads actuals out of
+        # `player_history`, which was captured with the cache and so knows nothing about any
+        # gameweek played since.
         latest_played_gameweek=app_state.gameweek - 1,
         window_gameweeks=window,
         current_ownership_by_player=ownership_by_player,
@@ -723,7 +730,7 @@ def list_differentials(
         app_state.team_id_by_player,
         app_state.projections,
         fixture_map,
-        app_state.horizon_gameweeks,
+        app_state.remaining_horizon_gameweeks,
     )
     return schemas.DifferentialsResponseOut(
         window=schemas.DifferentialsWindowOut(

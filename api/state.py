@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +44,11 @@ __all__ = [
 ]
 
 DEFAULT_PROJECTION_CACHE_DIR = Path("data_store/projections")
+
+# FPL sets a gameweek's deadline 90 minutes before its first kickoff. Deriving a deadline that
+# way is the fallback for any cache built before `deadline_times` was recorded, since fixture
+# kickoff times have always been in the cache.
+DEADLINE_BEFORE_FIRST_KICKOFF = timedelta(minutes=90)
 
 
 def _breakdown_from_dict(data: dict) -> ComponentBreakdown:
@@ -109,8 +114,14 @@ class AppState:
     isn't squad-specific."""
 
     season: str
+    # The gameweek this cache was *built* for, i.e. whatever `--gameweek` the operator passed
+    # to scripts/build_projections.py. It is a fixed property of the file and never advances;
+    # `decision_gameweek` below is what a manager can still act on.
     gameweek: int
     horizon_gameweeks: list[int]
+    # Frozen at build time (`captured_at >= deadline_time`) and therefore stale the moment the
+    # deadline passes. Kept so the cache round-trips intact, but nothing serves it: the API
+    # answers with `is_deadline_passed()`, computed against the clock now.
     deadline_passed: bool
     generated_at: datetime
     deadline_time: datetime
@@ -128,20 +139,92 @@ class AppState:
     # for yet (true GW1); every downstream caller of features.fixtures already handles a team
     # missing from the rates mapping it's given.
     team_rates: dict[int, TeamRates] = field(default_factory=dict)
+    # Every horizon gameweek's real FPL deadline, which is what lets the API work out at read
+    # time which gameweek is still open. Empty for any cache built before this field existed
+    # (see load_projection_cache's .get()), where `deadline_for` falls back instead.
+    deadline_times: dict[int, datetime] = field(default_factory=dict)
     team_id_by_player: dict[int, int] = field(init=False)
     buy_prices: dict[int, int] = field(init=False)
     position_by_player: dict[int, str] = field(init=False)
+    first_kickoff_by_gameweek: dict[int, datetime] = field(init=False)
 
     def __post_init__(self) -> None:
         self.team_id_by_player = {pid: p["team_id"] for pid, p in self.players.items()}
         self.buy_prices = {pid: p["price"] for pid, p in self.players.items()}
         self.position_by_player = {pid: p["position"] for pid, p in self.players.items()}
+        self.first_kickoff_by_gameweek = {}
+        for row in self.fixtures:
+            kickoff = row.get("kickoff_time")
+            if not kickoff:
+                continue
+            gameweek = row["gameweek"]
+            parsed = datetime.fromisoformat(kickoff)
+            earliest = self.first_kickoff_by_gameweek.get(gameweek)
+            if earliest is None or parsed < earliest:
+                self.first_kickoff_by_gameweek[gameweek] = parsed
+
+    def deadline_for(self, gameweek: int) -> datetime | None:
+        """That gameweek's FPL deadline, or None when this cache holds nothing to derive one from.
+
+        Prefers the deadlines the cache recorded, falls back to the single ``deadline_time`` for
+        the cache's own gameweek, and finally to 90 minutes before the gameweek's first kickoff.
+        Returning None rather than guessing is deliberate: it keeps ``decision_gameweek`` from
+        advancing past a gameweek on evidence it does not actually have.
+        """
+        recorded = self.deadline_times.get(gameweek)
+        if recorded is not None:
+            return recorded
+        if gameweek == self.gameweek:
+            return self.deadline_time
+        first_kickoff = self.first_kickoff_by_gameweek.get(gameweek)
+        if first_kickoff is None:
+            return None
+        return first_kickoff - DEADLINE_BEFORE_FIRST_KICKOFF
+
+    @property
+    def decision_gameweek(self) -> int:
+        """The earliest horizon gameweek a manager can still change anything for.
+
+        Once a gameweek's deadline passes, every mutation this app offers (transfers, captaincy,
+        bench order, chips) has stopped affecting it, so the decision gameweek advances at the
+        deadline rather than when that gameweek's matches finish. This is a safety net for the
+        window between a deadline and the next ``build_projections`` run, not a substitute for it:
+        the later gameweeks in a cache were fit on older data than a fresh build would use, which
+        is why the API reports ``gameweek`` alongside it.
+
+        Clamps to the last horizon gameweek when every deadline in the horizon has gone, which
+        means the cache is stale rather than that anyone can act on that gameweek.
+        """
+        if not self.horizon_gameweeks:
+            return self.gameweek
+        now = datetime.now(UTC)
+        for gameweek in self.horizon_gameweeks:
+            deadline = self.deadline_for(gameweek)
+            if deadline is None or now < deadline:
+                return gameweek
+        return self.horizon_gameweeks[-1]
+
+    @property
+    def remaining_horizon_gameweeks(self) -> list[int]:
+        """``horizon_gameweeks`` from ``decision_gameweek`` onward: the gameweeks still worth
+        planning over, with any that have already locked dropped."""
+        target = self.decision_gameweek
+        return [gameweek for gameweek in self.horizon_gameweeks if gameweek >= target] or [target]
+
+    def is_deadline_passed(self) -> bool:
+        """Whether ``decision_gameweek``'s own deadline has gone, against the clock now rather
+        than the cache's frozen ``deadline_passed``. Ordinarily False, since the decision gameweek
+        is by definition the first one still open, so a True here means every gameweek in the
+        horizon has locked and the cache needs rebuilding."""
+        deadline = self.deadline_for(self.decision_gameweek)
+        return deadline is not None and datetime.now(UTC) >= deadline
 
     def expected_points(self, gameweek: int | None = None) -> dict[int, float]:
-        """One EV number per projected player for ``gameweek`` (defaults to the current
-        gameweek) — exactly what ``features.formation.select_starting_xi``/
-        ``features.squad_rules.optimise_xi`` need."""
-        target = gameweek if gameweek is not None else self.gameweek
+        """One EV number per projected player for ``gameweek``, exactly what
+        ``features.formation.select_starting_xi``/``features.squad_rules.optimise_xi`` need.
+        Defaults to the decision gameweek, since optimising an XI for a gameweek that has already
+        locked changes nothing."""
+        target = gameweek if gameweek is not None else self.decision_gameweek
         return {
             pid: horizon.gameweeks[target].expected_points
             for pid, horizon in self.projections.items()
@@ -165,6 +248,10 @@ def load_projection_cache(path: Path) -> AppState:
         int(team_id): _team_rates_from_dict(data)
         for team_id, data in raw.get("team_rates", {}).items()
     }
+    deadline_times = {
+        int(gameweek): datetime.fromisoformat(value)
+        for gameweek, value in raw.get("deadline_times", {}).items()
+    }
     return AppState(
         season=raw["season"],
         gameweek=raw["gameweek"],
@@ -180,6 +267,7 @@ def load_projection_cache(path: Path) -> AppState:
         diagnostics=raw["diagnostics"],
         player_history=player_history,
         team_rates=team_rates,
+        deadline_times=deadline_times,
     )
 
 

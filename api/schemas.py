@@ -51,12 +51,24 @@ class TeamOut(BaseModel):
 
 
 class GameweekOut(BaseModel):
+    """The gameweek the app presents as "now", which is the earliest one still open for
+    decisions, not the one whose matches happen to be playing."""
+
     season: str
+    # The decision gameweek: what a manager can still change. Advances at a deadline, not when a
+    # gameweek's matches finish.
     gameweek: int
+    # The gameweek the loaded projection cache was built for. Ordinarily the same as `gameweek`;
+    # when it lags behind, the projections are from before the last deadline and a rebuild will
+    # produce fresher numbers.
+    projections_gameweek: int
+    # `gameweek`'s own deadline, and whether it has passed, computed against the clock now rather
+    # than served from the value frozen into the cache at build time.
     deadline_time: str
     deadline_passed: bool
     generated_at: str
     model_version: str
+    # `gameweek` onward, with any already-locked gameweeks dropped.
     horizon_gameweeks: list[int]
 
 
