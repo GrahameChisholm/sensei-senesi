@@ -1,13 +1,25 @@
 import { useMemo, useRef, useState } from "react";
-import { ComponentBreakdownOut, PlayerStatsRowOut, TeamOut } from "../api";
-import { expectedPointsColour, expectedPointsTextColour } from "../lib/colours";
+import { ComponentBreakdownOut, OwnershipStatus, PlayerStatsRowOut, TeamOut } from "../api";
 import {
+  expectedPointsColour,
+  expectedPointsTextColour,
+  ratioColour,
+  ratioTextColour,
+} from "../lib/colours";
+import {
+  OWNERSHIP_STATUS_TOOLTIP,
+  RATIO_COLUMN_TOOLTIP,
   STAT_COLUMNS,
   StatColumn,
   StatKey,
   averageMinutesPerMatch,
+  formatRatio,
   formatStat,
   horizonPoints,
+  overperformanceBadge,
+  ratioSortValue,
+  ratioTooltip,
+  ratioVerdict,
   statValue,
 } from "../lib/playerStats";
 import { BreakdownPopover } from "./BreakdownPopover";
@@ -55,14 +67,25 @@ function ActualBreakdownPopover({ breakdown }: { breakdown: ComponentBreakdownOu
   );
 }
 
-type SortKey = "name" | "price" | "apps" | "minutes" | "selected_by_percent" | "horizon_points" | StatKey;
+type SortKey =
+  | "name"
+  | "price"
+  | "apps"
+  | "minutes"
+  | "ownership_percent"
+  | "attacking_ratio"
+  | "defensive_ratio"
+  | "horizon_points"
+  | StatKey;
 
 function sortValue(row: PlayerStatsRowOut, sortKey: SortKey, perNinety: boolean): number | string {
   if (sortKey === "name") return row.name.toLowerCase();
   if (sortKey === "price") return row.price ?? 0;
   if (sortKey === "apps") return row.actuals.apps;
   if (sortKey === "minutes") return averageMinutesPerMatch(row);
-  if (sortKey === "selected_by_percent") return row.actuals.selected_by_percent ?? 0;
+  if (sortKey === "ownership_percent") return row.actuals.ownership_percent ?? 0;
+  if (sortKey === "attacking_ratio") return ratioSortValue(row.actuals.attacking_ratio);
+  if (sortKey === "defensive_ratio") return ratioSortValue(row.actuals.defensive_ratio);
   if (sortKey === "horizon_points") return horizonPoints(row);
   const column = STAT_COLUMNS.find((c) => c.key === sortKey);
   return column ? statValue(row, column, perNinety) : 0;
@@ -72,9 +95,15 @@ interface PlayerStatsTableProps {
   rows: PlayerStatsRowOut[];
   teams: Record<number, TeamOut>;
   perNinety: boolean;
+  ownershipStatus: OwnershipStatus;
 }
 
-export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTableProps) {
+export function PlayerStatsTable({
+  rows,
+  teams,
+  perNinety,
+  ownershipStatus,
+}: PlayerStatsTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("total_points");
   const [sortDescending, setSortDescending] = useState(true);
   const [openBreakdown, setOpenBreakdown] = useState<{ playerId: number; gameweek: number } | null>(
@@ -128,13 +157,25 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
       <table className="stats-table">
         <thead>
           <tr>
-            <th className="sortable" onClick={() => toggleSort("name")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("name")}
+              title="Player name and team. Badges flag low confidence in the projection, a small sample this range, the designated penalty taker, and running hot/cold on their underlying numbers."
+            >
               Player{sortIndicator("name")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("price")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("price")}
+              title="Current FPL price in £m."
+            >
               Price{sortIndicator("price")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("apps")}>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("apps")}
+              title="Appearances: gameweeks in the selected range with any minutes played."
+            >
               Apps{sortIndicator("apps")}
             </th>
             <th
@@ -145,18 +186,42 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
               Mins/Match{sortIndicator("minutes")}
             </th>
             {STAT_COLUMNS.map((column) => (
-              <th key={column.key} className="sortable" onClick={() => toggleSort(column.key)}>
+              <th
+                key={column.key}
+                className="sortable"
+                onClick={() => toggleSort(column.key)}
+                title={column.tooltip}
+              >
                 {column.label}
                 {sortIndicator(column.key)}
               </th>
             ))}
-            <th className="sortable" onClick={() => toggleSort("selected_by_percent")}>
-              Own%{sortIndicator("selected_by_percent")}
+            <th
+              className="sortable"
+              onClick={() => toggleSort("attacking_ratio")}
+              title={RATIO_COLUMN_TOOLTIP.attacking}
+            >
+              vs xGI{sortIndicator("attacking_ratio")}
+            </th>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("defensive_ratio")}
+              title={RATIO_COLUMN_TOOLTIP.defensive}
+            >
+              vs xCS{sortIndicator("defensive_ratio")}
+            </th>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("ownership_percent")}
+              title={OWNERSHIP_STATUS_TOOLTIP[ownershipStatus]}
+            >
+              Own%{sortIndicator("ownership_percent")}
             </th>
             <th
               colSpan={3}
               className="sortable"
               onClick={() => toggleSort("horizon_points")}
+              title="Predicted expected points for each of the next 3 gameweeks, from the engine's projections. Sorts by the 3-gameweek total; click a cell to see that gameweek's breakdown."
             >
               Next 3 GWs{sortIndicator("horizon_points")}
             </th>
@@ -165,7 +230,7 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
         <tbody>
           {topPadding > 0 && (
             <tr style={{ height: topPadding }}>
-              <td colSpan={5 + STAT_COLUMNS.length} />
+              <td colSpan={7 + STAT_COLUMNS.length} />
             </tr>
           )}
           {visibleRows.map((row) => (
@@ -178,6 +243,22 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
                     n
                   </span>
                 )}
+                {row.actuals.is_penalty_taker && (
+                  <span
+                    className="badge penalty-taker-badge"
+                    title="On penalties. Penalty volume persists but conversion regresses hard toward ~79%, so a hot run here means less than the same run from open play."
+                  >
+                    P
+                  </span>
+                )}
+                {(() => {
+                  const badge = overperformanceBadge(row);
+                  return badge === null ? null : (
+                    <span className={`overperf-badge ${badge.className}`} title={badge.title}>
+                      {badge.label}
+                    </span>
+                  );
+                })()}
                 <span className="panel-team">
                   {row.team_id !== null ? teams[row.team_id]?.short_name : ""}
                 </span>
@@ -210,9 +291,28 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
                   </td>
                 );
               })}
+              {(["attacking", "defensive"] as const).map((kind) => {
+                const ratio =
+                  kind === "attacking"
+                    ? row.actuals.attacking_ratio
+                    : row.actuals.defensive_ratio;
+                const conclusive = ratioVerdict(ratio) !== "inconclusive";
+                return (
+                  <td
+                    key={kind}
+                    title={ratioTooltip(ratio, kind)}
+                    style={{
+                      background: ratioColour(ratio?.ratio ?? null, conclusive),
+                      color: ratioTextColour(ratio?.ratio ?? null, conclusive),
+                    }}
+                  >
+                    {formatRatio(ratio)}
+                  </td>
+                );
+              })}
               <td>
-                {row.actuals.selected_by_percent !== null
-                  ? `${row.actuals.selected_by_percent.toFixed(1)}%`
+                {row.actuals.ownership_percent !== null
+                  ? `${row.actuals.ownership_percent.toFixed(1)}%`
                   : "—"}
               </td>
               {row.fixtures.map((fixture) => (
@@ -250,7 +350,7 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
           ))}
           {bottomPadding > 0 && (
             <tr style={{ height: bottomPadding }}>
-              <td colSpan={5 + STAT_COLUMNS.length} />
+              <td colSpan={7 + STAT_COLUMNS.length} />
             </tr>
           )}
         </tbody>

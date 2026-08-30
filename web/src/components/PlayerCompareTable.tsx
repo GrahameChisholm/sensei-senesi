@@ -1,11 +1,27 @@
-import { PlayerStatsRowOut, TeamOut } from "../api";
-import { expectedPointsColour, expectedPointsTextColour } from "../lib/colours";
-import { STAT_COLUMNS, averageMinutesPerMatch, formatStat, statValue } from "../lib/playerStats";
+import { OwnershipStatus, PlayerStatsRowOut, TeamOut } from "../api";
+import {
+  expectedPointsColour,
+  expectedPointsTextColour,
+  ratioColour,
+  ratioTextColour,
+} from "../lib/colours";
+import {
+  OWNERSHIP_STATUS_TOOLTIP,
+  RATIO_COLUMN_TOOLTIP,
+  STAT_COLUMNS,
+  averageMinutesPerMatch,
+  formatRatio,
+  formatStat,
+  ratioTooltip,
+  ratioVerdict,
+  statValue,
+} from "../lib/playerStats";
 
 interface PlayerCompareTableProps {
   rows: PlayerStatsRowOut[];
   teams: Record<number, TeamOut>;
   perNinety: boolean;
+  ownershipStatus: OwnershipStatus;
   onRemove: (playerId: number) => void;
 }
 
@@ -15,7 +31,13 @@ interface PlayerCompareTableProps {
  * reading down a column once per stat, which is the entire point of a dedicated comparison view.
  * Reuses the same stat definitions and per-90 toggle as PlayerStatsTable (features/playerStats.ts)
  * so a number here always means the same thing it does in the main table. */
-export function PlayerCompareTable({ rows, teams, perNinety, onRemove }: PlayerCompareTableProps) {
+export function PlayerCompareTable({
+  rows,
+  teams,
+  perNinety,
+  ownershipStatus,
+  onRemove,
+}: PlayerCompareTableProps) {
   if (rows.length === 0) return null;
 
   const gameweeks = Array.from(
@@ -29,7 +51,7 @@ export function PlayerCompareTable({ rows, teams, perNinety, onRemove }: PlayerC
         <table className="stats-table compare-table">
           <thead>
             <tr>
-              <th>Player</th>
+              <th title="Each column is one of the players you've added to compare.">Player</th>
               {rows.map((row) => (
                 <th key={row.player_id}>
                   {row.name}
@@ -50,44 +72,74 @@ export function PlayerCompareTable({ rows, teams, perNinety, onRemove }: PlayerC
           </thead>
           <tbody>
             <tr>
-              <td>Price</td>
+              <td title="Current FPL price in £m.">Price</td>
               {rows.map((row) => (
                 <td key={row.player_id}>{row.price !== null ? `£${(row.price / 10).toFixed(1)}m` : "—"}</td>
               ))}
             </tr>
             <tr>
-              <td>Apps</td>
+              <td title="Appearances: gameweeks in the selected range with any minutes played.">
+                Apps
+              </td>
               {rows.map((row) => (
                 <td key={row.player_id}>{row.actuals.apps}</td>
               ))}
             </tr>
             <tr>
-              <td>Mins/Match</td>
+              <td title="Average minutes played per match started or appeared in, not total minutes across the selected range">
+                Mins/Match
+              </td>
               {rows.map((row) => (
                 <td key={row.player_id}>{averageMinutesPerMatch(row).toFixed(1)}</td>
               ))}
             </tr>
             {STAT_COLUMNS.map((column) => (
               <tr key={column.key}>
-                <td>{column.label}</td>
+                <td title={column.tooltip}>{column.label}</td>
                 {rows.map((row) => (
                   <td key={row.player_id}>{formatStat(statValue(row, column, perNinety), column, perNinety)}</td>
                 ))}
               </tr>
             ))}
+            {(["attacking", "defensive"] as const).map((kind) => (
+              <tr key={kind}>
+                <td title={RATIO_COLUMN_TOOLTIP[kind]}>{kind === "attacking" ? "vs xGI" : "vs xCS"}</td>
+                {rows.map((row) => {
+                  const ratio =
+                    kind === "attacking"
+                      ? row.actuals.attacking_ratio
+                      : row.actuals.defensive_ratio;
+                  const conclusive = ratioVerdict(ratio) !== "inconclusive";
+                  return (
+                    <td
+                      key={row.player_id}
+                      title={ratioTooltip(ratio, kind)}
+                      style={{
+                        background: ratioColour(ratio?.ratio ?? null, conclusive),
+                        color: ratioTextColour(ratio?.ratio ?? null, conclusive),
+                      }}
+                    >
+                      {formatRatio(ratio)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
             <tr>
-              <td>Own%</td>
+              <td title={OWNERSHIP_STATUS_TOOLTIP[ownershipStatus]}>Own%</td>
               {rows.map((row) => (
                 <td key={row.player_id}>
-                  {row.actuals.selected_by_percent !== null
-                    ? `${row.actuals.selected_by_percent.toFixed(1)}%`
+                  {row.actuals.ownership_percent !== null
+                    ? `${row.actuals.ownership_percent.toFixed(1)}%`
                     : "—"}
                 </td>
               ))}
             </tr>
             {gameweeks.map((gameweek) => (
               <tr key={gameweek}>
-                <td>GW{gameweek}</td>
+                <td title="Predicted expected points for this gameweek, from the engine's projections, with the opponent and venue below it.">
+                  GW{gameweek}
+                </td>
                 {rows.map((row) => {
                   const fixture = row.fixtures.find((f) => f.gameweek === gameweek);
                   return (

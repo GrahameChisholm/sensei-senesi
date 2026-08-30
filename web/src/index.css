@@ -473,6 +473,37 @@ button {
   color: white;
 }
 
+.penalty-taker-badge {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+
+/* Overperformance badges (Player Stats). Deliberately worded and coloured apart from the
+   Differentials page's .archetype-badge: these are derived from a credible interval clearing 1.0,
+   that one from a raw threshold, so the two must not read as the same claim. "Hot" is a
+   regression warning, hence danger colours rather than the success colours an eye might expect
+   for a player outscoring their xG. */
+.overperf-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+  margin-left: 0.3rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.overperf-hot {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.overperf-cold {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .card-remove-button {
   position: absolute;
   top: -0.5rem;

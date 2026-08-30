@@ -109,3 +109,29 @@ export function exposureTextColour(value: number | null): string {
   if (value === 0) return NEUTRAL_TEXT;
   return value > 0 ? HIGH.text : LOW.text;
 }
+
+// Actual-vs-expected ratios (Player Stats). Reuses the diverging exposure scale above, but with
+// the sign deliberately inverted: a ratio above 1.0 means a player is outscoring their underlying
+// numbers, which predicts regression rather than continued returns, so it must read as the warning
+// it is. Below 1.0 is the buy signal. A ratio whose credible interval still contains 1.0 gets no
+// colour at all, since colouring it would imply a verdict the evidence does not support.
+const RATIO_MAGNITUDE_BREAKPOINT = 0.6; // |ratio - 1| at which the colour is fully saturated
+
+function ratioSignal(ratio: number | null, conclusive: boolean): number | null {
+  if (ratio === null || !conclusive) return null;
+  // Negate so "hot" (above 1.0) lands on the red end of the diverging scale.
+  return -(ratio - 1.0) * (EXPOSURE_MAGNITUDE_BREAKPOINT / RATIO_MAGNITUDE_BREAKPOINT);
+}
+
+/** Background colour for one actual-vs-expected ratio cell. ``conclusive`` is whether the ratio's
+ * credible interval clears 1.0; an inconclusive ratio renders neutral. */
+export function ratioColour(ratio: number | null, conclusive: boolean): string {
+  const signal = ratioSignal(ratio, conclusive);
+  return signal === null ? mixBg(NEUTRAL_BG_RGB, NEUTRAL_BG_RGB, 0) : exposureColour(signal);
+}
+
+/** Text colour paired with {@link ratioColour} for the same value. */
+export function ratioTextColour(ratio: number | null, conclusive: boolean): string {
+  const signal = ratioSignal(ratio, conclusive);
+  return signal === null ? NEUTRAL_TEXT : exposureTextColour(signal);
+}

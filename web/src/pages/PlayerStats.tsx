@@ -31,7 +31,7 @@ export function PlayerStats() {
     }
   }, [gameweek, rangeInitialized]);
 
-  const { rows, loading } = usePlayerStats(gameweekFrom, gameweekTo);
+  const { rows, ownershipStatus, loading } = usePlayerStats(gameweekFrom, gameweekTo);
 
   function addCompare(playerId: number) {
     setCompareIds((prev) =>
@@ -124,6 +124,7 @@ export function PlayerStats() {
           rows={compareRows}
           teams={teams}
           perNinety={perNinety}
+          ownershipStatus={ownershipStatus}
           onRemove={removeCompare}
         />
       )}
@@ -134,7 +135,12 @@ export function PlayerStats() {
           <p className="stats-row-count">
             {filteredRows.length} of {rows.length} players
           </p>
-          <PlayerStatsTable rows={filteredRows} teams={teams} perNinety={perNinety} />
+          <PlayerStatsTable
+            rows={filteredRows}
+            teams={teams}
+            perNinety={perNinety}
+            ownershipStatus={ownershipStatus}
+          />
         </>
       )}
     </div>

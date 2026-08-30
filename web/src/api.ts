@@ -182,8 +182,20 @@ export interface ActualStatsOut {
   expected_goal_involvements: number;
   expected_goals_conceded: number;
   points_breakdown: ComponentBreakdownOut;
-  selected_by_percent: number | null;
+  ownership_percent: number | null;
   small_sample: boolean;
+  attacking_ratio: RateRatioOut | null;
+  defensive_ratio: RateRatioOut | null;
+  is_penalty_taker: boolean;
+}
+
+/** An actual-vs-expected ratio with its credible interval. An interval containing 1.0 means the
+ * deviation is not yet distinguishable from chance. */
+export interface RateRatioOut {
+  ratio: number;
+  low: number;
+  high: number;
+  exposure: number;
 }
 
 export interface PlayerStatsRowOut {
@@ -195,6 +207,15 @@ export interface PlayerStatsRowOut {
   low_confidence: boolean;
   actuals: ActualStatsOut;
   fixtures: FixtureCellOut[];
+}
+
+/** Why league ownership may be absent. This page shows mini-league ownership or nothing, never
+ * FPL's population-wide figure substituted under the same heading. */
+export type OwnershipStatus = "ok" | "not_configured" | "fetch_failed" | "no_rivals";
+
+export interface PlayerStatsResponseOut {
+  ownership_status: OwnershipStatus;
+  rows: PlayerStatsRowOut[];
 }
 
 // --- Differentials page ---------------------------------------------------------------------
@@ -466,7 +487,7 @@ export const api = {
       })}`,
     ),
   getPlayerStats: (gameweekFrom: number, gameweekTo: number) =>
-    request<PlayerStatsRowOut[]>(
+    request<PlayerStatsResponseOut>(
       `/players/stats${query({ gameweek_from: gameweekFrom, gameweek_to: gameweekTo })}`,
     ),
   getDifferentials: (options: {

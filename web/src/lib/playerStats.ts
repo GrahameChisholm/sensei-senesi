@@ -1,4 +1,4 @@
-import { PlayerStatsRowOut } from "../api";
+import { OwnershipStatus, PlayerStatsRowOut, RateRatioOut } from "../api";
 
 export type StatKey =
   | "goals_scored"
@@ -6,9 +6,6 @@ export type StatKey =
   | "clean_sheets"
   | "goals_conceded"
   | "own_goals"
-  | "penalties_missed"
-  | "penalties_saved"
-  | "saves"
   | "bonus"
   | "yellow_cards"
   | "red_cards"
@@ -23,25 +20,109 @@ export interface StatColumn {
   label: string;
   decimals: number;
   perNinetyEligible: boolean;
+  /** Explains what the column is and, for a derived stat, roughly how it's calculated -- shown as
+   * the header's tooltip so a number is never on screen with no explanation behind it. */
+  tooltip: string;
 }
 
 export const STAT_COLUMNS: StatColumn[] = [
-  { key: "goals_scored", label: "Goals", decimals: 0, perNinetyEligible: true },
-  { key: "assists", label: "Assists", decimals: 0, perNinetyEligible: true },
-  { key: "clean_sheets", label: "CS", decimals: 0, perNinetyEligible: true },
-  { key: "goals_conceded", label: "GC", decimals: 0, perNinetyEligible: true },
-  { key: "own_goals", label: "OG", decimals: 0, perNinetyEligible: false },
-  { key: "penalties_missed", label: "Pen miss", decimals: 0, perNinetyEligible: false },
-  { key: "penalties_saved", label: "Pen saved", decimals: 0, perNinetyEligible: false },
-  { key: "saves", label: "Saves", decimals: 0, perNinetyEligible: true },
-  { key: "bonus", label: "Bonus", decimals: 0, perNinetyEligible: true },
-  { key: "yellow_cards", label: "YC", decimals: 0, perNinetyEligible: false },
-  { key: "red_cards", label: "RC", decimals: 0, perNinetyEligible: false },
-  { key: "total_points", label: "Pts", decimals: 0, perNinetyEligible: true },
-  { key: "expected_goals", label: "xG", decimals: 2, perNinetyEligible: true },
-  { key: "expected_assists", label: "xA", decimals: 2, perNinetyEligible: true },
-  { key: "expected_goal_involvements", label: "xGI", decimals: 2, perNinetyEligible: true },
-  { key: "expected_goals_conceded", label: "xGC", decimals: 2, perNinetyEligible: true },
+  {
+    key: "goals_scored",
+    label: "Goals",
+    decimals: 0,
+    perNinetyEligible: true,
+    tooltip: "Goals scored, summed over the selected gameweek range.",
+  },
+  {
+    key: "assists",
+    label: "Assists",
+    decimals: 0,
+    perNinetyEligible: true,
+    tooltip: "Assists, summed over the selected gameweek range.",
+  },
+  {
+    key: "clean_sheets",
+    label: "CS",
+    decimals: 0,
+    perNinetyEligible: true,
+    tooltip:
+      "Clean sheets: gameweeks the player's team conceded 0 goals while they played 60+ minutes.",
+  },
+  {
+    key: "goals_conceded",
+    label: "GC",
+    decimals: 0,
+    perNinetyEligible: true,
+    tooltip: "Goals conceded by the player's team while they were on the pitch.",
+  },
+  {
+    key: "own_goals",
+    label: "OG",
+    decimals: 0,
+    perNinetyEligible: false,
+    tooltip: "Own goals scored.",
+  },
+  {
+    key: "bonus",
+    label: "Bonus",
+    decimals: 0,
+    perNinetyEligible: true,
+    tooltip:
+      "Bonus points, awarded to the top 3 Bonus Points System (BPS) scorers in each match.",
+  },
+  {
+    key: "yellow_cards",
+    label: "YC",
+    decimals: 0,
+    perNinetyEligible: false,
+    tooltip: "Yellow cards received.",
+  },
+  {
+    key: "red_cards",
+    label: "RC",
+    decimals: 0,
+    perNinetyEligible: false,
+    tooltip: "Red cards received (direct or second yellow).",
+  },
+  {
+    key: "total_points",
+    label: "Pts",
+    decimals: 0,
+    perNinetyEligible: true,
+    tooltip:
+      "Actual FPL points scored, summed over the range. Click a value to see the breakdown by component (goals, assists, clean sheets, bonus, ...).",
+  },
+  {
+    key: "expected_goals",
+    label: "xG",
+    decimals: 2,
+    perNinetyEligible: true,
+    tooltip:
+      "Expected goals (Opta), summed over the range: the quality of chances taken, independent of whether they actually went in.",
+  },
+  {
+    key: "expected_assists",
+    label: "xA",
+    decimals: 2,
+    perNinetyEligible: true,
+    tooltip:
+      "Expected assists (Opta), summed over the range: the quality of chances created for teammates, independent of whether they actually went in.",
+  },
+  {
+    key: "expected_goal_involvements",
+    label: "xGI",
+    decimals: 2,
+    perNinetyEligible: true,
+    tooltip: "Expected goal involvements: xG plus xA, summed over the range.",
+  },
+  {
+    key: "expected_goals_conceded",
+    label: "xGC",
+    decimals: 2,
+    perNinetyEligible: true,
+    tooltip:
+      "Expected goals conceded by the player's team over the range, from the team's own underlying defensive numbers rather than the goals actually let in.",
+  },
 ];
 
 // Average minutes per match played, not total minutes across the range -- two players who
@@ -69,4 +150,112 @@ export function formatStat(value: number, column: StatColumn, perNinety: boolean
 
 export function horizonPoints(row: PlayerStatsRowOut): number {
   return row.fixtures.reduce((total, fixture) => total + (fixture.expected_points ?? 0), 0);
+}
+
+/** Why the Own% column is empty, worded for the column header's tooltip. This page shows
+ * mini-league ownership or nothing at all, so the reason is always stated rather than the number
+ * being quietly replaced by FPL's population-wide figure. */
+export const OWNERSHIP_STATUS_TOOLTIP: Record<OwnershipStatus, string> = {
+  ok: "Percent of your mini-league rivals who own this player",
+  not_configured: "No mini league configured. Set one up on the Mini League page.",
+  fetch_failed: "Could not reach FPL to load your mini league.",
+  no_rivals: "Your mini league has no other members to compare against.",
+};
+
+// --- Actual vs expected ------------------------------------------------------------------------
+//
+// Both ratio columns show a shrunk posterior mean (see engine/rates.py) rather than a raw
+// difference of per-90 rates, which is what makes them safe to sort: a thin-sample fluke lands
+// near 1.0 with a wide interval instead of at the top of the table.
+
+/** A ratio is only a *signal* when its whole credible interval clears 1.0. Anything else is still
+ * consistent with chance, however far the point estimate happens to sit from 1.0. */
+export type RatioVerdict = "hot" | "cold" | "inconclusive";
+
+export function ratioVerdict(ratio: RateRatioOut | null): RatioVerdict {
+  if (ratio === null) return "inconclusive";
+  if (ratio.low > 1.0) return "hot";
+  if (ratio.high < 1.0) return "cold";
+  return "inconclusive";
+}
+
+export function formatRatio(ratio: RateRatioOut | null): string {
+  return ratio === null ? "—" : `${ratio.ratio.toFixed(2)}×`;
+}
+
+/** What each ratio column is, for a column/row header's tooltip -- distinct from
+ * {@link ratioTooltip}, which explains one specific cell's value. */
+export const RATIO_COLUMN_TOOLTIP: Record<"attacking" | "defensive", string> = {
+  attacking:
+    "Goals and assists actually scored, against expected goal involvements (xGI). Shrunk toward 1.0 by how much evidence backs it, so a thin sample cannot top the sort. Above 1x means running hot (expect regression); below 1x means running cold (a positive-regression candidate).",
+  defensive:
+    "Clean sheets actually kept, against expected clean sheets (from each match's expected goals conceded). Shown only for positions a clean sheet pays (GK/DEF/MID). Same shrinkage and above/below-1x reading as vs xGI.",
+};
+
+/** Sort key for a ratio column. Nulls sort to the bottom, and an inconclusive ratio sorts by its
+ * point estimate like any other, since the column is "how hot", not "how certain". */
+export function ratioSortValue(ratio: RateRatioOut | null): number {
+  return ratio === null ? Number.NEGATIVE_INFINITY : ratio.ratio;
+}
+
+/** A position whose players show no spread beyond Poisson noise gets an infinite prior, collapsing
+ * every ratio there to exactly 1.0. The zero-width interval that produces would otherwise read as
+ * total certainty when it means the opposite: nothing is distinguishable yet. */
+function isDegenerate(ratio: RateRatioOut): boolean {
+  return ratio.low === ratio.high;
+}
+
+function describeInterval(ratio: RateRatioOut): string {
+  return `90% credible interval ${ratio.low.toFixed(2)}× to ${ratio.high.toFixed(2)}×`;
+}
+
+/** Tooltip for one ratio cell. Always states the interval, then what it does or does not support,
+ * so the number is never read as more certain than it is. */
+export function ratioTooltip(ratio: RateRatioOut | null, kind: "attacking" | "defensive"): string {
+  if (ratio === null) {
+    return kind === "attacking"
+      ? "No expected goal involvements in this range to compare against."
+      : "No clean sheet points at stake for this position.";
+  }
+  const subject = kind === "attacking" ? "Goals and assists" : "Clean sheets";
+  const against = kind === "attacking" ? "expected goal involvements" : "expected clean sheets";
+  if (isDegenerate(ratio)) {
+    return `${subject} versus ${against}. Over this range, nothing separates players in this position beyond chance, so everyone sits at expectation.`;
+  }
+  const verdict = ratioVerdict(ratio);
+  const reading =
+    verdict === "hot"
+      ? "Running ahead of the underlying numbers by more than chance explains, so expect regression."
+      : verdict === "cold"
+        ? "Running behind the underlying numbers by more than chance explains, a candidate for positive regression."
+        : "Still consistent with chance, so not yet evidence of anything.";
+  return `${subject} versus ${against}. ${describeInterval(ratio)}. ${reading}`;
+}
+
+/** The at-a-glance badge, deliberately worded differently from the Differentials page's
+ * Proven/Emerging/Riding Luck so the two vocabularies cannot be confused: this one is derived
+ * from the posterior interval, that one from a raw threshold. */
+export function overperformanceBadge(
+  row: PlayerStatsRowOut,
+): { label: string; className: string; title: string } | null {
+  const candidates: Array<{ ratio: RateRatioOut | null; kind: "attacking" | "defensive" }> = [
+    { ratio: row.actuals.attacking_ratio, kind: "attacking" },
+    { ratio: row.actuals.defensive_ratio, kind: "defensive" },
+  ];
+  // Where both axes have a verdict, lead with whichever sits further from expectation.
+  const decisive = candidates
+    .filter((c) => c.ratio !== null && ratioVerdict(c.ratio) !== "inconclusive")
+    .sort((a, b) => Math.abs((b.ratio?.ratio ?? 1) - 1) - Math.abs((a.ratio?.ratio ?? 1) - 1))[0];
+  if (decisive === undefined || decisive.ratio === null) return null;
+
+  const hot = ratioVerdict(decisive.ratio) === "hot";
+  const axis = decisive.kind === "attacking" ? "finishing" : "clean sheets";
+  return {
+    label: hot ? "Running hot" : "Running cold",
+    className: hot ? "overperf-hot" : "overperf-cold",
+    title: `${hot ? "Overperforming" : "Underperforming"} on ${axis}. ${ratioTooltip(
+      decisive.ratio,
+      decisive.kind,
+    )}`,
+  };
 }
