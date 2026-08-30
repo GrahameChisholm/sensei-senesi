@@ -90,6 +90,15 @@ function ActualBreakdownPopover({ breakdown }: { breakdown: ComponentBreakdownOu
   );
 }
 
+// Average minutes per match played, not total minutes across the range -- two players who
+// played 90 minutes in one game out of five should read the same here, regardless of how wide
+// the selected gameweek range is. row.actuals.minutes stays the *total* everywhere else (the
+// per-90 rate denominator below needs the total, not this average).
+function averageMinutesPerMatch(row: PlayerStatsRowOut): number {
+  if (row.actuals.apps <= 0) return 0;
+  return row.actuals.minutes / row.actuals.apps;
+}
+
 function statValue(row: PlayerStatsRowOut, column: StatColumn, perNinety: boolean): number {
   const raw = row.actuals[column.key];
   if (!perNinety || !column.perNinetyEligible) return raw;
@@ -114,7 +123,7 @@ function sortValue(row: PlayerStatsRowOut, sortKey: SortKey, perNinety: boolean)
   if (sortKey === "name") return row.name.toLowerCase();
   if (sortKey === "price") return row.price ?? 0;
   if (sortKey === "apps") return row.actuals.apps;
-  if (sortKey === "minutes") return row.actuals.minutes;
+  if (sortKey === "minutes") return averageMinutesPerMatch(row);
   if (sortKey === "selected_by_percent") return row.actuals.selected_by_percent ?? 0;
   if (sortKey === "horizon_points") return horizonPoints(row);
   const column = STAT_COLUMNS.find((c) => c.key === sortKey);
@@ -190,8 +199,12 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
             <th className="sortable" onClick={() => toggleSort("apps")}>
               Apps{sortIndicator("apps")}
             </th>
-            <th className="sortable" onClick={() => toggleSort("minutes")}>
-              Mins{sortIndicator("minutes")}
+            <th
+              className="sortable"
+              onClick={() => toggleSort("minutes")}
+              title="Average minutes played per match started or appeared in, not total minutes across the selected range"
+            >
+              Mins/Match{sortIndicator("minutes")}
             </th>
             {STAT_COLUMNS.map((column) => (
               <th key={column.key} className="sortable" onClick={() => toggleSort(column.key)}>
@@ -233,7 +246,7 @@ export function PlayerStatsTable({ rows, teams, perNinety }: PlayerStatsTablePro
               </td>
               <td>{row.price !== null ? `£${(row.price / 10).toFixed(1)}m` : "—"}</td>
               <td>{row.actuals.apps}</td>
-              <td>{row.actuals.minutes}</td>
+              <td>{averageMinutesPerMatch(row).toFixed(1)}</td>
               {STAT_COLUMNS.map((column) => {
                 const isTotalPoints = column.key === "total_points";
                 return (
