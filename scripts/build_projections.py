@@ -345,6 +345,9 @@ def assemble_projection_cache(
         player_id = int(row.id)
         chance = getattr(row, "chance_of_playing_next_round", None)
         ownership = getattr(row, "selected_by_percent", None)
+        # FPL leaves penalties_order null for a non-taker, so a missing value is "not on
+        # penalties" rather than unknown -- the same reading engine.data.live_adapter gives it.
+        penalties_order = getattr(row, "penalties_order", None)
         players[str(player_id)] = {
             "web_name": row.web_name,
             "full_name": f"{row.first_name} {row.second_name}",
@@ -356,6 +359,7 @@ def assemble_projection_cache(
             "low_confidence": player_id in cold_start_ids,
             "source": "cold_start" if player_id in cold_start_ids else "engine",
             "selected_by_percent": float(ownership) if pd.notna(ownership) else None,
+            "penalties_order": int(penalties_order) if pd.notna(penalties_order) else None,
         }
 
     teams = {

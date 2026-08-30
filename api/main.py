@@ -38,6 +38,7 @@ from api.state import (
 from engine.data.fpl_client import FPLClient, FPLClientError
 from engine.data.league_state_builder import DEFAULT_RIVAL_LIMIT
 from engine.data.team_state_builder import build_my_team_state
+from engine.rates import RateRatio
 from features.differentials import (
     DEFAULT_WINDOW_GAMEWEEKS,
     GLOBAL_LENS,
@@ -773,8 +774,45 @@ def list_players(
     ]
 
 
-@app.get("/players/stats", response_model=list[schemas.PlayerStatsRowOut])
-def list_player_stats(gameweek_from: int, gameweek_to: int) -> list[schemas.PlayerStatsRowOut]:
+def _resolve_player_stats_ownership() -> tuple[str, Mapping[int, float]]:
+    """Which mini-league ownership the Player Stats page can show, and why not when it cannot.
+
+    Deliberately *not* :func:`_resolve_differentials_ownership`, whose whole contract is to fall
+    back to the FPL-wide lens and never fail. This page's Own% column means "how many of my
+    rivals own this" specifically, so silently substituting a population-wide percentage under
+    the same heading would answer a different question than the one asked. Every status except
+    ``"ok"`` returns an empty map, and the caller reports the reason to the UI.
+    """
+    settings = get_app_settings()
+    if not settings.mini_league_ids or settings.fpl_team_id is None:
+        return "not_configured", {}
+
+    try:
+        with FPLClient() as client:
+            snapshot = get_cached_league_snapshot(client, settings.mini_league_ids[0])
+    except FPLClientError:
+        return "fetch_failed", {}
+
+    ownership_by_player = compute_league_ownership(snapshot, exclude_entry_id=settings.fpl_team_id)
+    n_rivals = sum(1 for entry in snapshot.entries if entry.entry_id != settings.fpl_team_id)
+    if n_rivals == 0:
+        return "no_rivals", {}
+
+    # raw_ownership_percent, the plain "percent of rivals who own this", not the captaincy-weighted
+    # eo_percent Differentials uses for haul exposure -- this column is a headcount question.
+    return "ok", {pid: o.raw_ownership_percent for pid, o in ownership_by_player.items()}
+
+
+def _rate_ratio_out(ratio: RateRatio | None) -> schemas.RateRatioOut | None:
+    if ratio is None:
+        return None
+    return schemas.RateRatioOut(
+        ratio=ratio.ratio, low=ratio.low, high=ratio.high, exposure=ratio.exposure
+    )
+
+
+@app.get("/players/stats", response_model=schemas.PlayerStatsResponseOut)
+def list_player_stats(gameweek_from: int, gameweek_to: int) -> schemas.PlayerStatsResponseOut:
     """Every player with recorded actual stats in ``[gameweek_from, gameweek_to]``, plus their
     predicted expected points for each of the app's 3-gameweek horizon. Search, team, position,
     and price filtering (D14) all happen client-side over this one bulk response.
@@ -791,9 +829,10 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> list[schemas.Play
     low_confidence_ids = {
         pid for pid, data in app_state.players.items() if data.get("low_confidence")
     }
-    ownership_by_player = {
-        pid: data.get("selected_by_percent") for pid, data in app_state.players.items()
-    }
+    ownership_status, ownership_by_player = _resolve_player_stats_ownership()
+    penalty_takers = frozenset(
+        pid for pid, data in app_state.players.items() if data.get("penalties_order") == 1
+    )
     fixture_map = build_team_fixture_map(app_state.fixtures)
 
     actual_stats_by_player = build_actual_stats_by_player(
@@ -802,6 +841,11 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> list[schemas.Play
         gameweek_from,
         gameweek_to,
         ownership_by_player,
+        # Priors are fitted over the whole season, never the selected range: k is a population
+        # parameter, and a one-gameweek view would estimate it least reliably exactly when the
+        # shrinkage it drives matters most.
+        full_season_history=app_state.player_history,
+        penalty_takers=penalty_takers,
     )
     rows = build_player_stats_rows(
         actual_stats_by_player,
@@ -814,64 +858,72 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> list[schemas.Play
         fixture_map,
         app_state.remaining_horizon_gameweeks,
     )
-    return [
-        schemas.PlayerStatsRowOut(
-            player_id=row.player_id,
-            name=row.name,
-            team_id=row.team_id,
-            position=row.position,
-            price=row.price,
-            low_confidence=row.low_confidence,
-            actuals=schemas.ActualStatsOut(
-                gameweek_from=row.actuals.gameweek_from,
-                gameweek_to=row.actuals.gameweek_to,
-                apps=row.actuals.apps,
-                minutes=row.actuals.minutes,
-                goals_scored=row.actuals.goals_scored,
-                assists=row.actuals.assists,
-                clean_sheets=row.actuals.clean_sheets,
-                goals_conceded=row.actuals.goals_conceded,
-                own_goals=row.actuals.own_goals,
-                penalties_missed=row.actuals.penalties_missed,
-                penalties_saved=row.actuals.penalties_saved,
-                saves=row.actuals.saves,
-                bonus=row.actuals.bonus,
-                yellow_cards=row.actuals.yellow_cards,
-                red_cards=row.actuals.red_cards,
-                total_points=row.actuals.total_points,
-                expected_goals=row.actuals.expected_goals,
-                expected_assists=row.actuals.expected_assists,
-                expected_goal_involvements=row.actuals.expected_goal_involvements,
-                expected_goals_conceded=row.actuals.expected_goals_conceded,
-                points_breakdown=schemas.ComponentBreakdownOut(
-                    appearance=row.actuals.points_breakdown.appearance,
-                    goals=row.actuals.points_breakdown.goals,
-                    assists=row.actuals.points_breakdown.assists,
-                    clean_sheet=row.actuals.points_breakdown.clean_sheet,
-                    goals_conceded=row.actuals.points_breakdown.goals_conceded,
-                    defensive_contribution=row.actuals.points_breakdown.defensive_contribution,
-                    saves=row.actuals.points_breakdown.saves,
-                    bonus=row.actuals.points_breakdown.bonus,
-                    cards=row.actuals.points_breakdown.cards,
-                    penalty_misses=row.actuals.points_breakdown.penalty_misses,
-                    own_goals=row.actuals.points_breakdown.own_goals,
-                    total=row.actuals.points_breakdown.total,
+    return schemas.PlayerStatsResponseOut(
+        ownership_status=ownership_status,
+        rows=[
+            schemas.PlayerStatsRowOut(
+                player_id=row.player_id,
+                name=row.name,
+                team_id=row.team_id,
+                position=row.position,
+                price=row.price,
+                low_confidence=row.low_confidence,
+                actuals=schemas.ActualStatsOut(
+                    gameweek_from=row.actuals.gameweek_from,
+                    gameweek_to=row.actuals.gameweek_to,
+                    apps=row.actuals.apps,
+                    minutes=row.actuals.minutes,
+                    goals_scored=row.actuals.goals_scored,
+                    assists=row.actuals.assists,
+                    clean_sheets=row.actuals.clean_sheets,
+                    goals_conceded=row.actuals.goals_conceded,
+                    own_goals=row.actuals.own_goals,
+                    penalties_missed=row.actuals.penalties_missed,
+                    penalties_saved=row.actuals.penalties_saved,
+                    saves=row.actuals.saves,
+                    bonus=row.actuals.bonus,
+                    yellow_cards=row.actuals.yellow_cards,
+                    red_cards=row.actuals.red_cards,
+                    total_points=row.actuals.total_points,
+                    expected_goals=row.actuals.expected_goals,
+                    expected_assists=row.actuals.expected_assists,
+                    expected_goal_involvements=row.actuals.expected_goal_involvements,
+                    expected_goals_conceded=row.actuals.expected_goals_conceded,
+                    points_breakdown=schemas.ComponentBreakdownOut(
+                        appearance=row.actuals.points_breakdown.appearance,
+                        goals=row.actuals.points_breakdown.goals,
+                        assists=row.actuals.points_breakdown.assists,
+                        clean_sheet=row.actuals.points_breakdown.clean_sheet,
+                        goals_conceded=row.actuals.points_breakdown.goals_conceded,
+                        defensive_contribution=(
+                            row.actuals.points_breakdown.defensive_contribution
+                        ),
+                        saves=row.actuals.points_breakdown.saves,
+                        bonus=row.actuals.points_breakdown.bonus,
+                        cards=row.actuals.points_breakdown.cards,
+                        penalty_misses=row.actuals.points_breakdown.penalty_misses,
+                        own_goals=row.actuals.points_breakdown.own_goals,
+                        total=row.actuals.points_breakdown.total,
+                    ),
+                    ownership_percent=row.actuals.ownership_percent,
+                    small_sample=row.actuals.small_sample,
+                    attacking_ratio=_rate_ratio_out(row.actuals.attacking_ratio),
+                    defensive_ratio=_rate_ratio_out(row.actuals.defensive_ratio),
+                    is_penalty_taker=row.actuals.is_penalty_taker,
                 ),
-                selected_by_percent=row.actuals.selected_by_percent,
-                small_sample=row.actuals.small_sample,
-            ),
-            fixtures=[
-                schemas.FixtureCellOut(
-                    gameweek=cell.gameweek,
-                    opponent_id=cell.opponent_id,
-                    is_home=cell.is_home,
-                    expected_points=cell.expected_points,
-                )
-                for cell in row.fixtures
-            ],
-        )
-        for row in rows
-    ]
+                fixtures=[
+                    schemas.FixtureCellOut(
+                        gameweek=cell.gameweek,
+                        opponent_id=cell.opponent_id,
+                        is_home=cell.is_home,
+                        expected_points=cell.expected_points,
+                    )
+                    for cell in row.fixtures
+                ],
+            )
+            for row in rows
+        ],
+    )
 
 
 def _global_ownership_lens() -> OwnershipLens:

@@ -170,6 +170,17 @@ class FixtureSwingResponseOut(BaseModel):
 # --- Player Stats page (PLAYER_STATS_PLAN) --------------------------------------------------
 
 
+class RateRatioOut(BaseModel):
+    """One actual-vs-expected ratio with its credible interval. An interval containing 1.0 means
+    the deviation is not yet distinguishable from chance, which is what stops a thin-sample fluke
+    reading as a real signal."""
+
+    ratio: float
+    low: float
+    high: float
+    exposure: float
+
+
 class ActualStatsOut(BaseModel):
     gameweek_from: int
     gameweek_to: int
@@ -192,8 +203,13 @@ class ActualStatsOut(BaseModel):
     expected_goal_involvements: float
     expected_goals_conceded: float
     points_breakdown: ComponentBreakdownOut
-    selected_by_percent: float | None
+    # Ownership under whichever lens the endpoint resolved -- see PlayerStatsResponseOut's
+    # ownership_status for whether it is populated at all.
+    ownership_percent: float | None
     small_sample: bool
+    attacking_ratio: RateRatioOut | None = None
+    defensive_ratio: RateRatioOut | None = None
+    is_penalty_taker: bool = False
 
 
 class PlayerStatsRowOut(BaseModel):
@@ -205,6 +221,15 @@ class PlayerStatsRowOut(BaseModel):
     low_confidence: bool
     actuals: ActualStatsOut
     fixtures: list[FixtureCellOut]
+
+
+class PlayerStatsResponseOut(BaseModel):
+    """Rows plus why ownership may be missing. This page shows mini-league ownership or nothing
+    at all, never FPL's population-wide figure silently substituted under the same heading, so
+    the frontend is told the reason rather than left to guess."""
+
+    ownership_status: str  # "ok" | "not_configured" | "fetch_failed" | "no_rivals"
+    rows: list[PlayerStatsRowOut]
 
 
 # --- Differentials page (DIFFERENTIALS_PLAN) -------------------------------------------------

@@ -98,6 +98,7 @@ def _fixture_app_state():
             "low_confidence": False,
             "source": "engine",
             "selected_by_percent": 12.5,
+            "penalties_order": 1,
         },
         2: {
             "web_name": "Player2",
@@ -110,6 +111,7 @@ def _fixture_app_state():
             "low_confidence": False,
             "source": "engine",
             "selected_by_percent": None,
+            "penalties_order": None,
         },
     }
     teams = {
@@ -156,38 +158,59 @@ def test_players_stats_returns_only_players_with_data_in_range(client: TestClien
 
     assert response.status_code == 200
     body = response.json()
-    assert [row["player_id"] for row in body] == [1]
+    assert [row["player_id"] for row in body["rows"]] == [1]
 
 
 def test_players_stats_sums_actuals_over_the_range(client: TestClient):
     response = client.get("/players/stats", params={"gameweek_from": 1, "gameweek_to": 2})
 
-    row = response.json()[0]
+    row = response.json()["rows"][0]
     assert row["actuals"]["goals_scored"] == 1
     assert row["actuals"]["total_points"] == 10
     assert row["actuals"]["gameweek_from"] == 1
     assert row["actuals"]["gameweek_to"] == 2
 
 
-def test_players_stats_includes_ownership_and_points_breakdown(client: TestClient):
+def test_players_stats_includes_points_breakdown(client: TestClient):
     response = client.get("/players/stats", params={"gameweek_from": 1, "gameweek_to": 2})
 
-    row = response.json()[0]
-    assert row["actuals"]["selected_by_percent"] == 12.5
+    row = response.json()["rows"][0]
     assert row["actuals"]["points_breakdown"]["goals"] == pytest.approx(4.0)  # FWD, 1 goal
+
+
+def test_players_stats_reports_why_league_ownership_is_missing(client: TestClient):
+    """No mini league is configured in this fixture, so Own% must come back empty with the reason
+    stated, never silently backfilled with FPL's population-wide selected_by_percent (12.5 here)
+    under the same heading."""
+    response = client.get("/players/stats", params={"gameweek_from": 1, "gameweek_to": 2})
+
+    body = response.json()
+    assert body["ownership_status"] == "not_configured"
+    assert body["rows"][0]["actuals"]["ownership_percent"] is None
+
+
+def test_players_stats_marks_the_designated_penalty_taker(client: TestClient):
+    """penalties_order lives on the snapshot's player records, so this asserts the whole path from
+    there to the response rather than trusting the flag is wired up."""
+    response = client.get("/players/stats", params={"gameweek_from": 1, "gameweek_to": 10})
+
+    takers = {
+        row["player_id"]: row["actuals"]["is_penalty_taker"] for row in response.json()["rows"]
+    }
+    assert takers == {1: True, 2: False}
 
 
 def test_players_stats_includes_fixture_cells_for_the_full_horizon(client: TestClient):
     response = client.get("/players/stats", params={"gameweek_from": 1, "gameweek_to": 2})
 
-    row = response.json()[0]
+    row = response.json()["rows"][0]
     assert [cell["gameweek"] for cell in row["fixtures"]] == [1, 2, 3]
 
 
 def test_players_stats_includes_player_whose_range_covers_their_only_data(client: TestClient):
     response = client.get("/players/stats", params={"gameweek_from": 1, "gameweek_to": 10})
 
-    assert {row["player_id"] for row in response.json()} == {1, 2}
+    assert {row["player_id"] for row in response.json()["rows"]} == {1, 2}
 
 
 def test_players_stats_rejects_an_inverted_range(client: TestClient):
