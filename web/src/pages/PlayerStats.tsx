@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { PlayerCompareSelect, MAX_COMPARE_PLAYERS } from "../components/PlayerCompareSelect";
+import { PlayerCompareTable } from "../components/PlayerCompareTable";
 import { PlayerStatsFilters } from "../components/PlayerStatsFilters";
 import { PlayerStatsTable } from "../components/PlayerStatsTable";
 import { useGameweek, useTeams } from "../hooks/useProjections";
@@ -17,6 +19,7 @@ export function PlayerStats() {
   const [gameweekFrom, setGameweekFrom] = useState(1);
   const [gameweekTo, setGameweekTo] = useState(1);
   const [rangeInitialized, setRangeInitialized] = useState(false);
+  const [compareIds, setCompareIds] = useState<number[]>([]);
 
   useEffect(() => {
     if (gameweek !== null && !rangeInitialized) {
@@ -29,6 +32,21 @@ export function PlayerStats() {
   }, [gameweek, rangeInitialized]);
 
   const { rows, loading } = usePlayerStats(gameweekFrom, gameweekTo);
+
+  function addCompare(playerId: number) {
+    setCompareIds((prev) =>
+      prev.includes(playerId) || prev.length >= MAX_COMPARE_PLAYERS ? prev : [...prev, playerId],
+    );
+  }
+
+  function removeCompare(playerId: number) {
+    setCompareIds((prev) => prev.filter((id) => id !== playerId));
+  }
+
+  const compareRows = useMemo(() => {
+    const byId = new Map(rows.map((row) => [row.player_id, row]));
+    return compareIds.map((id) => byId.get(id)).filter((row) => row !== undefined);
+  }, [rows, compareIds]);
 
   function toggleTeam(teamId: number) {
     setSelectedTeamIds((prev) => {
@@ -92,6 +110,23 @@ export function PlayerStats() {
         perNinety={perNinety}
         onPerNinetyChange={setPerNinety}
       />
+      {!loading && (
+        <PlayerCompareSelect
+          rows={rows}
+          teams={teams}
+          selectedIds={compareIds}
+          onAdd={addCompare}
+          onRemove={removeCompare}
+        />
+      )}
+      {compareRows.length > 0 && (
+        <PlayerCompareTable
+          rows={compareRows}
+          teams={teams}
+          perNinety={perNinety}
+          onRemove={removeCompare}
+        />
+      )}
       {loading ? (
         <p>Loading…</p>
       ) : (
