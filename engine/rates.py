@@ -27,10 +27,12 @@ the first few gameweeks of a new season (BUILD_PLAN 1.1).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from scipy.stats import gamma
 
 
 @dataclass(frozen=True)
@@ -210,3 +212,113 @@ def league_average_rate(team_rates: dict[str, float]) -> float:
     if not team_rates:
         raise ValueError("team_rates must not be empty")
     return float(np.mean(list(team_rates.values())))
+
+
+# --- Gamma-Poisson rate ratios (actual vs expected) ---------------------------------------------
+#
+# "Is this player outperforming their expected stats, and is it real?" is a count-against-exposure
+# problem: an actual count ``y`` (goals + assists, clean sheets) against an expected count ``E``
+# (xGI, summed clean-sheet probability). The naive answer, a raw difference of per-90 rates, is
+# unusable as a ranked column: one goal in 25 minutes is a +3.3 per-90 gap and tops any sort.
+# features/differentials.py's ``luck_gap`` is exactly that quantity, which is why it is only ever
+# used there as an internal binary gate and never exposed as a sortable column.
+#
+# The standard treatment is a gamma-Poisson (negative binomial) rate ratio: ``y ~ Poisson(E*theta)``
+# with ``theta ~ Gamma(k, k)``, prior mean 1 ("performing exactly as expected"). Conjugacy gives a
+# closed-form posterior ``Gamma(k + y, k + E)``, so both the shrunk point estimate and its credible
+# interval are analytic. Thin samples shrink hard toward 1.0 and carry wide intervals, which is what
+# makes the result safe to sort on and what stops the top of a ~700-row table filling with cameos.
+#
+# ``k`` is *fitted*, not asserted (see :func:`fit_rate_ratio_prior`), and callers fit it separately
+# per position: a defender's xGI exposure per match is roughly a quarter of a forward's, so a single
+# shared prior would either under-shrink forwards or flatten every defender to exactly 1.00.
+
+# Credible interval mass. 90% (5th to 95th percentile) rather than 95%, matching the "is this
+# distinguishable from 1.0 yet" question this supports rather than a formal hypothesis test.
+RATE_RATIO_INTERVAL = 0.90
+
+
+@dataclass(frozen=True)
+class RateRatio:
+    """One player's actual-vs-expected count ratio under the gamma-Poisson posterior.
+
+    ``ratio`` is the posterior mean ``(y + k) / (E + k)``, read directly as "scoring 1.42x their
+    expected rate". ``low``/``high`` bound it at :data:`RATE_RATIO_INTERVAL`; an interval that
+    still contains 1.0 means the deviation is not yet distinguishable from chance, which is the
+    honest answer for most players over a short window and is the whole reason the interval is
+    carried alongside the point estimate rather than the estimate being shown alone.
+    """
+
+    ratio: float
+    low: float
+    high: float
+    exposure: float
+
+    @property
+    def is_hot(self) -> bool:
+        """Overperforming beyond what chance explains — the entire interval sits above 1.0."""
+        return self.low > 1.0
+
+    @property
+    def is_cold(self) -> bool:
+        """Underperforming beyond what chance explains — the entire interval sits below 1.0."""
+        return self.high < 1.0
+
+
+def fit_rate_ratio_prior(actuals: Sequence[float], exposures: Sequence[float]) -> float:
+    """Method-of-moments estimate of the gamma prior strength ``k`` from a whole population
+    (one position's players), returning ``inf`` when the data show no heterogeneity to detect.
+
+    Under the model, ``Var(y) = E + E^2/k``: the first term is irreducible Poisson noise, the
+    second is genuine between-player spread in ``theta``. Pooling the squared residuals gives
+    ``sum((y - E)^2 - E) = (1/k) * sum(E^2)``, hence ``k = sum(E^2) / sum((y - E)^2 - E)``.
+
+    A non-positive denominator means the observed spread is at or below pure Poisson noise, i.e.
+    there is no detectable finishing/clean-sheet skill in this sample at all. That returns ``inf``,
+    which collapses every ratio in the position to exactly 1.0 — a real and reportable finding
+    ("all of this variation is consistent with chance"), never an error to swallow. This is also
+    the correct behaviour early in a season, when a handful of matches genuinely cannot separate
+    skill from luck.
+    """
+    actual_array = np.asarray(actuals, dtype=float)
+    exposure_array = np.asarray(exposures, dtype=float)
+    if actual_array.shape != exposure_array.shape:
+        raise ValueError("actuals and exposures must be the same length")
+
+    valid = (exposure_array > 0) & np.isfinite(exposure_array) & np.isfinite(actual_array)
+    if not valid.any():
+        return float("inf")
+
+    actual_array = actual_array[valid]
+    exposure_array = exposure_array[valid]
+
+    excess_variance = float(np.sum((actual_array - exposure_array) ** 2 - exposure_array))
+    if excess_variance <= 0:
+        return float("inf")
+    return float(np.sum(exposure_array**2) / excess_variance)
+
+
+def rate_ratio_posterior(actual: float, exposure: float, k: float) -> RateRatio | None:
+    """One player's :class:`RateRatio` under prior strength ``k`` (from
+    :func:`fit_rate_ratio_prior`).
+
+    Returns ``None`` for non-positive exposure: a player with no expected involvements at all has
+    no ratio to speak of, which is a real state ("not on the pitch enough to say"), not a zero.
+    Infinite ``k`` (no detectable heterogeneity) degenerates to exactly 1.0 with a zero-width
+    interval, matching what the fitted prior is actually asserting.
+    """
+    if exposure <= 0 or not np.isfinite(exposure) or not np.isfinite(actual):
+        return None
+    if not np.isfinite(k):
+        return RateRatio(ratio=1.0, low=1.0, high=1.0, exposure=float(exposure))
+
+    shape = k + actual
+    rate = k + exposure
+    tail = (1.0 - RATE_RATIO_INTERVAL) / 2.0
+    low, high = gamma.ppf([tail, 1.0 - tail], a=shape, scale=1.0 / rate)
+    return RateRatio(
+        ratio=float(shape / rate),
+        low=float(low),
+        high=float(high),
+        exposure=float(exposure),
+    )
