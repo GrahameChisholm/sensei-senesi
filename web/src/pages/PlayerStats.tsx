@@ -1,6 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { PlayerCompareSelect, MAX_COMPARE_PLAYERS } from "../components/PlayerCompareSelect";
-import { PlayerCompareTable } from "../components/PlayerCompareTable";
 import { PlayerStatsFilters } from "../components/PlayerStatsFilters";
 import { PlayerStatsTable } from "../components/PlayerStatsTable";
 import { useGameweek, useTeams } from "../hooks/useProjections";
@@ -19,7 +17,8 @@ export function PlayerStats() {
   const [gameweekFrom, setGameweekFrom] = useState(1);
   const [gameweekTo, setGameweekTo] = useState(1);
   const [rangeInitialized, setRangeInitialized] = useState(false);
-  const [compareIds, setCompareIds] = useState<number[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [comparing, setComparing] = useState(false);
 
   useEffect(() => {
     if (gameweek !== null && !rangeInitialized) {
@@ -33,20 +32,19 @@ export function PlayerStats() {
 
   const { rows, ownershipStatus, loading } = usePlayerStats(gameweekFrom, gameweekTo);
 
-  function addCompare(playerId: number) {
-    setCompareIds((prev) =>
-      prev.includes(playerId) || prev.length >= MAX_COMPARE_PLAYERS ? prev : [...prev, playerId],
-    );
+  function toggleSelected(playerId: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(playerId)) next.delete(playerId);
+      else next.add(playerId);
+      return next;
+    });
   }
 
-  function removeCompare(playerId: number) {
-    setCompareIds((prev) => prev.filter((id) => id !== playerId));
+  function resetComparison() {
+    setComparing(false);
+    setSelectedIds(new Set());
   }
-
-  const compareRows = useMemo(() => {
-    const byId = new Map(rows.map((row) => [row.player_id, row]));
-    return compareIds.map((id) => byId.get(id)).filter((row) => row !== undefined);
-  }, [rows, compareIds]);
 
   function toggleTeam(teamId: number) {
     setSelectedTeamIds((prev) => {
@@ -83,6 +81,14 @@ export function PlayerStats() {
     });
   }, [rows, search, selectedPositions, selectedTeamIds, minPrice, maxPrice, teams]);
 
+  // Comparing shows exactly the checked players, off the full unfiltered pool -- a player checked
+  // under one search/team/position filter should still show up in the comparison even after the
+  // filter changes, rather than the comparison quietly shrinking to whatever's currently visible.
+  const displayedRows = useMemo(() => {
+    if (!comparing) return filteredRows;
+    return rows.filter((row) => selectedIds.has(row.player_id));
+  }, [comparing, filteredRows, rows, selectedIds]);
+
   return (
     <div className="player-stats">
       <h2>Player Stats</h2>
@@ -110,36 +116,38 @@ export function PlayerStats() {
         perNinety={perNinety}
         onPerNinetyChange={setPerNinety}
       />
-      {!loading && (
-        <PlayerCompareSelect
-          rows={rows}
-          teams={teams}
-          selectedIds={compareIds}
-          onAdd={addCompare}
-          onRemove={removeCompare}
-        />
-      )}
-      {compareRows.length > 0 && (
-        <PlayerCompareTable
-          rows={compareRows}
-          teams={teams}
-          perNinety={perNinety}
-          ownershipStatus={ownershipStatus}
-          onRemove={removeCompare}
-        />
-      )}
       {loading ? (
         <p>Loading…</p>
       ) : (
         <>
-          <p className="stats-row-count">
-            {filteredRows.length} of {rows.length} players
-          </p>
+          <div className="compare-toggle-row">
+            <p className="stats-row-count">
+              {comparing
+                ? `Comparing ${displayedRows.length} player${displayedRows.length === 1 ? "" : "s"}`
+                : `${filteredRows.length} of ${rows.length} players`}
+            </p>
+            {comparing ? (
+              <button type="button" className="btn-primary" onClick={resetComparison}>
+                Reset
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={selectedIds.size === 0}
+                onClick={() => setComparing(true)}
+              >
+                Compare ({selectedIds.size})
+              </button>
+            )}
+          </div>
           <PlayerStatsTable
-            rows={filteredRows}
+            rows={displayedRows}
             teams={teams}
             perNinety={perNinety}
             ownershipStatus={ownershipStatus}
+            selectedIds={selectedIds}
+            onToggleSelected={toggleSelected}
           />
         </>
       )}

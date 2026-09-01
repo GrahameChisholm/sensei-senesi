@@ -96,6 +96,8 @@ interface PlayerStatsTableProps {
   teams: Record<number, TeamOut>;
   perNinety: boolean;
   ownershipStatus: OwnershipStatus;
+  selectedIds: Set<number>;
+  onToggleSelected: (playerId: number) => void;
 }
 
 export function PlayerStatsTable({
@@ -103,6 +105,8 @@ export function PlayerStatsTable({
   teams,
   perNinety,
   ownershipStatus,
+  selectedIds,
+  onToggleSelected,
 }: PlayerStatsTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("total_points");
   const [sortDescending, setSortDescending] = useState(true);
@@ -158,9 +162,13 @@ export function PlayerStatsTable({
         <thead>
           <tr>
             <th
+              className="compare-checkbox-cell"
+              title="Check a player to add them to the comparison set."
+            />
+            <th
               className="sortable"
               onClick={() => toggleSort("name")}
-              title="Player name and team. Badges flag low confidence in the projection, a small sample this range, the designated penalty taker, and running hot/cold on their underlying numbers."
+              title="Player name and team. Badges flag low confidence in the projection, the designated penalty taker, and running hot/cold on their underlying numbers."
             >
               Player{sortIndicator("name")}
             </th>
@@ -230,19 +238,23 @@ export function PlayerStatsTable({
         <tbody>
           {topPadding > 0 && (
             <tr style={{ height: topPadding }}>
-              <td colSpan={7 + STAT_COLUMNS.length} />
+              <td colSpan={8 + STAT_COLUMNS.length} />
             </tr>
           )}
           {visibleRows.map((row) => (
             <tr key={row.player_id} style={{ height: ROW_HEIGHT }}>
+              <td className="compare-checkbox-cell">
+                <input
+                  type="checkbox"
+                  className="compare-checkbox"
+                  checked={selectedIds.has(row.player_id)}
+                  onChange={() => onToggleSelected(row.player_id)}
+                  aria-label={`Add ${row.name} to comparison`}
+                />
+              </td>
               <td>
                 {row.name}
                 {row.low_confidence && <span className="badge low-confidence-badge">!</span>}
-                {row.actuals.small_sample && (
-                  <span className="badge small-sample-badge" title="Small sample this range">
-                    n
-                  </span>
-                )}
                 {row.actuals.is_penalty_taker && (
                   <span
                     className="badge penalty-taker-badge"
@@ -350,7 +362,7 @@ export function PlayerStatsTable({
           ))}
           {bottomPadding > 0 && (
             <tr style={{ height: bottomPadding }}>
-              <td colSpan={7 + STAT_COLUMNS.length} />
+              <td colSpan={8 + STAT_COLUMNS.length} />
             </tr>
           )}
         </tbody>
