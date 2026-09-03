@@ -338,6 +338,200 @@ button {
   flex: 2;
 }
 
+/* Holds the pitch and the transfer banner directly beneath it, so the banner spans exactly the
+   pitch's width rather than the whole page. min-width: 0 stops a long move list from forcing the
+   column wider than its flex share. */
+.pitch-column {
+  flex: 2;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.pitch-column > .pitch {
+  flex: initial;
+}
+
+/* --- Transfer banner --- */
+
+.transfer-banner {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0.7rem 0.9rem;
+  box-shadow: var(--shadow-card);
+}
+
+.transfer-banner-main {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.transfer-banner-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.transfer-banner-title {
+  font-family: var(--font-head);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.transfer-banner-count {
+  display: flex;
+  gap: 2px;
+}
+
+.transfer-banner-count button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.72rem;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.transfer-banner-count button:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.transfer-banner-count button:last-child {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.transfer-banner-count button.count-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.transfer-moves {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.transfer-move {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.transfer-move-position {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+}
+
+.transfer-move-out {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.transfer-move-arrow {
+  color: var(--text-muted);
+}
+
+.transfer-move-in {
+  font-weight: 600;
+}
+
+.transfer-move-tag {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+
+.transfer-move-price {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.transfer-banner-right {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.transfer-metrics {
+  display: flex;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+}
+
+.transfer-metric {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.transfer-metric strong {
+  font-family: var(--font-head);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.transfer-metric strong.gain {
+  color: var(--high-text);
+}
+
+.transfer-metric strong.loss {
+  color: var(--danger);
+}
+
+.transfer-metric-label {
+  font-size: 0.66rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.transfer-apply {
+  font-size: 0.78rem;
+  padding: 0.4rem 0.9rem;
+}
+
+.transfer-banner-empty {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.transfer-banner-footer {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.transfer-banner-note {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
 .pitch-row {
   display: flex;
   justify-content: center;

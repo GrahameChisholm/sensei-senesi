@@ -394,6 +394,65 @@ export interface MiniLeaguePanelOut {
   rivals: MiniLeagueRivalOut[];
 }
 
+export interface TransferMoveOut {
+  out_player_id: number;
+  in_player_id: number;
+  out_name: string;
+  in_name: string;
+  position: string;
+  /** Incoming price minus outgoing, in tenths of a million. Negative frees money. */
+  price_delta: number;
+  out_expected_points: number | null;
+  in_expected_points: number | null;
+  /** The field's effective ownership of the incoming player, or null with no league in play.
+   * Above 1 means the league is already captaining him; near 0 means he is a differential. */
+  in_eo_multiplier: number | null;
+}
+
+export interface TransferPlanOut {
+  moves: TransferMoveOut[];
+  out_player_ids: number[];
+  in_player_ids: number[];
+  n_transfers: number;
+  expected_points: number;
+  expected_points_delta: number;
+  expected_gap: number;
+  /** Identical to expected_points_delta by construction: the field's ownership cancels out of a
+   * transfer, so a plan's gain against the league IS its points gain. Kept as its own field
+   * because the banner shows the level (expected_gap), not only the change. */
+  expected_gap_delta: number;
+  gap_std: number;
+  /** Positive widens your gap distribution against the field, negative narrows it. Which of those
+   * you want is what variance_preference says. */
+  gap_std_delta: number;
+  expected_final_rank: number;
+  /** New minus current, so NEGATIVE is an improvement in where you finish. */
+  expected_final_rank_delta: number;
+  spend_delta: number;
+  budget_remaining: number;
+}
+
+export interface TransferSuggestionOut {
+  plans: TransferPlanOut[];
+  /** One plan per transfer count from 1 upward, so the banner can show what each extra move buys. */
+  best_by_transfer_count: TransferPlanOut[];
+  marginal_points_gains: number[];
+  max_transfers: number;
+  max_transfers_allowed: number;
+  current_expected_points: number;
+  current_expected_gap: number;
+  current_gap_std: number;
+  current_expected_final_rank: number;
+  variance_preference: "increase" | "decrease" | "neutral";
+  n_rivals: number;
+  /** Null when no league is in play, in which case plans are ranked on expected points alone. */
+  league_id: number | null;
+  league_name: string;
+  picks_gameweek: number | null;
+  gameweeks: number[];
+  league_gameweek: number;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -506,6 +565,26 @@ export const api = {
         hide_owned: options.hideOwned ?? true,
       })}`,
     ),
+
+  getTransferSuggestions: (options: {
+    transfers: number;
+    horizon?: number;
+    chip?: string | null;
+    leagueId?: number;
+  }) =>
+    request<TransferSuggestionOut>(
+      `/squad/transfers${query({
+        transfers: options.transfers,
+        horizon: options.horizon ?? 1,
+        chip: options.chip ?? undefined,
+        league_id: options.leagueId,
+      })}`,
+    ),
+  applyTransfers: (outPlayerIds: number[], inPlayerIds: number[]) =>
+    request<SquadOut>("/squad/transfers/apply", {
+      method: "POST",
+      body: JSON.stringify({ out_player_ids: outPlayerIds, in_player_ids: inPlayerIds }),
+    }),
 
   getMiniLeagueSettings: () => request<MiniLeagueSettingsOut>("/mini-league/leagues"),
   setMiniLeagueSettings: (fplTeamId: number | null, miniLeagueIds: number[]) =>

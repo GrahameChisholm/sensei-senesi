@@ -56,5 +56,7 @@ export function useSquad() {
     optimise: (objective: "starting_xi" | "full_squad", captainMultiplier?: number) =>
       run(() => api.optimise(objective, captainMultiplier)),
     importSquad: (teamId: number) => run(() => api.importSquad(teamId)),
+    applyTransfers: (outPlayerIds: number[], inPlayerIds: number[]) =>
+      run(() => api.applyTransfers(outPlayerIds, inPlayerIds)),
   };
 }

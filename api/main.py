@@ -35,6 +35,13 @@ from api.state import (
     set_app_settings,
     set_squad_state,
 )
+from api.transfer_panel import (
+    MAX_TRANSFERS,
+    LeagueContext,
+    build_transfer_suggestion,
+    marginal_gains,
+    ownership_of,
+)
 from engine.data.fpl_client import FPLClient, FPLClientError
 from engine.data.league_state_builder import DEFAULT_RIVAL_LIMIT
 from engine.data.team_state_builder import build_my_team_state
@@ -75,6 +82,7 @@ from features.squad_rules import (
     validate_xi,
 )
 from features.team_state import MyTeamState, SquadPlayer
+from features.transfer_planner import TransferMove, TransferPlan
 
 app = FastAPI(title="FPL Assistant API", version="0.1.0")
 
@@ -688,6 +696,173 @@ def auto_build_squad(body: schemas.OptimiseIn) -> schemas.SquadOut:
             vice_captain_id=result.vice_captain_id,
         )
     )
+    return _squad_out()
+
+
+# --- Transfer banner (TRANSFER_BANNER) -----------------------------------------------------------
+
+
+def _transfer_move_out(
+    move: TransferMove,
+    app_state: AppState,
+    gameweek_points: Mapping[int, float],
+    league: LeagueContext,
+) -> schemas.TransferMoveOut:
+    names = app_state.players
+    return schemas.TransferMoveOut(
+        out_player_id=move.out_player_id,
+        in_player_id=move.in_player_id,
+        out_name=names.get(move.out_player_id, {}).get("web_name", f"#{move.out_player_id}"),
+        in_name=names.get(move.in_player_id, {}).get("web_name", f"#{move.in_player_id}"),
+        position=move.position,
+        price_delta=move.price_delta,
+        out_expected_points=gameweek_points.get(move.out_player_id),
+        in_expected_points=gameweek_points.get(move.in_player_id),
+        in_eo_multiplier=ownership_of(move.in_player_id, league),
+    )
+
+
+def _transfer_plan_out(
+    plan: TransferPlan,
+    app_state: AppState,
+    gameweek_points: Mapping[int, float],
+    league: LeagueContext,
+) -> schemas.TransferPlanOut:
+    return schemas.TransferPlanOut(
+        moves=[_transfer_move_out(move, app_state, gameweek_points, league) for move in plan.moves],
+        out_player_ids=list(plan.out_player_ids),
+        in_player_ids=list(plan.in_player_ids),
+        n_transfers=plan.n_transfers,
+        expected_points=plan.expected_points,
+        expected_points_delta=plan.expected_points_delta,
+        expected_gap=plan.expected_gap,
+        expected_gap_delta=plan.expected_gap_delta,
+        gap_std=plan.gap_std,
+        gap_std_delta=plan.gap_std_delta,
+        expected_final_rank=plan.expected_final_rank,
+        expected_final_rank_delta=plan.expected_final_rank_delta,
+        spend_delta=plan.spend_delta,
+        budget_remaining=plan.budget_remaining,
+    )
+
+
+@app.get("/squad/transfers", response_model=schemas.TransferSuggestionOut)
+def suggest_transfers(
+    transfers: int = 1, horizon: int = 1, chip: str | None = None, league_id: int | None = None
+) -> schemas.TransferSuggestionOut:
+    """The Team page banner's suggestion: which players to sell and buy, ranked by projected
+    finishing position in your mini-league rather than by expected points alone (see
+    ``features.transfer_planner``'s module docstring for why those two are the same ranking once
+    expectation is all you look at, and what variance adds).
+
+    ``horizon`` sets how many gameweeks the expected points gain is summed over, matching
+    ``/squad/points``' own argument, while the league math is always measured at the decision
+    gameweek alone, since rival picks exist for exactly one gameweek at a time.
+
+    Needs a complete 15-player squad, like every other squad-dependent endpoint here. A league is
+    optional: without one the suggestion is still returned, ranked on expected points, with
+    ``league_id`` null and ``n_rivals`` zero so the banner can say which it is.
+    """
+    state, team_state = _require_team_state()
+    app_state = get_app_state()
+    gameweeks = app_state.remaining_horizon_gameweeks[: max(horizon, 1)]
+
+    suggestion, league = build_transfer_suggestion(
+        app_state,
+        team_state,
+        get_app_settings(),
+        budget=state.budget_ceiling,
+        max_transfers=transfers,
+        gameweeks=gameweeks,
+        chip=chip,
+        league_id=league_id,
+    )
+
+    gameweek_points = app_state.expected_points(suggestion.league_gameweek)
+    return schemas.TransferSuggestionOut(
+        plans=[
+            _transfer_plan_out(plan, app_state, gameweek_points, league)
+            for plan in suggestion.plans
+        ],
+        best_by_transfer_count=[
+            _transfer_plan_out(plan, app_state, gameweek_points, league)
+            for plan in suggestion.best_by_transfer_count
+        ],
+        marginal_points_gains=marginal_gains(suggestion),
+        max_transfers=suggestion.max_transfers,
+        max_transfers_allowed=MAX_TRANSFERS,
+        current_expected_points=suggestion.current_expected_points,
+        current_expected_gap=suggestion.current_expected_gap,
+        current_gap_std=suggestion.current_gap_std,
+        current_expected_final_rank=suggestion.current_expected_final_rank,
+        variance_preference=suggestion.variance_preference,
+        n_rivals=suggestion.n_rivals,
+        league_id=league.league_id,
+        league_name=league.league_name,
+        picks_gameweek=league.picks_gameweek,
+        gameweeks=list(suggestion.gameweeks),
+        league_gameweek=suggestion.league_gameweek,
+    )
+
+
+@app.post("/squad/transfers/apply", response_model=schemas.SquadOut)
+def apply_transfers(body: schemas.ApplyTransfersIn) -> schemas.SquadOut:
+    """Apply a suggested plan in one call: drop every ``out_player_ids`` player, add every
+    ``in_player_ids`` player at their current price, and re-derive the XI.
+
+    The whole final 15 is validated once (``features.squad_rules.assemble_team_state``) rather than
+    each swap being applied and checked in turn. Applying one at a time can fail on a transient
+    illegality the finished squad does not have (buying before selling breaches the budget; two
+    players from one club overlapping for a step breaches the club limit), and rejecting a legal
+    destination because of the route taken to it would be wrong.
+
+    The captain and vice are kept if they are still in the squad and still start, so a transfer
+    elsewhere never casually moves the armband, matching ``_reconcile_after_squad_change``'s own
+    behaviour on an add or remove.
+    """
+    state, team_state = _require_team_state()
+    app_state = get_app_state()
+
+    if len(body.out_player_ids) != len(body.in_player_ids):
+        raise ValueError("out_player_ids and in_player_ids must be the same length")
+    outgoing = set(body.out_player_ids)
+    missing = outgoing - set(team_state.player_ids)
+    if missing:
+        raise SquadRuleError(
+            RuleViolation(
+                "unknown_player",
+                f"player(s) {sorted(missing)} are not in the squad",
+                tuple(sorted(missing)),
+            )
+        )
+    already_owned = set(body.in_player_ids) & set(team_state.player_ids)
+    if already_owned:
+        raise SquadRuleError(
+            RuleViolation(
+                "duplicate",
+                f"player(s) {sorted(already_owned)} are already in the squad",
+                tuple(sorted(already_owned)),
+            )
+        )
+    unpriced = [pid for pid in body.in_player_ids if pid not in app_state.buy_prices]
+    if unpriced:
+        raise ValueError(f"no current price is known for player(s) {sorted(unpriced)}")
+
+    new_squad = tuple(
+        player for player in team_state.squad if player.player_id not in outgoing
+    ) + tuple(
+        SquadPlayer(pid, app_state.position_by_player[pid], app_state.buy_prices[pid])
+        for pid in body.in_player_ids
+    )
+    new_team_state = assemble_team_state(
+        new_squad,
+        app_state.expected_points(),
+        app_state.team_id_by_player,
+        budget=state.budget_ceiling,
+        preferred_captain_id=state.captain_id,
+        preferred_vice_captain_id=state.vice_captain_id,
+    )
+    _save_team_state(state, new_team_state)
     return _squad_out()
 
 
