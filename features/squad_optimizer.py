@@ -19,6 +19,18 @@ Captain/vice are chosen post-hoc (the two highest-EV starting-XI players), not b
 objective: doubling one player's score is a nonlinear max-selection that would need extra binaries
 for a gain that's always just the gap between the top two scorers, never enough to change which 15
 players are optimal.
+
+``current_squad_ids``/``max_transfers`` turn the same program into the transfer problem
+(TRANSFER_BANNER): "keep at least ``15 - max_transfers`` of the players I already own." A full
+rebuild is then just ``max_transfers = 15``, and a one-transfer suggestion is the same solve with
+a tighter bound, so ``features.transfer_planner`` needs no second solver of its own. This is a
+weaker constraint than ``locked_player_ids``, which names *which* players must stay; here the
+solver chooses which ones leave, and that choice is the whole answer.
+
+``excluded_squads`` carries the no-good cuts that let a caller enumerate the top N distinct
+squads rather than just the optimum: re-solve with each already-found 15 forbidden, and CBC
+returns the next best. Cheaper and far more predictable than asking CBC for a solution pool, and
+it keeps every returned squad genuinely distinct rather than differing only in solver bookkeeping.
 """
 
 from __future__ import annotations
@@ -87,14 +99,32 @@ def optimise_squad(
     position_quota: Mapping[str, int] = POSITION_QUOTA,
     max_per_club: int = MAX_PER_CLUB,
     valid_formations: Sequence[tuple[int, int, int]] = VALID_FORMATIONS,
+    current_squad_ids: frozenset[int] | None = None,
+    max_transfers: int | None = None,
+    excluded_squads: Sequence[frozenset[int]] = (),
 ) -> OptimizedSquad:
     """Find the legal squad of ``squad_size`` maximizing projected points, keeping every player in
     ``locked_player_ids`` in the result. ``captain_multiplier`` is accepted for signature symmetry
     with the points-preview call but never changes which players are picked (see module
     docstring).
+
+    ``max_transfers``, given together with ``current_squad_ids``, caps how many of those players
+    the result may drop. A current squad player with no candidate row at all (no projection this
+    gameweek, so nothing to value him at) counts as already gone and spends one of those
+    transfers, rather than raising: a squad can legitimately contain a player the projection cache
+    has nothing for, and refusing to suggest anything at all in that case would be the worse
+    answer.
+
+    ``excluded_squads`` forbids each named set of exactly the players it contains from being the
+    result again, so repeated calls walk down the ranking instead of returning the same optimum.
     """
     if objective not in _OBJECTIVES:
         raise ValueError(f"objective must be one of {_OBJECTIVES}, got {objective!r}")
+    if max_transfers is not None:
+        if current_squad_ids is None:
+            raise ValueError("max_transfers requires current_squad_ids")
+        if max_transfers < 0:
+            raise ValueError(f"max_transfers must be non-negative, got {max_transfers}")
 
     by_id = {c.player_id: c for c in candidates}
     if len(by_id) != len(candidates):
@@ -137,6 +167,24 @@ def optimise_squad(
         problem += pulp.lpSum(squad_vars[pid] for pid in player_ids) <= max_per_club
 
     problem += pulp.lpSum(by_id[pid].price * squad_vars[pid] for pid in squad_vars) <= budget
+
+    if max_transfers is not None and current_squad_ids is not None:
+        # Only the current players actually present as candidates can be *kept*; any that are
+        # missing have already left, so they come out of the same transfer allowance.
+        keepable = [pid for pid in current_squad_ids if pid in squad_vars]
+        minimum_kept = len(current_squad_ids) - max_transfers
+        if minimum_kept > len(keepable):
+            raise SquadOptimizerError(
+                f"{len(current_squad_ids) - len(keepable)} current squad player(s) have no "
+                f"candidate row, which already costs more than the {max_transfers} transfer(s) "
+                "allowed"
+            )
+        problem += pulp.lpSum(squad_vars[pid] for pid in keepable) >= minimum_kept
+
+    for excluded in excluded_squads:
+        present = [pid for pid in excluded if pid in squad_vars]
+        if present:
+            problem += pulp.lpSum(squad_vars[pid] for pid in present) <= len(present) - 1
 
     problem += pulp.lpSum(formation_vars.values()) == 1
     problem += pulp.lpSum(xi_vars.values()) == 11

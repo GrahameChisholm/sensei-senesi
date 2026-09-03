@@ -438,3 +438,73 @@ class MiniLeaguePanelOut(BaseModel):
     captain_options: list[CaptainOptionOut]
     insights: list[LeagueInsightOut]
     rivals: list[MiniLeagueRivalOut]
+
+
+# --- Transfer banner (TRANSFER_BANNER) -----------------------------------------------------------
+
+
+class TransferMoveOut(BaseModel):
+    """One sell paired with one buy. ``in_eo_multiplier`` is the field's effective ownership of
+    the incoming player, or ``None`` with no league in play, which is what tells a manager at a
+    glance whether a suggested buy covers the template or differentiates from it."""
+
+    out_player_id: int
+    in_player_id: int
+    out_name: str
+    in_name: str
+    position: str
+    price_delta: int
+    out_expected_points: float | None
+    in_expected_points: float | None
+    in_eo_multiplier: float | None
+
+
+class TransferPlanOut(BaseModel):
+    """``expected_final_rank_delta`` is negative when the plan improves your projected finish, so
+    the UI must render it as an improvement rather than as a loss. Every league field is ``0.0``
+    (or a rank of ``1.0``) when no league is configured, which the response's own
+    ``league_id``/``n_rivals`` report."""
+
+    moves: list[TransferMoveOut]
+    out_player_ids: list[int]
+    in_player_ids: list[int]
+    n_transfers: int
+    expected_points: float
+    expected_points_delta: float
+    expected_gap: float
+    expected_gap_delta: float
+    gap_std: float
+    gap_std_delta: float
+    expected_final_rank: float
+    expected_final_rank_delta: float
+    spend_delta: int
+    budget_remaining: int
+
+
+class TransferSuggestionOut(BaseModel):
+    """``plans`` is ranked best first at the requested transfer count; ``best_by_transfer_count``
+    holds one plan per transfer count from 1 upward, so the banner can show what each extra move
+    buys. ``marginal_points_gains`` is that same series already differenced, index 0 being the
+    first transfer's own gain."""
+
+    plans: list[TransferPlanOut]
+    best_by_transfer_count: list[TransferPlanOut]
+    marginal_points_gains: list[float]
+    max_transfers: int
+    max_transfers_allowed: int
+    current_expected_points: float
+    current_expected_gap: float
+    current_gap_std: float
+    current_expected_final_rank: float
+    variance_preference: str
+    n_rivals: int
+    league_id: int | None
+    league_name: str
+    picks_gameweek: int | None
+    gameweeks: list[int]
+    league_gameweek: int
+
+
+class ApplyTransfersIn(BaseModel):
+    out_player_ids: list[int] = Field(min_length=1)
+    in_player_ids: list[int] = Field(min_length=1)
