@@ -745,7 +745,7 @@ def list_players(
         app_state.team_id_by_player,
         low_confidence_ids,
         fixture_map,
-        app_state.remaining_horizon_gameweeks,
+        app_state.horizon_gameweeks,
         search=search,
         position=position,
         max_price=max_price,
@@ -856,7 +856,7 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> schemas.PlayerSta
         app_state.position_by_player,
         low_confidence_ids,
         fixture_map,
-        app_state.remaining_horizon_gameweeks,
+        app_state.horizon_gameweeks,
     )
     return schemas.PlayerStatsResponseOut(
         ownership_status=ownership_status,
@@ -1103,7 +1103,7 @@ def list_differentials(
         app_state.team_id_by_player,
         app_state.projections,
         fixture_map,
-        app_state.remaining_horizon_gameweeks,
+        app_state.horizon_gameweeks,
     )
 
     swing_by_player = {

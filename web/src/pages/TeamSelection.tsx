@@ -28,7 +28,7 @@ export function TeamSelection() {
     viewGameweek ?? undefined,
   );
 
-  const pinnedGameweek = viewGameweek ?? gameweek?.gameweek;
+  const pinnedGameweek = viewGameweek ?? undefined;
 
   if (loading || squad === null) {
     return <p className="loading">Loading…</p>;
