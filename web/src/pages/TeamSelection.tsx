@@ -6,6 +6,10 @@ import { ActiveChip, ChipBar } from "../components/ChipBar";
 import { Pitch, QUOTA } from "../components/Pitch";
 import { PlayerPanel } from "../components/PlayerPanel";
 import { RuleViolationToast } from "../components/RuleViolationToast";
+import { TransferBanner } from "../components/TransferBanner";
+import { useTransferSuggestion } from "../hooks/useTransferSuggestion";
+import { useStoredState } from "../hooks/useStoredState";
+import { TransferPlanOut } from "../api";
 
 export function TeamSelection() {
   const squadState = useSquad();
@@ -17,6 +21,10 @@ export function TeamSelection() {
   const [activeChip, setActiveChip] = useState<ActiveChip>(null);
   const [viewGameweek, setViewGameweek] = useState<number | null>(null);
   const [swapSourceId, setSwapSourceId] = useState<number | null>(null);
+  // Persisted: how many transfers a manager plans in a week is a standing preference, not a
+  // per-visit one, and re-picking it on every page load would be busywork.
+  const [transfers, setTransfers] = useStoredState<number>("team.transfers", 1);
+  const [applying, setApplying] = useState(false);
 
   const { squad, error, loading, clearError } = squadState;
 
@@ -29,6 +37,24 @@ export function TeamSelection() {
   );
 
   const pinnedGameweek = viewGameweek ?? gameweek?.gameweek;
+
+  // The squad's own identity, which is what makes an edit refetch the suggestion. Captain is part
+  // of it because the plan is scored with the captain applied, so moving the armband changes the
+  // answer even though the 15 has not.
+  const squadKey = squad
+    ? `${squad.squad
+        .map((p) => p.player_id)
+        .sort((a, b) => a - b)
+        .join(",")}|${squad.captain_id}`
+    : "";
+
+  const transferSuggestion = useTransferSuggestion({
+    transfers,
+    horizon: horizon === "three" ? 3 : 1,
+    chip: activeChip,
+    squadKey,
+    enabled: squad?.is_complete ?? false,
+  });
 
   if (loading || squad === null) {
     return <p className="loading">Loading…</p>;
@@ -72,6 +98,16 @@ export function TeamSelection() {
     void squadState.substitute(outId, inId);
   }
 
+  async function handleApplyTransfers(plan: TransferPlanOut) {
+    setSwapSourceId(null);
+    setApplying(true);
+    try {
+      await squadState.applyTransfers(plan.out_player_ids, plan.in_player_ids);
+    } finally {
+      setApplying(false);
+    }
+  }
+
   async function handleClearSquad() {
     if (
       !window.confirm(
@@ -107,20 +143,34 @@ export function TeamSelection() {
       <ChipBar activeChip={activeChip} onChange={setActiveChip} />
 
       <div className="main-content">
-        <Pitch
-          squad={squad}
-          directory={directory}
-          teams={teams}
-          horizon={horizon}
-          pinnedGameweek={pinnedGameweek}
-          swapSourceId={swapSourceId}
-          onRemove={(playerId) => {
-            if (swapSourceId === playerId) setSwapSourceId(null);
-            void squadState.removePlayer(playerId);
-          }}
-          onSetCaptain={(playerId, role) => void squadState.setCaptain(playerId, role)}
-          onSwapSelect={handleSwapSelect}
-        />
+        <div className="pitch-column">
+          <Pitch
+            squad={squad}
+            directory={directory}
+            teams={teams}
+            horizon={horizon}
+            pinnedGameweek={pinnedGameweek}
+            swapSourceId={swapSourceId}
+            onRemove={(playerId) => {
+              if (swapSourceId === playerId) setSwapSourceId(null);
+              void squadState.removePlayer(playerId);
+            }}
+            onSetCaptain={(playerId, role) => void squadState.setCaptain(playerId, role)}
+            onSwapSelect={handleSwapSelect}
+          />
+
+          {squad.is_complete && (
+            <TransferBanner
+              suggestion={transferSuggestion.suggestion}
+              loading={transferSuggestion.loading}
+              error={transferSuggestion.error}
+              transfers={transfers}
+              onTransfersChange={setTransfers}
+              onApply={(plan) => void handleApplyTransfers(plan)}
+              applying={applying}
+            />
+          )}
+        </div>
 
         <PlayerPanel
           teams={teams}
