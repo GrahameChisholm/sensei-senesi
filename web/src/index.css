@@ -948,6 +948,30 @@ button {
   color: var(--text-muted);
 }
 
+.panel-table th.sortable {
+  cursor: pointer;
+}
+
+.panel-table th.sortable:hover {
+  color: var(--accent);
+}
+
+.panel-table th.ticker-metric-col,
+.panel-table td.ticker-metric-col {
+  width: 3.4rem;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+}
+
+/* "Attacking"/"Defending" are single unbreakable words wider than the 3.4rem column, so without
+   this the browser would widen just those two columns past "Avg FDR" (which can wrap between its
+   two words) to fit them -- forcing a mid-word break keeps all three the same width. */
+.panel-table th.ticker-metric-col {
+  overflow-wrap: break-word;
+  word-break: break-word;
+  hyphens: auto;
+}
+
 .fixture-swing {
   margin-top: 1rem;
 }

@@ -87,6 +87,24 @@ export function fixtureDifficultyTextColour(difficulty: number | null): string {
   return DIFFICULTY_COLOURS[difficultyBucket(difficulty)].text;
 }
 
+/** Maps a value onto the same 1(best)-5(worst) discrete rating {@link fixtureDifficultyColour}
+ * uses, given the low/high ends of its actual range -- lets a relative metric with no fixed scale
+ * of its own (e.g. the fixture ticker's total expected goals over a variable-length window) reuse
+ * the exact FDR palette rather than inventing a second green-red convention. `invert` false means
+ * "a high value is worse" (maps toward 5, e.g. total expected goals against); true means "a high
+ * value is better" (maps toward 1, e.g. total expected goals for). */
+export function relativeDifficultyRating(
+  value: number,
+  low: number,
+  high: number,
+  invert: boolean,
+): number {
+  if (high === low) return 3;
+  let t = (value - low) / (high - low);
+  if (invert) t = 1 - t;
+  return Math.min(5, Math.max(1, Math.round(1 + t * 4)));
+}
+
 // Mini League exposure/swing (MINI_LEAGUE_PLAN M20): a signed value needs a diverging scale, not
 // the one-directional low/mid/high EP heatmap above -- reuses the same LOW (red)/HIGH (green)
 // tokens from that palette rather than inventing a new one, applied symmetrically around zero.
