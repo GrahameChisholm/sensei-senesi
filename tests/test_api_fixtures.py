@@ -1,11 +1,13 @@
 """Tests for the GET /fixtures endpoint -- the thin API wiring over api.fixtures_view. The
 difficulty numbers themselves are just FPL's own values carried straight through, so these tests
 check request/response wiring (gameweek window handling, blank/double gameweek shape, team
-exclusion), not any rating math.
+exclusion), not any rating math. The expected-goals fields are covered similarly: wiring only, the
+underlying formula is exercised by tests/test_fixtures.py.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 
 import pytest
@@ -13,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import api.state as state_module
 from api.state import AppState
+from features.fixtures import TeamFixture, TeamRates, fixture_expected_goals, league_average_rate
 from tests.conftest import UPCOMING_DEADLINE
 
 TEAM_A, TEAM_B, TEAM_C = 1, 2, 3
@@ -67,6 +70,30 @@ def _fixture_app_state() -> AppState:
 def client(tmp_path):
     state_module.reset_state(db_path=str(tmp_path / "test.sqlite"))
     state_module.set_app_state(_fixture_app_state())
+    from api.main import app
+
+    with TestClient(app) as test_client:
+        yield test_client
+    state_module.reset_state()
+
+
+@pytest.fixture()
+def client_with_team_rates(tmp_path):
+    """Team A and C have live rate snapshots; Team B deliberately doesn't, exercising the "no live
+    source yet" degrade-gracefully path for any fixture involving it."""
+    state_module.reset_state(db_path=str(tmp_path / "test.sqlite"))
+    app_state = dataclasses.replace(
+        _fixture_app_state(),
+        team_rates={
+            TEAM_A: TeamRates(
+                home_xg_per_90=1.6, away_xg_per_90=1.2, home_xga_per_90=1.0, away_xga_per_90=1.3
+            ),
+            TEAM_C: TeamRates(
+                home_xg_per_90=1.5, away_xg_per_90=1.5, home_xga_per_90=0.9, away_xga_per_90=0.9
+            ),
+        },
+    )
+    state_module.set_app_state(app_state)
     from api.main import app
 
     with TestClient(app) as test_client:
@@ -144,3 +171,48 @@ class TestFixtureTicker:
     def test_gameweek_from_below_one_is_rejected(self, client):
         response = client.get("/fixtures", params={"gameweek_from": 0, "gameweek_to": 2})
         assert response.status_code == 400
+
+
+class TestFixtureTickerExpectedGoals:
+    def test_expected_goals_omitted_when_no_team_rates_in_app_state(self, client):
+        # Plain `client` fixture has no team_rates at all -- every fixture's expected-goals fields
+        # stay None, matching this endpoint's pre-expected-goals behaviour exactly.
+        rows = client.get("/fixtures").json()
+        team_a = _row_for(rows, TEAM_A)
+        gw4 = next(cell for cell in team_a["gameweeks"] if cell["gameweek"] == 4)
+        assert gw4["fixtures"][0]["expected_goals_for"] is None
+        assert gw4["fixtures"][0]["expected_goals_against"] is None
+
+    def test_expected_goals_present_when_both_teams_have_a_rate_snapshot(
+        self, client_with_team_rates
+    ):
+        # GW4: Team A (home) vs Team C (away) -- both have rate snapshots.
+        rows = client_with_team_rates.get("/fixtures").json()
+        team_a = _row_for(rows, TEAM_A)
+        gw4_entry = next(cell for cell in team_a["gameweeks"] if cell["gameweek"] == 4)["fixtures"][
+            0
+        ]
+
+        team_rates = {
+            TEAM_A: TeamRates(1.6, 1.2, 1.0, 1.3),
+            TEAM_C: TeamRates(1.5, 1.5, 0.9, 0.9),
+        }
+        league_avg_xga = league_average_rate(team_rates, "home_xga_per_90", "away_xga_per_90")
+        expected = fixture_expected_goals(
+            TeamFixture(team_id=TEAM_A, opponent_id=TEAM_C, gameweek=4, is_home=True),
+            team_rates[TEAM_A],
+            team_rates[TEAM_C],
+            league_avg_xga,
+        )
+        assert gw4_entry["expected_goals_for"] == pytest.approx(expected.expected_goals_for)
+        assert gw4_entry["expected_goals_against"] == pytest.approx(expected.expected_goals_against)
+
+    def test_expected_goals_null_when_opponent_has_no_rate_snapshot(self, client_with_team_rates):
+        # GW1: Team A (home) vs Team B -- Team B has no rate snapshot in client_with_team_rates.
+        rows = client_with_team_rates.get("/fixtures").json()
+        team_a = _row_for(rows, TEAM_A)
+        gw1_entry = next(cell for cell in team_a["gameweeks"] if cell["gameweek"] == 1)["fixtures"][
+            0
+        ]
+        assert gw1_entry["expected_goals_for"] is None
+        assert gw1_entry["expected_goals_against"] is None

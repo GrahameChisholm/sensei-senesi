@@ -123,6 +123,8 @@ export interface FixtureTickerCellFixtureOut {
   opponent_id: number;
   is_home: boolean;
   difficulty: number;
+  expected_goals_for: number | null;
+  expected_goals_against: number | null;
 }
 
 export interface FixtureTickerCellOut {

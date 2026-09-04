@@ -117,6 +117,11 @@ export function FixturesTicker({
                         >
                           {teams[entry.opponent_id]?.short_name ?? entry.opponent_id}
                           <span className="fixture-label">{entry.is_home ? "(H)" : "(A)"}</span>
+                          {entry.expected_goals_for !== null && entry.expected_goals_against !== null && (
+                            <div className="fixture-expected-goals">
+                              {entry.expected_goals_for.toFixed(1)} : {entry.expected_goals_against.toFixed(1)}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </td>

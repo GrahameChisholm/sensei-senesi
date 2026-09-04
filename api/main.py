@@ -54,7 +54,7 @@ from features.differentials import (
     build_differentials,
 )
 from features.fixture_swing import DEFAULT_FAR_GAMEWEEKS, DEFAULT_NEAR_GAMEWEEKS
-from features.fixtures import HorizonDifficulty
+from features.fixtures import HorizonDifficulty, league_average_rate
 from features.mini_league import (
     PlayerOwnership,
     SwapCandidate,
@@ -159,7 +159,18 @@ def list_fixture_ticker(
     if gameweek_from < 1 or gameweek_to < gameweek_from:
         raise ValueError("gameweek_to must be >= gameweek_from, and both must be at least 1")
     gameweeks = list(range(gameweek_from, gameweek_to + 1))
-    rows = build_fixture_ticker_rows(app_state.fixtures, app_state.teams.keys(), gameweeks)
+    league_avg_xga = (
+        league_average_rate(app_state.team_rates, "home_xga_per_90", "away_xga_per_90")
+        if app_state.team_rates
+        else None
+    )
+    rows = build_fixture_ticker_rows(
+        app_state.fixtures,
+        app_state.teams.keys(),
+        gameweeks,
+        team_rates=app_state.team_rates,
+        league_avg_xga_per_90=league_avg_xga,
+    )
     return [
         schemas.FixtureTickerRowOut(
             team_id=row.team_id,
@@ -171,6 +182,8 @@ def list_fixture_ticker(
                             opponent_id=entry.opponent_id,
                             is_home=entry.is_home,
                             difficulty=entry.difficulty,
+                            expected_goals_for=entry.expected_goals_for,
+                            expected_goals_against=entry.expected_goals_against,
                         )
                         for entry in cell.fixtures
                     ],

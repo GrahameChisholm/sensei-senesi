@@ -132,6 +132,8 @@ class FixtureTickerCellFixtureOut(BaseModel):
     opponent_id: int
     is_home: bool
     difficulty: int
+    expected_goals_for: float | None
+    expected_goals_against: float | None
 
 
 class FixtureTickerCellOut(BaseModel):

@@ -970,6 +970,12 @@ button {
   opacity: 0.75;
 }
 
+.fixture-expected-goals {
+  font-weight: 400;
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
 /* --- App shell / tabs --- */
 
 .app-tabs {

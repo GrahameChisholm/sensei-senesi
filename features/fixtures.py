@@ -18,6 +18,13 @@ quality has no place in it (that's exactly what the projections themselves alrea
 the opponent's rate used here must be the split that matches the venue *they'll* be playing at —
 if this team is at home, the opponent is away, so their away-split rate applies (see
 :func:`fixture_difficulty`).
+
+**Expected goals is a different question, and deliberately combines both sides.**
+:func:`fixture_expected_goals` answers "how many goals is this team actually expected to score and
+concede in this specific fixture," not "how hard is this fixture." That genuinely needs this
+team's own rate as well as the opponent's, since a strong attack facing a weak defence scores more
+than a weak attack would against that same defence. It is therefore not subject to the "never this
+team's own rate" rule stated above, which is specific to the difficulty rating.
 """
 
 from __future__ import annotations
@@ -25,15 +32,21 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
+from engine.models.clean_sheets import team_expected_goals_rate
+
 __all__ = [
     "TeamFixture",
     "TeamRates",
     "FixtureDifficulty",
     "HorizonDifficulty",
+    "FixtureExpectedGoals",
     "fixture_difficulty",
     "project_fixture_difficulties",
     "team_horizon_difficulty",
     "fixture_counts_by_gameweek",
+    "fixture_expected_goals",
+    "project_fixture_expected_goals",
+    "league_average_rate",
 ]
 
 
@@ -244,3 +257,82 @@ def fixture_counts_by_gameweek(
         if fixture.team_id == team_id and fixture.gameweek in counts:
             counts[fixture.gameweek] += 1
     return counts
+
+
+@dataclass(frozen=True)
+class FixtureExpectedGoals:
+    """One team's genuine matchup-specific expected goals for one fixture -- distinct from
+    :class:`FixtureDifficulty`, which deliberately looks only at the opponent's rate. A real
+    expected-goals number needs *both* sides' rates (this team's own attacking/defensive strength
+    combined with the opponent's), the same combination :func:`engine.models.clean_sheets.
+    team_expected_goals_rate` already performs for the clean-sheet model's lambdas."""
+
+    team_id: int
+    opponent_id: int
+    gameweek: int
+    is_home: bool
+    expected_goals_for: float
+    expected_goals_against: float
+
+
+def fixture_expected_goals(
+    fixture: TeamFixture,
+    team_rates: TeamRates,
+    opponent_rates: TeamRates,
+    league_avg_xga_per_90: float,
+) -> FixtureExpectedGoals:
+    """This team's expected goals for and against in one specific fixture, each side's rate read
+    off whichever home/away split actually applies given ``fixture.is_home``."""
+    team_xg = team_rates.home_xg_per_90 if fixture.is_home else team_rates.away_xg_per_90
+    team_xga = team_rates.home_xga_per_90 if fixture.is_home else team_rates.away_xga_per_90
+    opponent_xg = (
+        opponent_rates.away_xg_per_90 if fixture.is_home else opponent_rates.home_xg_per_90
+    )
+    opponent_xga = (
+        opponent_rates.away_xga_per_90 if fixture.is_home else opponent_rates.home_xga_per_90
+    )
+
+    return FixtureExpectedGoals(
+        team_id=fixture.team_id,
+        opponent_id=fixture.opponent_id,
+        gameweek=fixture.gameweek,
+        is_home=fixture.is_home,
+        expected_goals_for=team_expected_goals_rate(team_xg, opponent_xga, league_avg_xga_per_90),
+        expected_goals_against=team_expected_goals_rate(
+            opponent_xg, team_xga, league_avg_xga_per_90
+        ),
+    )
+
+
+def project_fixture_expected_goals(
+    fixtures: Sequence[TeamFixture],
+    team_rates: Mapping[int, TeamRates],
+    league_avg_xga_per_90: float,
+) -> list[FixtureExpectedGoals]:
+    """Batch entry point, mirroring :func:`project_fixture_difficulties` -- one
+    :class:`FixtureExpectedGoals` per fixture, keyed off both that fixture's own team and its
+    opponent's rates in ``team_rates``."""
+    return [
+        fixture_expected_goals(
+            fixture,
+            team_rates[fixture.team_id],
+            team_rates[fixture.opponent_id],
+            league_avg_xga_per_90,
+        )
+        for fixture in fixtures
+    ]
+
+
+def league_average_rate(
+    team_rates: Mapping[int, TeamRates], home_attr: str, away_attr: str
+) -> float:
+    """Plain mean, across every team with a rate snapshot, of that team's own ``(home + away) /
+    2`` rate for one stat -- this recovers each team's underlying shrunk rate exactly regardless of
+    its venue multiplier (``home = shrunk * mult``, ``away = shrunk * (2 - mult)``, so their
+    average is ``shrunk`` every time), giving a single, venue-neutral per-90 league average to
+    normalize fixture difficulty/expected-goals against."""
+    values = [
+        (getattr(rates, home_attr) + getattr(rates, away_attr)) / 2.0
+        for rates in team_rates.values()
+    ]
+    return sum(values) / len(values)

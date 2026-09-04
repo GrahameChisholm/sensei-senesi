@@ -11,7 +11,10 @@ from features.fixtures import (
     TeamRates,
     fixture_counts_by_gameweek,
     fixture_difficulty,
+    fixture_expected_goals,
+    league_average_rate,
     project_fixture_difficulties,
+    project_fixture_expected_goals,
     team_horizon_difficulty,
 )
 
@@ -151,6 +154,80 @@ def test_team_horizon_difficulty_rejects_mixed_teams():
     )
     with pytest.raises(ValueError):
         team_horizon_difficulty([fd1, fd2])
+
+
+def test_fixture_expected_goals_uses_venue_appropriate_splits_when_home():
+    # Home team uses its own home split; the away opponent uses its own away split.
+    fixture = TeamFixture(team_id=1, opponent_id=2, gameweek=10, is_home=True)
+    team_rates = TeamRates(
+        home_xg_per_90=1.6, away_xg_per_90=1.2, home_xga_per_90=1.0, away_xga_per_90=1.3
+    )
+    opponent_rates = TeamRates(
+        home_xg_per_90=2.0, away_xg_per_90=1.0, home_xga_per_90=1.5, away_xga_per_90=0.7
+    )
+    result = fixture_expected_goals(fixture, team_rates, opponent_rates, LEAGUE_AVG_XGA)
+    assert result.expected_goals_for == pytest.approx(1.6 * (0.7 / LEAGUE_AVG_XGA))
+    assert result.expected_goals_against == pytest.approx(1.0 * (1.0 / LEAGUE_AVG_XGA))
+
+
+def test_fixture_expected_goals_uses_venue_appropriate_splits_when_away():
+    # Away team uses its own away split; the home opponent uses its own home split.
+    fixture = TeamFixture(team_id=1, opponent_id=2, gameweek=10, is_home=False)
+    team_rates = TeamRates(
+        home_xg_per_90=1.6, away_xg_per_90=1.2, home_xga_per_90=1.0, away_xga_per_90=1.3
+    )
+    opponent_rates = TeamRates(
+        home_xg_per_90=2.0, away_xg_per_90=1.0, home_xga_per_90=1.5, away_xga_per_90=0.7
+    )
+    result = fixture_expected_goals(fixture, team_rates, opponent_rates, LEAGUE_AVG_XGA)
+    assert result.expected_goals_for == pytest.approx(1.2 * (1.5 / LEAGUE_AVG_XGA))
+    assert result.expected_goals_against == pytest.approx(2.0 * (1.3 / LEAGUE_AVG_XGA))
+
+
+def test_fixture_expected_goals_is_lower_against_a_stronger_defence():
+    # Same attacking team, two candidate opponents: a strong defence (low xGA) and a weak one
+    # (high xGA). This is the "Arsenal expects fewer goals against Man City than Coventry" check.
+    fixture = TeamFixture(team_id=1, opponent_id=2, gameweek=10, is_home=True)
+    team_rates = TeamRates(
+        home_xg_per_90=2.2, away_xg_per_90=1.8, home_xga_per_90=1.0, away_xga_per_90=1.2
+    )
+    strong_defence = TeamRates(
+        home_xg_per_90=1.5, away_xg_per_90=1.5, home_xga_per_90=0.6, away_xga_per_90=0.6
+    )
+    weak_defence = TeamRates(
+        home_xg_per_90=1.5, away_xg_per_90=1.5, home_xga_per_90=2.0, away_xga_per_90=2.0
+    )
+    vs_strong = fixture_expected_goals(fixture, team_rates, strong_defence, LEAGUE_AVG_XGA)
+    vs_weak = fixture_expected_goals(fixture, team_rates, weak_defence, LEAGUE_AVG_XGA)
+    assert vs_strong.expected_goals_for < vs_weak.expected_goals_for
+
+
+def test_project_fixture_expected_goals_looks_up_each_fixtures_own_team_and_opponent():
+    fixtures = [
+        TeamFixture(team_id=1, opponent_id=2, gameweek=1, is_home=True),
+        TeamFixture(team_id=1, opponent_id=3, gameweek=2, is_home=False),
+    ]
+    team_rates = {
+        1: TeamRates(1.5, 1.5, 1.0, 1.0),
+        2: TeamRates(1.0, 1.0, 1.0, 1.0),
+        3: TeamRates(2.0, 2.0, 2.0, 2.0),
+    }
+    results = project_fixture_expected_goals(fixtures, team_rates, LEAGUE_AVG_XGA)
+    assert len(results) == 2
+    assert results[0].opponent_id == 2
+    assert results[1].opponent_id == 3
+    assert results[1].expected_goals_for == pytest.approx(1.5 * (2.0 / LEAGUE_AVG_XGA))
+
+
+def test_league_average_rate_recovers_underlying_shrunk_rate():
+    team_rates = {
+        1: TeamRates(1.6, 1.2, 1.0, 1.0),
+        2: TeamRates(1.0, 1.0, 1.0, 1.0),
+    }
+    # Team 1's own underlying xg rate is (1.6 + 1.2) / 2 = 1.4; team 2's is 1.0.
+    assert league_average_rate(team_rates, "home_xg_per_90", "away_xg_per_90") == pytest.approx(
+        (1.4 + 1.0) / 2
+    )
 
 
 def test_fixture_counts_by_gameweek_marks_blanks_and_doubles():
