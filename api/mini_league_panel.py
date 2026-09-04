@@ -124,13 +124,20 @@ def build_mini_league_panel(
     gameweek, never ``snapshot.picks_gameweek`` (M1's separate, possibly-lagging "what picks data
     do we actually have" field). Raises ``ValueError`` if ``my_entry_id`` isn't actually present in
     ``snapshot`` -- not a member of this league, or beyond the fetched rival limit -- since there
-    is then no sensible "the field, excluding me" to compute.
+    is then no sensible "the field, excluding me" to compute. The message picks between those two
+    explanations using ``snapshot.rival_limit_truncated`` rather than always hedging both, since
+    every entry actually was checked whenever that flag is ``False``.
     """
     my_entry = next((entry for entry in snapshot.entries if entry.entry_id == my_entry_id), None)
     if my_entry is None:
+        if snapshot.rival_limit_truncated:
+            reason = (
+                "it is not a member of this league, or its rank is below the fetched rival limit"
+            )
+        else:
+            reason = "it is not a member of this league"
         raise ValueError(
-            f"FPL entry {my_entry_id} was not found in league {snapshot.league_id} "
-            "(not a member of this league, or beyond the fetched rival limit)"
+            f"FPL entry {my_entry_id} was not found in league {snapshot.league_id} ({reason})"
         )
 
     gameweek = app_state.gameweek

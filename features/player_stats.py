@@ -97,6 +97,7 @@ class PlayerActualStats:
     penalties_saved: int
     saves: int
     bonus: int
+    defensive_contribution: int
     yellow_cards: int
     red_cards: int
     total_points: int
@@ -181,6 +182,7 @@ def summarize_actual_stats(
         penalties_saved=sum(actual.penalties_saved for actual in in_range),
         saves=sum(actual.saves for actual in in_range),
         bonus=sum(actual.bonus for actual in in_range),
+        defensive_contribution=sum(actual.defensive_contribution for actual in in_range),
         yellow_cards=sum(actual.yellow_cards for actual in in_range),
         red_cards=sum(actual.red_cards for actual in in_range),
         total_points=sum(actual.total_points for actual in in_range),

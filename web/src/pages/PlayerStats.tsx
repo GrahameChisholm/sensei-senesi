@@ -148,6 +148,7 @@ export function PlayerStats() {
             ownershipStatus={ownershipStatus}
             selectedIds={selectedIds}
             onToggleSelected={toggleSelected}
+            horizonGameweeks={gameweek?.horizon_gameweeks ?? []}
           />
         </>
       )}

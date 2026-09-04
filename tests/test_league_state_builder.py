@@ -178,6 +178,27 @@ def test_pagination_stops_once_limit_is_reached():
 
     assert len(snapshot.entries) == 50
     assert 2 not in calls["standings_pages"]
+    assert snapshot.rival_limit_truncated is True
+
+
+def test_rival_limit_truncated_is_false_when_the_whole_league_fits_under_the_limit():
+    results = [_entry_result(1, rank=1), _entry_result(2, rank=2)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/leagues-classic/999/standings/":
+            return httpx.Response(200, json=_standings_page(results, has_next=False))
+        if path == "/api/entry/1/":
+            return httpx.Response(200, json={"id": 1, "current_event": 7})
+        if path.endswith("/picks/"):
+            return httpx.Response(200, json=_picks_payload([(10, 1)]))
+        if path.endswith("/history/"):
+            return httpx.Response(200, json={"current": [], "past": [], "chips": []})
+        raise AssertionError(f"unexpected path {path}")
+
+    snapshot = build_league_snapshot(_client(handler), league_id=999, limit=50)
+
+    assert snapshot.rival_limit_truncated is False
 
 
 def test_pagination_follows_has_next_across_pages_when_under_the_limit():

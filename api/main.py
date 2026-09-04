@@ -1057,6 +1057,7 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> schemas.PlayerSta
                     penalties_saved=row.actuals.penalties_saved,
                     saves=row.actuals.saves,
                     bonus=row.actuals.bonus,
+                    defensive_contribution=row.actuals.defensive_contribution,
                     yellow_cards=row.actuals.yellow_cards,
                     red_cards=row.actuals.red_cards,
                     total_points=row.actuals.total_points,

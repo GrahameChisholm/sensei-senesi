@@ -174,6 +174,7 @@ export interface ActualStatsOut {
   penalties_saved: number;
   saves: number;
   bonus: number;
+  defensive_contribution: number;
   yellow_cards: number;
   red_cards: number;
   total_points: number;

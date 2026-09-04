@@ -90,21 +90,31 @@ class LeagueSnapshot:
     knows its own entry_id from settings and excludes it where that matters, e.g.
     ``features.mini_league``'s effective-ownership denominator, rather than this module guessing at
     it). ``picks_gameweek`` is ``0`` only in the degenerate case of a league with no entries at all,
-    since there is then no probe entry to resolve it from."""
+    since there is then no probe entry to resolve it from.
+
+    ``rival_limit_truncated`` is ``True`` when the league actually has more entries than ``limit``
+    fetched -- i.e. ``entries`` is a partial standings page, not the whole league -- so a caller
+    that can't find a given entry_id in ``entries`` can tell "genuinely not a member" (``False``,
+    every entry was checked) apart from "might just be ranked below what was fetched" (``True``)
+    instead of always hedging both."""
 
     league_id: int
     league_name: str
     picks_gameweek: int
     entries: tuple[LeagueEntry, ...]
+    rival_limit_truncated: bool = False
 
 
 def _fetch_standings_results(
     client: FPLClient, league_id: int, limit: int
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict], bool]:
     """Pages through ``FPLClient.get_league_standings`` (M16) until ``limit`` entries are
-    collected or the league runs out of pages, whichever comes first."""
+    collected or the league runs out of pages, whichever comes first. The third return value is
+    ``True`` when the league has more entries than ``limit`` (the results were actually truncated),
+    ``False`` when every page was consumed."""
     results: list[dict] = []
     league_name = ""
+    has_next = False
     page = 1
     while len(results) < limit:
         payload = client.get_league_standings(league_id, page=page)
@@ -112,10 +122,12 @@ def _fetch_standings_results(
             league_name = payload["league"]["name"]
         standings = payload["standings"]
         results.extend(standings["results"])
-        if not standings.get("has_next"):
+        has_next = bool(standings.get("has_next"))
+        if not has_next:
             break
         page += 1
-    return league_name, results[:limit]
+    truncated = has_next or len(results) > limit
+    return league_name, results[:limit], truncated
 
 
 def _resolve_picks_gameweek(client: FPLClient, entry_ids: Sequence[int]) -> int:
@@ -185,10 +197,14 @@ def build_league_snapshot(
     entry for the probe; :func:`_build_entry` drops the entry itself if its picks/history can't be
     fetched even after ``picks_gameweek`` was resolved from someone else).
     """
-    league_name, results = _fetch_standings_results(client, league_id, limit)
+    league_name, results, truncated = _fetch_standings_results(client, league_id, limit)
     if not results:
         return LeagueSnapshot(
-            league_id=league_id, league_name=league_name, picks_gameweek=0, entries=()
+            league_id=league_id,
+            league_name=league_name,
+            picks_gameweek=0,
+            entries=(),
+            rival_limit_truncated=truncated,
         )
 
     picks_gameweek = _resolve_picks_gameweek(client, [result["entry"] for result in results])
@@ -202,4 +218,5 @@ def build_league_snapshot(
         league_name=league_name,
         picks_gameweek=picks_gameweek,
         entries=entries,
+        rival_limit_truncated=truncated,
     )

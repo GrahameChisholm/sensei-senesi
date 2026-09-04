@@ -60,6 +60,22 @@ def test_summarize_sums_raw_counts_across_the_range():
     assert result.gameweek_to == 2
 
 
+def test_summarize_sums_defensive_contribution_as_a_top_level_raw_stat():
+    """Defensive contribution must be readable as its own summed value, the same way bonus is --
+    not only reachable indirectly via points_breakdown -- since the Player Stats page needs a
+    top-level field to expose it as a real column rather than burying it in the points popover."""
+    history = [
+        _actual(1, defensive_contribution=2, total_points=4),
+        _actual(2, defensive_contribution=0, total_points=2),
+        _actual(3, defensive_contribution=2, total_points=4),  # outside range, must be excluded
+    ]
+
+    result = summarize_actual_stats(history, DEF, gameweek_from=1, gameweek_to=2)
+
+    assert result.defensive_contribution == 2
+    assert result.points_breakdown.defensive_contribution == 2.0
+
+
 def test_summarize_converts_points_per_gameweek_before_summing():
     """A goal in each of two separate gameweeks scores GOAL_POINTS twice, matching the prediction
     engine's own per-gameweek treatment -- points_breakdown.goals must reflect summed per-gameweek
