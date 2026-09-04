@@ -136,6 +136,8 @@ export interface FixtureTickerRowOut {
   team_id: number;
   gameweeks: FixtureTickerCellOut[];
   average_difficulty: number | null;
+  total_expected_goals_for: number | null;
+  total_expected_goals_against: number | null;
 }
 
 export interface HorizonDifficultyOut {

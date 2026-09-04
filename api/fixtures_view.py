@@ -53,6 +53,11 @@ class TeamDifficultyRow:
     gameweeks: tuple[GameweekDifficultyCell, ...]
     # None only when this team has no fixture at all anywhere in the horizon.
     average_difficulty: float | None
+    # Sum of each fixture's expected_goals_for/against across the whole row -- None when no
+    # fixture in the row has a live rate snapshot, matching the per-fixture "no live source yet"
+    # degrade-gracefully convention rather than treating a missing snapshot as zero.
+    total_expected_goals_for: float | None
+    total_expected_goals_against: float | None
 
 
 def _expected_goals_for_row(
@@ -97,6 +102,8 @@ def build_fixture_ticker_rows(
         ]
         cells: list[GameweekDifficultyCell] = []
         all_difficulties: list[int] = []
+        all_xg_for: list[float] = []
+        all_xg_against: list[float] = []
         for gameweek in gameweeks:
             entries = []
             for row in team_fixtures:
@@ -120,6 +127,16 @@ def build_fixture_ticker_rows(
             entries = tuple(entries)
             cells.append(GameweekDifficultyCell(gameweek=gameweek, fixtures=entries))
             all_difficulties.extend(entry.difficulty for entry in entries)
+            all_xg_for.extend(
+                entry.expected_goals_for
+                for entry in entries
+                if entry.expected_goals_for is not None
+            )
+            all_xg_against.extend(
+                entry.expected_goals_against
+                for entry in entries
+                if entry.expected_goals_against is not None
+            )
 
         average_difficulty = (
             sum(all_difficulties) / len(all_difficulties) if all_difficulties else None
@@ -129,6 +146,8 @@ def build_fixture_ticker_rows(
                 team_id=team_id,
                 gameweeks=tuple(cells),
                 average_difficulty=average_difficulty,
+                total_expected_goals_for=sum(all_xg_for) if all_xg_for else None,
+                total_expected_goals_against=sum(all_xg_against) if all_xg_against else None,
             )
         )
     return rows

@@ -216,3 +216,47 @@ class TestFixtureTickerExpectedGoals:
         ]
         assert gw1_entry["expected_goals_for"] is None
         assert gw1_entry["expected_goals_against"] is None
+
+    def test_total_expected_goals_null_when_no_team_rates_in_app_state(self, client):
+        rows = client.get("/fixtures").json()
+        team_a = _row_for(rows, TEAM_A)
+        assert team_a["total_expected_goals_for"] is None
+        assert team_a["total_expected_goals_against"] is None
+
+    def test_total_expected_goals_sums_only_fixtures_with_a_live_snapshot(
+        self, client_with_team_rates
+    ):
+        # Team A's GW1 and GW5 fixtures are against Team B (no rate snapshot) and stay excluded;
+        # only the GW3-vs-C and GW4-vs-C fixtures (both teams live) contribute to the total.
+        rows = client_with_team_rates.get("/fixtures").json()
+        team_a = _row_for(rows, TEAM_A)
+
+        team_rates = {
+            TEAM_A: TeamRates(1.6, 1.2, 1.0, 1.3),
+            TEAM_C: TeamRates(1.5, 1.5, 0.9, 0.9),
+        }
+        league_avg_xga = league_average_rate(team_rates, "home_xga_per_90", "away_xga_per_90")
+        gw3_vs_c = fixture_expected_goals(
+            TeamFixture(team_id=TEAM_A, opponent_id=TEAM_C, gameweek=3, is_home=False),
+            team_rates[TEAM_A],
+            team_rates[TEAM_C],
+            league_avg_xga,
+        )
+        gw4_vs_c = fixture_expected_goals(
+            TeamFixture(team_id=TEAM_A, opponent_id=TEAM_C, gameweek=4, is_home=True),
+            team_rates[TEAM_A],
+            team_rates[TEAM_C],
+            league_avg_xga,
+        )
+        assert team_a["total_expected_goals_for"] == pytest.approx(
+            gw3_vs_c.expected_goals_for + gw4_vs_c.expected_goals_for
+        )
+        assert team_a["total_expected_goals_against"] == pytest.approx(
+            gw3_vs_c.expected_goals_against + gw4_vs_c.expected_goals_against
+        )
+
+    def test_total_expected_goals_null_for_team_with_no_fixtures(self, client_with_team_rates):
+        rows = client_with_team_rates.get("/fixtures").json()
+        team_b = _row_for(rows, TEAM_B)
+        assert team_b["total_expected_goals_for"] is None
+        assert team_b["total_expected_goals_against"] is None
