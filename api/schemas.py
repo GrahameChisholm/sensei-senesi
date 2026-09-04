@@ -195,6 +195,7 @@ class ActualStatsOut(BaseModel):
     penalties_saved: int
     saves: int
     bonus: int
+    defensive_contribution: int
     yellow_cards: int
     red_cards: int
     total_points: int
