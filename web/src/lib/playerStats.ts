@@ -3,23 +3,27 @@ import { OwnershipStatus, PlayerStatsRowOut, RateRatioOut } from "../api";
 export type StatKey =
   | "goals_scored"
   | "assists"
+  | "defensive_contribution"
   | "clean_sheets"
   | "goals_conceded"
-  | "own_goals"
   | "bonus"
-  | "yellow_cards"
-  | "red_cards"
   | "total_points"
   | "expected_goals"
   | "expected_assists"
   | "expected_goal_involvements"
   | "expected_goals_conceded";
 
+/** Which colour-tinted header band (PLAYER_STATS_PLAN restructure) a column belongs to. Meta and
+ * the ratio/fixture columns aren't driven by STAT_COLUMNS at all (they're hardcoded cells in
+ * PlayerStatsTable), so their band membership lives there instead of here. */
+export type StatGroupKey = "historic" | "points" | "expected";
+
 export interface StatColumn {
   key: StatKey;
   label: string;
   decimals: number;
   perNinetyEligible: boolean;
+  group: StatGroupKey;
   /** Explains what the column is and, for a derived stat, roughly how it's calculated -- shown as
    * the header's tooltip so a number is never on screen with no explanation behind it. */
   tooltip: string;
@@ -31,6 +35,7 @@ export const STAT_COLUMNS: StatColumn[] = [
     label: "Goals",
     decimals: 0,
     perNinetyEligible: true,
+    group: "historic",
     tooltip: "Goals scored, summed over the selected gameweek range.",
   },
   {
@@ -38,13 +43,24 @@ export const STAT_COLUMNS: StatColumn[] = [
     label: "Assists",
     decimals: 0,
     perNinetyEligible: true,
+    group: "historic",
     tooltip: "Assists, summed over the selected gameweek range.",
+  },
+  {
+    key: "defensive_contribution",
+    label: "DC",
+    decimals: 0,
+    perNinetyEligible: true,
+    group: "historic",
+    tooltip:
+      "Defensive contribution points: 2 points in a gameweek a player clears the combined tackles/clearances/blocks/interceptions/recoveries threshold for their position, summed over the range.",
   },
   {
     key: "clean_sheets",
     label: "CS",
     decimals: 0,
     perNinetyEligible: true,
+    group: "historic",
     tooltip:
       "Clean sheets: gameweeks the player's team conceded 0 goals while they played 60+ minutes.",
   },
@@ -53,42 +69,24 @@ export const STAT_COLUMNS: StatColumn[] = [
     label: "GC",
     decimals: 0,
     perNinetyEligible: true,
+    group: "historic",
     tooltip: "Goals conceded by the player's team while they were on the pitch.",
-  },
-  {
-    key: "own_goals",
-    label: "OG",
-    decimals: 0,
-    perNinetyEligible: false,
-    tooltip: "Own goals scored.",
   },
   {
     key: "bonus",
     label: "Bonus",
     decimals: 0,
     perNinetyEligible: true,
+    group: "historic",
     tooltip:
       "Bonus points, awarded to the top 3 Bonus Points System (BPS) scorers in each match.",
-  },
-  {
-    key: "yellow_cards",
-    label: "YC",
-    decimals: 0,
-    perNinetyEligible: false,
-    tooltip: "Yellow cards received.",
-  },
-  {
-    key: "red_cards",
-    label: "RC",
-    decimals: 0,
-    perNinetyEligible: false,
-    tooltip: "Red cards received (direct or second yellow).",
   },
   {
     key: "total_points",
     label: "Pts",
     decimals: 0,
     perNinetyEligible: true,
+    group: "points",
     tooltip:
       "Actual FPL points scored, summed over the range. Click a value to see the breakdown by component (goals, assists, clean sheets, bonus, ...).",
   },
@@ -97,6 +95,7 @@ export const STAT_COLUMNS: StatColumn[] = [
     label: "xG",
     decimals: 2,
     perNinetyEligible: true,
+    group: "expected",
     tooltip:
       "Expected goals (Opta), summed over the range: the quality of chances taken, independent of whether they actually went in.",
   },
@@ -105,6 +104,7 @@ export const STAT_COLUMNS: StatColumn[] = [
     label: "xA",
     decimals: 2,
     perNinetyEligible: true,
+    group: "expected",
     tooltip:
       "Expected assists (Opta), summed over the range: the quality of chances created for teammates, independent of whether they actually went in.",
   },
@@ -113,6 +113,7 @@ export const STAT_COLUMNS: StatColumn[] = [
     label: "xGI",
     decimals: 2,
     perNinetyEligible: true,
+    group: "expected",
     tooltip: "Expected goal involvements: xG plus xA, summed over the range.",
   },
   {
@@ -120,10 +121,20 @@ export const STAT_COLUMNS: StatColumn[] = [
     label: "xGC",
     decimals: 2,
     perNinetyEligible: true,
+    group: "expected",
     tooltip:
       "Expected goals conceded by the player's team over the range, from the team's own underlying defensive numbers rather than the goals actually let in.",
   },
 ];
+
+/** Label and CSS class for each colour-tinted header band, in table order. Meta has no entry --
+ * it's deliberately left untinted (see PlayerStatsTable), and the ratio/fixture bands are declared
+ * directly in PlayerStatsTable since they aren't backed by STAT_COLUMNS. */
+export const STAT_GROUP_META: Record<StatGroupKey, { label: string; className: string }> = {
+  historic: { label: "Historic Stats", className: "stats-group-band--historic" },
+  points: { label: "Points", className: "stats-group-band--points" },
+  expected: { label: "Expected", className: "stats-group-band--expected" },
+};
 
 // Average minutes per match played, not total minutes across the range -- two players who
 // played 90 minutes in one game out of five should read the same here, regardless of how wide
@@ -150,6 +161,16 @@ export function formatStat(value: number, column: StatColumn, perNinety: boolean
 
 export function horizonPoints(row: PlayerStatsRowOut): number {
   return row.fixtures.reduce((total, fixture) => total + (fixture.expected_points ?? 0), 0);
+}
+
+/** Total points scored per £m of price, over the selected range -- a cumulative value-for-money
+ * figure, not a rate, so unlike every STAT_COLUMNS entry it is deliberately unaffected by the
+ * per-90 toggle. `price` is null for a player with no current price on record; 0 there or a
+ * (never expected, but zero-guarded) zero price reads as "no value to compute" rather than
+ * dividing by zero. */
+export function pointsPerMillion(row: PlayerStatsRowOut): number {
+  if (row.price === null || row.price === 0) return 0;
+  return row.actuals.total_points / (row.price / 10);
 }
 
 /** Why the Own% column is empty, worded for the column header's tooltip. This page shows

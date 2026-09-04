@@ -26,6 +26,18 @@
   --high-bg: #dcf0e2;
   --high-text: #1c7a3f;
 
+  /* Player Stats column-group bands -- subtle pastel tints in the same lightness/saturation
+     family as the tokens above, one per band, kept to the header row only (see index.css's
+     .stats-group-band--* rules). Points and Next 3 GWs deliberately reuse --gold-soft/--accent-soft
+     rather than adding new tokens, tying into the app's existing "headline number" / "actionable"
+     colour language instead of inventing a third meaning for a similar hue. */
+  --historic-soft: #e4edf7;
+  --historic-text: #3d6a96;
+  --expected-soft: #ece4f7;
+  --expected-text: #7454a3;
+  --ratio-soft: #f5e9ee;
+  --ratio-text: #a24f70;
+
   --radius-lg: 12px;
   --radius-md: 8px;
   --radius-sm: 6px;
@@ -1146,6 +1158,82 @@ button {
   gap: 0.6rem;
 }
 
+/* Two native range inputs stacked exactly on top of each other, each independently draggable by
+   its own thumb -- the track and the runnable-track background are transparent/inert so only a
+   thumb itself is clickable, letting either handle be grabbed even though both inputs share the
+   same position. */
+.dual-range-slider {
+  position: relative;
+  width: 150px;
+  height: 1.1rem;
+}
+
+.dual-range-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--border-strong);
+  border-radius: 999px;
+  transform: translateY(-50%);
+}
+
+.dual-range-track-fill {
+  position: absolute;
+  top: 50%;
+  height: 4px;
+  background: var(--accent);
+  border-radius: 999px;
+  transform: translateY(-50%);
+}
+
+.dual-range-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: none;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.dual-range-input::-webkit-slider-runnable-track {
+  -webkit-appearance: none;
+  background: transparent;
+}
+
+.dual-range-input::-moz-range-track {
+  background: transparent;
+  border: none;
+}
+
+.dual-range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  pointer-events: auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 2px rgba(28, 29, 31, 0.25);
+  cursor: pointer;
+  margin-top: -5px;
+}
+
+.dual-range-input::-moz-range-thumb {
+  pointer-events: auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  box-shadow: 0 1px 2px rgba(28, 29, 31, 0.25);
+  cursor: pointer;
+}
+
 .compare-toggle-row {
   display: flex;
   align-items: center;
@@ -1275,24 +1363,40 @@ button {
    The first two columns (the compare checkbox, then Player) are both stuck to the left edge, so
    a name stays visible while scrolling through the wide stat area -- the checkbox column alone
    being sticky would leave the name itself scrolling away, undoing the reason for pinning at all. */
-.stats-table > tbody > tr > td:first-child,
-.stats-table > thead > tr > th:first-child {
+.stats-table > tbody > tr > td:first-child {
   position: sticky;
   left: 0;
   background: var(--surface);
 }
 
-.stats-table > tbody > tr > td:nth-child(2),
-.stats-table > thead > tr > th:nth-child(2) {
+.stats-table > tbody > tr > td:nth-child(2) {
   text-align: left;
   position: sticky;
   left: 1.6rem;
   background: var(--surface);
 }
 
+/* The header is two rows (a colour-tinted group-band row, then the individual sortable columns),
+   with the checkbox/Player cells spanning both via rowSpan -- so, unlike the body, row 2's own
+   first/second children are NOT the checkbox/Player columns (those only exist once, in row 1) and
+   `:first-child`/`:nth-child(2)` would wrongly catch row 2's Price/Position headers instead.
+   Targeted by class here rather than position for that reason. */
+.stats-table > thead > tr > th.compare-checkbox-cell,
+.stats-table > thead > tr > th.stats-name-header {
+  position: sticky;
+  left: 0;
+  top: 0;
+  background: var(--surface-muted);
+  z-index: 2;
+}
+
+.stats-table > thead > tr > th.stats-name-header {
+  left: 1.6rem;
+  text-align: left;
+}
+
 .stats-table > thead > tr > th {
   position: sticky;
-  top: 0;
   background: var(--surface-muted);
   color: var(--text-muted);
   text-transform: uppercase;
@@ -1302,9 +1406,42 @@ button {
   z-index: 1;
 }
 
-.stats-table > thead > tr > th:first-child,
-.stats-table > thead > tr > th:nth-child(2) {
-  background: var(--surface-muted);
+/* Two independently-sticky header rows: the group-band row pins to the very top, the column row
+   pins directly beneath it. The offset must match the band row's actual rendered height. */
+.stats-table > thead > tr:first-child > th {
+  top: 0;
+}
+
+.stats-table > thead > tr:nth-child(2) > th {
+  top: 1.55rem;
+}
+
+/* Column-group bands (restructure): applied to both the row-1 spanning label and the matching
+   row-2 column headers, so the tint reads as one continuous band across both header rows. Meta
+   deliberately has no modifier class -- it stays the plain --surface-muted header colour above. */
+.stats-table > thead > tr > th.stats-group-band--historic {
+  background: var(--historic-soft);
+  color: var(--historic-text);
+}
+
+.stats-table > thead > tr > th.stats-group-band--points {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+
+.stats-table > thead > tr > th.stats-group-band--expected {
+  background: var(--expected-soft);
+  color: var(--expected-text);
+}
+
+.stats-table > thead > tr > th.stats-group-band--ratio {
+  background: var(--ratio-soft);
+  color: var(--ratio-text);
+}
+
+.stats-table > thead > tr > th.stats-group-band--fixtures {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .stats-table th.sortable {

@@ -1,4 +1,5 @@
 import { TeamOut } from "../api";
+import { DualRangeSlider } from "./DualRangeSlider";
 
 const POSITIONS = ["GK", "DEF", "MID", "FWD"];
 
@@ -99,50 +100,30 @@ export function PlayerStatsFilters({
       <div className="stats-filters-row">
         <label className="stats-range-label">
           Price £{(minPrice / 10).toFixed(1)}m – £{(maxPrice / 10).toFixed(1)}m
-          <span className="stats-range-inputs">
-            <input
-              type="range"
-              min={PRICE_FLOOR}
-              max={PRICE_CEILING}
-              step={5}
-              value={minPrice}
-              onChange={(e) => onPriceChange(Math.min(Number(e.target.value), maxPrice), maxPrice)}
-            />
-            <input
-              type="range"
-              min={PRICE_FLOOR}
-              max={PRICE_CEILING}
-              step={5}
-              value={maxPrice}
-              onChange={(e) => onPriceChange(minPrice, Math.max(Number(e.target.value), minPrice))}
-            />
-          </span>
+          <DualRangeSlider
+            min={PRICE_FLOOR}
+            max={PRICE_CEILING}
+            step={5}
+            valueMin={minPrice}
+            valueMax={maxPrice}
+            onChange={onPriceChange}
+            ariaLabelMin="Minimum price"
+            ariaLabelMax="Maximum price"
+          />
         </label>
 
         <label className="stats-range-label">
           Gameweeks {gameweekFrom} – {gameweekTo}
-          <span className="stats-range-inputs">
-            <input
-              type="range"
-              min={1}
-              max={maxGameweek}
-              step={1}
-              value={gameweekFrom}
-              onChange={(e) =>
-                onGameweekRangeChange(Math.min(Number(e.target.value), gameweekTo), gameweekTo)
-              }
-            />
-            <input
-              type="range"
-              min={1}
-              max={maxGameweek}
-              step={1}
-              value={gameweekTo}
-              onChange={(e) =>
-                onGameweekRangeChange(gameweekFrom, Math.max(Number(e.target.value), gameweekFrom))
-              }
-            />
-          </span>
+          <DualRangeSlider
+            min={1}
+            max={maxGameweek}
+            step={1}
+            valueMin={gameweekFrom}
+            valueMax={gameweekTo}
+            onChange={onGameweekRangeChange}
+            ariaLabelMin="From gameweek"
+            ariaLabelMax="To gameweek"
+          />
         </label>
       </div>
     </div>

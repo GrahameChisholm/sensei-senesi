@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import { ComponentBreakdownOut, OwnershipStatus, PlayerStatsRowOut, TeamOut } from "../api";
 import {
   expectedPointsColour,
@@ -10,13 +10,16 @@ import {
   OWNERSHIP_STATUS_TOOLTIP,
   RATIO_COLUMN_TOOLTIP,
   STAT_COLUMNS,
+  STAT_GROUP_META,
   StatColumn,
+  StatGroupKey,
   StatKey,
   averageMinutesPerMatch,
   formatRatio,
   formatStat,
   horizonPoints,
   overperformanceBadge,
+  pointsPerMillion,
   ratioSortValue,
   ratioTooltip,
   ratioVerdict,
@@ -70,20 +73,32 @@ function ActualBreakdownPopover({ breakdown }: { breakdown: ComponentBreakdownOu
 type SortKey =
   | "name"
   | "price"
+  | "position"
   | "apps"
   | "minutes"
   | "ownership_percent"
+  | "points_per_million"
   | "attacking_ratio"
   | "defensive_ratio"
   | "horizon_points"
   | StatKey;
 
+function columnsForGroup(group: StatGroupKey): StatColumn[] {
+  return STAT_COLUMNS.filter((column) => column.group === group);
+}
+
+// 2 pinned (checkbox, Player) + 5 Meta (Price, Position, Apps, Mins/Match, Own%) + every
+// STAT_COLUMNS entry + 1 (Points/£m, not a STAT_COLUMNS entry) + 2 ratio columns + 3 fixtures.
+const TOTAL_COLUMNS = 2 + 5 + STAT_COLUMNS.length + 1 + 2 + 3;
+
 function sortValue(row: PlayerStatsRowOut, sortKey: SortKey, perNinety: boolean): number | string {
   if (sortKey === "name") return row.name.toLowerCase();
   if (sortKey === "price") return row.price ?? 0;
+  if (sortKey === "position") return row.position;
   if (sortKey === "apps") return row.actuals.apps;
   if (sortKey === "minutes") return averageMinutesPerMatch(row);
   if (sortKey === "ownership_percent") return row.actuals.ownership_percent ?? 0;
+  if (sortKey === "points_per_million") return pointsPerMillion(row);
   if (sortKey === "attacking_ratio") return ratioSortValue(row.actuals.attacking_ratio);
   if (sortKey === "defensive_ratio") return ratioSortValue(row.actuals.defensive_ratio);
   if (sortKey === "horizon_points") return horizonPoints(row);
@@ -98,6 +113,7 @@ interface PlayerStatsTableProps {
   ownershipStatus: OwnershipStatus;
   selectedIds: Set<number>;
   onToggleSelected: (playerId: number) => void;
+  horizonGameweeks: number[];
 }
 
 export function PlayerStatsTable({
@@ -107,6 +123,7 @@ export function PlayerStatsTable({
   ownershipStatus,
   selectedIds,
   onToggleSelected,
+  horizonGameweeks,
 }: PlayerStatsTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("total_points");
   const [sortDescending, setSortDescending] = useState(true);
@@ -162,22 +179,72 @@ export function PlayerStatsTable({
         <thead>
           <tr>
             <th
+              rowSpan={2}
               className="compare-checkbox-cell"
               title="Check a player to add them to the comparison set."
             />
             <th
-              className="sortable"
+              rowSpan={2}
+              className="sortable stats-name-header"
               onClick={() => toggleSort("name")}
               title="Player name and team. Badges flag low confidence in the projection, the designated penalty taker, and running hot/cold on their underlying numbers."
             >
               Player{sortIndicator("name")}
             </th>
+            <th colSpan={5} title="Price, position, appearances, minutes, and mini-league ownership.">
+              Meta
+            </th>
+            <th
+              colSpan={columnsForGroup("historic").length}
+              className={STAT_GROUP_META.historic.className}
+              title="Actual output over the selected gameweek range."
+            >
+              {STAT_GROUP_META.historic.label}
+            </th>
+            <th
+              colSpan={columnsForGroup("points").length + 1}
+              className={STAT_GROUP_META.points.className}
+              title="Points scored, and points per £m of price."
+            >
+              {STAT_GROUP_META.points.label}
+            </th>
+            <th
+              colSpan={columnsForGroup("expected").length}
+              className={STAT_GROUP_META.expected.className}
+              title="The underlying process (Opta xG/xA/xGC) behind what actually happened."
+            >
+              {STAT_GROUP_META.expected.label}
+            </th>
+            <th
+              colSpan={2}
+              className="stats-group-band--ratio"
+              title="Actual output against the underlying expected numbers -- running hot, cold, or in line with the process."
+            >
+              Expected v Performance
+            </th>
+            <th
+              colSpan={3}
+              className="sortable stats-group-band--fixtures"
+              onClick={() => toggleSort("horizon_points")}
+              title="Predicted expected points for each of the next 3 gameweeks, from the engine's projections. Sorts by the 3-gameweek total; click a cell to see that gameweek's breakdown."
+            >
+              Next 3 GWs{sortIndicator("horizon_points")}
+            </th>
+          </tr>
+          <tr>
             <th
               className="sortable"
               onClick={() => toggleSort("price")}
               title="Current FPL price in £m."
             >
               Price{sortIndicator("price")}
+            </th>
+            <th
+              className="sortable"
+              onClick={() => toggleSort("position")}
+              title="Playing position."
+            >
+              Pos{sortIndicator("position")}
             </th>
             <th
               className="sortable"
@@ -193,10 +260,28 @@ export function PlayerStatsTable({
             >
               Mins/Match{sortIndicator("minutes")}
             </th>
-            {STAT_COLUMNS.map((column) => (
+            <th
+              className="sortable"
+              onClick={() => toggleSort("ownership_percent")}
+              title={OWNERSHIP_STATUS_TOOLTIP[ownershipStatus]}
+            >
+              Own%{sortIndicator("ownership_percent")}
+            </th>
+            {columnsForGroup("historic").map((column) => (
               <th
                 key={column.key}
-                className="sortable"
+                className={`sortable ${STAT_GROUP_META.historic.className}`}
+                onClick={() => toggleSort(column.key)}
+                title={column.tooltip}
+              >
+                {column.label}
+                {sortIndicator(column.key)}
+              </th>
+            ))}
+            {columnsForGroup("points").map((column) => (
+              <th
+                key={column.key}
+                className={`sortable ${STAT_GROUP_META.points.className}`}
                 onClick={() => toggleSort(column.key)}
                 title={column.tooltip}
               >
@@ -205,40 +290,48 @@ export function PlayerStatsTable({
               </th>
             ))}
             <th
-              className="sortable"
+              className={`sortable ${STAT_GROUP_META.points.className}`}
+              onClick={() => toggleSort("points_per_million")}
+              title="Total points scored per £1m of current price, summed over the selected range -- a cumulative value-for-money figure, unaffected by the Per 90 toggle."
+            >
+              Pts/£m{sortIndicator("points_per_million")}
+            </th>
+            {columnsForGroup("expected").map((column) => (
+              <th
+                key={column.key}
+                className={`sortable ${STAT_GROUP_META.expected.className}`}
+                onClick={() => toggleSort(column.key)}
+                title={column.tooltip}
+              >
+                {column.label}
+                {sortIndicator(column.key)}
+              </th>
+            ))}
+            <th
+              className="sortable stats-group-band--ratio"
               onClick={() => toggleSort("attacking_ratio")}
               title={RATIO_COLUMN_TOOLTIP.attacking}
             >
               vs xGI{sortIndicator("attacking_ratio")}
             </th>
             <th
-              className="sortable"
+              className="sortable stats-group-band--ratio"
               onClick={() => toggleSort("defensive_ratio")}
               title={RATIO_COLUMN_TOOLTIP.defensive}
             >
               vs xCS{sortIndicator("defensive_ratio")}
             </th>
-            <th
-              className="sortable"
-              onClick={() => toggleSort("ownership_percent")}
-              title={OWNERSHIP_STATUS_TOOLTIP[ownershipStatus]}
-            >
-              Own%{sortIndicator("ownership_percent")}
-            </th>
-            <th
-              colSpan={3}
-              className="sortable"
-              onClick={() => toggleSort("horizon_points")}
-              title="Predicted expected points for each of the next 3 gameweeks, from the engine's projections. Sorts by the 3-gameweek total; click a cell to see that gameweek's breakdown."
-            >
-              Next 3 GWs{sortIndicator("horizon_points")}
-            </th>
+            {[0, 1, 2].map((i) => (
+              <th key={i} className="stats-group-band--fixtures">
+                {horizonGameweeks[i] !== undefined ? `GW ${horizonGameweeks[i]}` : ""}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
           {topPadding > 0 && (
             <tr style={{ height: topPadding }}>
-              <td colSpan={8 + STAT_COLUMNS.length} />
+              <td colSpan={TOTAL_COLUMNS} />
             </tr>
           )}
           {visibleRows.map((row) => (
@@ -276,31 +369,39 @@ export function PlayerStatsTable({
                 </span>
               </td>
               <td>{row.price !== null ? `£${(row.price / 10).toFixed(1)}m` : "—"}</td>
+              <td>{row.position}</td>
               <td>{row.actuals.apps}</td>
               <td>{averageMinutesPerMatch(row).toFixed(1)}</td>
+              <td>
+                {row.actuals.ownership_percent !== null
+                  ? `${row.actuals.ownership_percent.toFixed(1)}%`
+                  : "—"}
+              </td>
               {STAT_COLUMNS.map((column) => {
                 const isTotalPoints = column.key === "total_points";
                 return (
-                  <td
-                    key={column.key}
-                    className={isTotalPoints ? "clickable-cell" : undefined}
-                    onClick={
-                      isTotalPoints
-                        ? () =>
-                            setOpenActualBreakdown((prev) =>
-                              prev === row.player_id ? null : row.player_id,
-                            )
-                        : undefined
-                    }
-                    style={{ position: isTotalPoints ? "relative" : undefined }}
-                  >
-                    {formatStat(statValue(row, column, perNinety), column, perNinety)}
-                    {isTotalPoints && openActualBreakdown === row.player_id && (
-                      <div className="popover-anchor">
-                        <ActualBreakdownPopover breakdown={row.actuals.points_breakdown} />
-                      </div>
-                    )}
-                  </td>
+                  <Fragment key={column.key}>
+                    <td
+                      className={isTotalPoints ? "clickable-cell" : undefined}
+                      onClick={
+                        isTotalPoints
+                          ? () =>
+                              setOpenActualBreakdown((prev) =>
+                                prev === row.player_id ? null : row.player_id,
+                              )
+                          : undefined
+                      }
+                      style={{ position: isTotalPoints ? "relative" : undefined }}
+                    >
+                      {formatStat(statValue(row, column, perNinety), column, perNinety)}
+                      {isTotalPoints && openActualBreakdown === row.player_id && (
+                        <div className="popover-anchor">
+                          <ActualBreakdownPopover breakdown={row.actuals.points_breakdown} />
+                        </div>
+                      )}
+                    </td>
+                    {isTotalPoints && <td>{pointsPerMillion(row).toFixed(1)}</td>}
+                  </Fragment>
                 );
               })}
               {(["attacking", "defensive"] as const).map((kind) => {
@@ -322,11 +423,6 @@ export function PlayerStatsTable({
                   </td>
                 );
               })}
-              <td>
-                {row.actuals.ownership_percent !== null
-                  ? `${row.actuals.ownership_percent.toFixed(1)}%`
-                  : "—"}
-              </td>
               {row.fixtures.map((fixture) => (
                 <td
                   key={fixture.gameweek}
@@ -362,7 +458,7 @@ export function PlayerStatsTable({
           ))}
           {bottomPadding > 0 && (
             <tr style={{ height: bottomPadding }}>
-              <td colSpan={8 + STAT_COLUMNS.length} />
+              <td colSpan={TOTAL_COLUMNS} />
             </tr>
           )}
         </tbody>
