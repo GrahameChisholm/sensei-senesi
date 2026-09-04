@@ -53,6 +53,9 @@ UNDERSTAT_TO_FPL_TEAM_NAME = {
     "Manchester United": "Man Utd",
     "Wolverhampton Wanderers": "Wolves",
     "Nottingham Forest": "Nott'm Forest",
+    "Coventry": "Coventry City",
+    "Hull": "Hull City",
+    "Ipswich": "Ipswich Town",
 }
 
 

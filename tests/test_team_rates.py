@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from engine.data.team_rates import (
+    UNDERSTAT_TO_FPL_TEAM_NAME,
     TeamRateSnapshot,
     _league_venue_multipliers,
     _team_prior_match_count,
@@ -16,7 +17,27 @@ from engine.data.team_rates import (
     _team_rate_asof_shrunk,
     _team_venue_multipliers,
     build_current_team_rates,
+    build_team_rate_histories,
 )
+
+
+def test_build_team_rate_histories_applies_the_understat_to_fpl_crosswalk():
+    # Understat's own spelling for a promoted club often drops the "City"/"Town" suffix FPL uses --
+    # a name missing from the crosswalk silently fails to join up with FPL's team IDs downstream
+    # (a real bug this test guards against regressing), so every entry here must resolve to the
+    # exact FPL-side name a live team lookup would use.
+    for understat_name, fpl_name in UNDERSTAT_TO_FPL_TEAM_NAME.items():
+        history = pd.DataFrame(
+            {
+                "team_title": [understat_name],
+                "date": pd.to_datetime(["2025-08-01"], utc=True),
+                "xG": [1.0],
+                "xGA": [1.0],
+                "h_a": ["h"],
+            }
+        )
+        result = build_team_rate_histories(history)
+        assert fpl_name in result, f"{understat_name!r} did not resolve to {fpl_name!r}"
 
 
 def test_team_prior_match_count_counts_strictly_prior_matches():
