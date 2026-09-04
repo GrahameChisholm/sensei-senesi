@@ -171,10 +171,21 @@ def merge_cold_start_projections(
         for row in live_elements.itertuples()
     }
     price_rank_by_player: dict[int, int] = {}
-    for (_team_id, _position), group in live_elements.assign(
+    # `method="first"` (not "min"), sorted by element id first, to match
+    # engine.data.cold_start.fit_cold_start_priors' own tiebreak on the fitting side (its
+    # groupby(["element", "team", "position"]) sorts by element ascending before ranking within
+    # each (team, position) group). `method="min"` gave every player tied on price the SAME rank
+    # ("1"), which silently defeated the whole point of within-club price-rank differentiation for
+    # any club whose backup shares a price with the starter -- the common case at the £4.0m/£4.5m
+    # price floor, exactly where backup goalkeepers sit. A real 2026/27 pull had both of one club's
+    # goalkeepers land on an identical rank-1 (hence identical) cold-start projection.
+    ranked_elements = live_elements.sort_values("id").assign(
         _position=live_elements["id"].map(position_by_player)
-    ).groupby([live_elements["team"], "_position"]):
-        ranks = group["now_cost"].rank(ascending=False, method="min").astype(int)
+    )
+    for (_team_id, _position), group in ranked_elements.groupby(
+        [ranked_elements["team"], "_position"]
+    ):
+        ranks = group["now_cost"].rank(ascending=False, method="first").astype(int)
         price_rank_by_player.update(zip(group["id"].astype(int), ranks, strict=True))
     for row in live_elements.itertuples():
         player_id = int(row.id)

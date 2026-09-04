@@ -294,6 +294,57 @@ class TestMergeColdStartProjections:
             result[101].gameweeks[1].expected_points > result[102].gameweeks[1].expected_points
         ), "the pricier (rank-1) player must outproject the cheaper (rank-2) one at the same bucket"
 
+    def test_within_club_rank_breaks_ties_on_equal_price_rather_than_collapsing_them(self):
+        # Two live players at the SAME club, position, AND price -- the real case that silently
+        # defeated the whole rank differentiator (`method="min"` gives every tied player rank 1),
+        # concretely the backup-goalkeeper-at-the-price-floor case. With a real tiebreak, one of
+        # the two must land on rank tier "1" and the other on "2", not both on "1".
+        rows = []
+        for minutes, goals in ((88, 1), (10, 0)):
+            for _ in range(15):
+                rows.append(
+                    {
+                        "position": "MID",
+                        "value": 60,
+                        "minutes": minutes,
+                        "goals_scored": goals,
+                        "assists": 0,
+                        "clean_sheets": 0,
+                        "goals_conceded": 1,
+                        "defensive_contribution": 0,
+                        "saves": 0,
+                        "bonus": 0,
+                        "yellow_cards": 0,
+                        "red_cards": 0,
+                        "penalties_missed": 0,
+                        "own_goals": 0,
+                        "team": "Newclub",
+                        "element": "first" if minutes == 88 else "second",
+                    }
+                )
+        priors = fit_cold_start_priors(pd.DataFrame(rows))
+
+        live_elements = pd.DataFrame(
+            [
+                {"id": 101, "team": TEAM_A, "element_type": 3, "now_cost": 60},
+                {"id": 102, "team": TEAM_A, "element_type": 3, "now_cost": 60},
+            ]
+        )
+        team_id_by_player = {101: TEAM_A, 102: TEAM_A}
+        team_gws = {(TEAM_A, 1)}
+
+        result, cold_start_ids = merge_cold_start_projections(
+            live_elements, {}, priors, team_id_by_player, team_gws, [1]
+        )
+
+        assert cold_start_ids == {101, 102}
+        first = result[101].gameweeks[1].expected_points
+        second = result[102].gameweeks[1].expected_points
+        assert first != second, (
+            "two same-price, same-club, same-position cold-start players must not collapse onto "
+            "an identical projection"
+        )
+
 
 class TestAssembleProjectionCache:
     def _cache(self):
