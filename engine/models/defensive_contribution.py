@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import nbinom
 
+from engine.rates import shrink_toward_prior
 from engine.scoring import DEFENSIVE_CONTRIBUTION_POINTS, DEFENSIVE_CONTRIBUTION_THRESHOLD, GK
 
 # Overdispersion parameter (alpha) for the Negative Binomial: variance = mu + alpha * mu^2.
@@ -35,6 +36,19 @@ DEFAULT_OVERDISPERSION = 0.15
 # Neutral default when no possession data is supplied for a fixture -- an exactly average
 # opponent, per BUILD_PLAN 2.5's "opponent possession share (or pass-volume)" framing.
 LEAGUE_AVERAGE_POSSESSION_SHARE = 0.5
+
+# Ceiling on a single match's implied defensive-action rate per 90, passed to
+# engine.rates.ewma_rate_asof/latest_ewma_rate so a low-minutes cameo can't dominate a thin
+# sample -- the same fix-the-input-at-the-source defect goals.py's MAX_NPXG_PER_90_PER_MATCH and
+# assists.py's MAX_XA_PER_90_PER_MATCH were added for, never applied here even though dc_per_90
+# is built the exact same way (a per-match count divided by that match's own minutes, EWMA'd).
+# Unlike those two this rate had NO thin-sample protection at all -- neither a cap nor shrinkage
+# -- so a single match's rate passed straight through as the player's "current" rate. A real
+# 2026/27 GW3 pull found this let a 13-minute cameo (5 actions) imply 28.3 actions/90 sustained
+# indefinitely, above the highest rate any established (170+ minute) player in the pool actually
+# carried (18.5). Set comfortably above that real ceiling so a genuinely high-volume destroyer's
+# rate is untouched.
+MAX_DC_ACTIONS_PER_90_PER_MATCH = 25.0
 
 
 def opponent_possession_adjustment(
@@ -67,6 +81,24 @@ def expected_defensive_action_rate(
         opponent_possession_share, league_avg_possession_share
     )
     return player_actions_per_90 * adjustment * (expected_minutes / 90.0)
+
+
+def shrunk_player_dc_per_90(
+    player_dc_per_90: float,
+    individual_weight: float,
+    league_avg_dc_per_90: float,
+    shrinkage_k: float,
+) -> float:
+    """Blend a thin-sample player's own defensive-action rate toward the league-average-by-
+    position rate (symmetric with ``engine.models.cards.project_cards``'s own shrinkage, not
+    goals.py/assists.py's team-xG-derived prior -- defensive actions have no natural team-level
+    analogue the way goals/assists do, so the position's own base rate is the right prior).
+    ``individual_weight`` should come from the same vaastav-minutes-based evidence weight the
+    card rates already use (``engine.rates.effective_sample_minutes``), since ``dc_per_90`` is
+    computed from that same ``minutes`` column, not Understat's."""
+    return shrink_toward_prior(
+        player_dc_per_90, individual_weight, league_avg_dc_per_90, shrinkage_k
+    )
 
 
 def negative_binomial_params(
@@ -153,6 +185,9 @@ def project_defensive_contribution(
     minutes_given_1_to_59: float | None = None,
     p_60_plus: float | None = None,
     minutes_given_60_plus: float | None = None,
+    individual_weight: float | None = None,
+    league_avg_dc_per_90: float | None = None,
+    shrinkage_k: float = 0.0,
 ) -> DefensiveContributionProjection:
     """Top-level entry point: combine the opponent-possession-adjusted rate and the Negative
     Binomial threshold probability into one projection.
@@ -170,12 +205,27 @@ def project_defensive_contribution(
     expectation over the two non-zero minutes buckets, which is what :mod:`engine.pipeline` does.
     Omitting them reproduces the exact prior (point-estimate) behavior unchanged, so every existing
     standalone/backtest-in-isolation caller is unaffected.
+
+    Shrinkage toward the league-average-by-position rate (see :func:`shrunk_player_dc_per_90`)
+    only kicks in when the caller supplies ``individual_weight``, ``league_avg_dc_per_90``, and a
+    positive ``shrinkage_k`` — omitting them uses ``player_actions_per_90`` unmodified, the same
+    opt-in shape ``engine.models.cards.project_cards`` and ``engine.models.goals.project_goals``
+    already use. Unlike those two components, ``player_actions_per_90`` previously had no
+    thin-sample protection at all (see :data:`MAX_DC_ACTIONS_PER_90_PER_MATCH`'s own docstring for
+    the real outlier this caused) — winsorizing the input rate at the source
+    (``engine.rates.ewma_rate_asof``'s ``max_rate_per_90``) and shrinking it here are the two
+    complementary fixes, mirroring how goals/assists combine both.
     """
     if position == GK:
         raise ValueError("defensive contribution is not modelled for GK")
     if position not in DEFENSIVE_CONTRIBUTION_THRESHOLD:
         raise ValueError(f"unknown position: {position!r}")
     threshold = DEFENSIVE_CONTRIBUTION_THRESHOLD[position]
+
+    if individual_weight is not None and league_avg_dc_per_90 is not None and shrinkage_k > 0:
+        player_actions_per_90 = shrunk_player_dc_per_90(
+            player_actions_per_90, individual_weight, league_avg_dc_per_90, shrinkage_k
+        )
 
     bucket_args = (p_1_to_59, minutes_given_1_to_59, p_60_plus, minutes_given_60_plus)
     if any(arg is not None for arg in bucket_args):

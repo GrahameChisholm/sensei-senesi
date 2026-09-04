@@ -15,6 +15,7 @@ from engine.models.defensive_contribution import (
     opponent_possession_adjustment,
     probability_clears_threshold,
     project_defensive_contribution,
+    shrunk_player_dc_per_90,
 )
 from engine.scoring import DEFENSIVE_CONTRIBUTION_POINTS
 
@@ -191,6 +192,59 @@ def test_project_defensive_contribution_bucket_weighted_matches_manual_expectati
         minutes_given_60_plus=m_60,
     )
     assert result.p_clears_threshold == pytest.approx(expected)
+
+
+def test_shrunk_player_dc_per_90_pulls_thin_sample_toward_prior():
+    shrunk = shrunk_player_dc_per_90(
+        player_dc_per_90=28.0, individual_weight=13.0, league_avg_dc_per_90=7.0, shrinkage_k=400.0
+    )
+    assert shrunk < 28.0
+    assert shrunk == pytest.approx((13.0 * 28.0 + 400.0 * 7.0) / (13.0 + 400.0))
+
+
+def test_shrunk_player_dc_per_90_barely_moves_established_sample():
+    thin = shrunk_player_dc_per_90(
+        10.0, individual_weight=13.0, league_avg_dc_per_90=7.0, shrinkage_k=400.0
+    )
+    established = shrunk_player_dc_per_90(
+        10.0, individual_weight=2000.0, league_avg_dc_per_90=7.0, shrinkage_k=400.0
+    )
+    assert abs(established - 10.0) < abs(thin - 10.0)
+    assert established == pytest.approx(10.0, abs=1.0)
+
+
+def test_project_defensive_contribution_shrinkage_reduces_thin_sample_probability():
+    unshrunk = project_defensive_contribution(
+        "DEF", player_actions_per_90=28.0, opponent_possession_share=0.5, expected_minutes=90.0
+    )
+    shrunk = project_defensive_contribution(
+        "DEF",
+        player_actions_per_90=28.0,
+        opponent_possession_share=0.5,
+        expected_minutes=90.0,
+        individual_weight=13.0,
+        league_avg_dc_per_90=7.0,
+        shrinkage_k=400.0,
+    )
+    assert shrunk.p_clears_threshold < unshrunk.p_clears_threshold
+
+
+def test_project_defensive_contribution_shrinkage_disabled_by_default():
+    # Omitting the shrinkage kwargs must reproduce exactly the pre-shrinkage behavior, matching
+    # project_cards'/project_goals' own opt-in convention.
+    with_none = project_defensive_contribution(
+        "DEF", player_actions_per_90=10.0, opponent_possession_share=0.5, expected_minutes=90.0
+    )
+    with_zero_k = project_defensive_contribution(
+        "DEF",
+        player_actions_per_90=10.0,
+        opponent_possession_share=0.5,
+        expected_minutes=90.0,
+        individual_weight=13.0,
+        league_avg_dc_per_90=7.0,
+        shrinkage_k=0.0,
+    )
+    assert with_none.p_clears_threshold == pytest.approx(with_zero_k.p_clears_threshold)
 
 
 def test_fit_overdispersion_recovers_positive_alpha_for_overdispersed_data():

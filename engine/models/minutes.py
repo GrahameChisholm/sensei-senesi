@@ -418,3 +418,138 @@ class MinutesModel:
                 )
             )
         return results
+
+
+# Real 22-a-side (11 vs 11) split for one club's own starting XI. A club normally starts 1 GK and
+# 10 outfield players in one fixture — the same real invariant fixture_minutes_coverage already
+# checks across BOTH squads combined (target 22). Checking it per club, split by position, catches
+# what the pooled fixture check can't: two clubs whose totals happen to average out to 22 (one
+# over-covered, one under) still each individually diverge from a real XI. A real 2026/27 GW3 pull
+# found club-level outfield p_60_plus sums ranging 8.7 to 15.3 against this target of 10, and two
+# of one club's own goalkeepers both individually rated 76% to start the same match.
+OUTFIELD_STARTERS_PER_CLUB = 10.0
+GOALKEEPER_STARTERS_PER_CLUB = 1.0
+
+# Ceiling an individual player's p_60_plus is allowed to reach when normalize_within_club scales it
+# up. Never exactly 1.0 -- even the most nailed-on starter carries some real chance of a late
+# fitness call, so a hard ceiling below 1.0 keeps the rescaled distribution honest about that,
+# rather than the rescale itself manufacturing false certainty.
+NORMALIZE_WITHIN_CLUB_CEILING = 0.97
+
+
+def _rescale_p_60_plus_to_target(values: list[float], target: float) -> list[float]:
+    """Proportionally rescale ``values`` so they sum to ``target``, capping any individual value
+    at :data:`NORMALIZE_WITHIN_CLUB_CEILING` and redistributing the remainder among the
+    still-uncapped values (a standard bounded water-filling rescale) rather than letting a naive
+    single-pass proportional scale push a value above 1 -- MinutesDistribution's own validation
+    would reject that outright, and a value close to but under 1 would still overstate how certain
+    any real minutes projection should be.
+
+    Values already at or above zero are all treated as eligible for scaling -- callers exclude a
+    known-unavailable player from ``values`` entirely before calling this, rather than relying on
+    this function to recognise one (see :func:`normalize_within_club`)."""
+    n = len(values)
+    if n == 0:
+        return []
+    current_sum = sum(values)
+    if current_sum <= 0.0:
+        # No signal to redistribute (every eligible player already at exactly 0) -- leave as is
+        # rather than dividing by zero or inventing a uniform split with no evidence behind it.
+        return list(values)
+
+    remaining_target = target
+    uncapped_indices = set(range(n))
+    result = [0.0] * n
+    # At most n iterations: each pass caps at least one more value, or terminates.
+    for _ in range(n):
+        if not uncapped_indices:
+            break
+        uncapped_sum = sum(values[i] for i in uncapped_indices)
+        if uncapped_sum <= 0.0:
+            break
+        scale = remaining_target / uncapped_sum
+        newly_capped = [
+            i for i in uncapped_indices if values[i] * scale > NORMALIZE_WITHIN_CLUB_CEILING
+        ]
+        if not newly_capped:
+            for i in uncapped_indices:
+                result[i] = values[i] * scale
+            return result
+        for i in newly_capped:
+            result[i] = NORMALIZE_WITHIN_CLUB_CEILING
+            remaining_target -= NORMALIZE_WITHIN_CLUB_CEILING
+            uncapped_indices.discard(i)
+    # Every remaining value ended up capped (or the loop otherwise exhausted its passes) -- assign
+    # whatever's left proportionally to the still-uncapped set, clipped defensively.
+    for i in uncapped_indices:
+        result[i] = min(values[i], NORMALIZE_WITHIN_CLUB_CEILING)
+    return result
+
+
+def normalize_within_club(
+    distributions: list[MinutesDistribution],
+    is_known_unavailable: list[bool],
+    target: float = OUTFIELD_STARTERS_PER_CLUB,
+) -> list[MinutesDistribution]:
+    """Rescale one club's own ``p_60_plus`` values so they sum close to ``target`` rather than
+    whatever the per-player minutes model happened to independently predict. Called once per club
+    per position group (see :mod:`engine.pipeline`'s caller) — once for outfield players with
+    ``target=`` :data:`OUTFIELD_STARTERS_PER_CLUB`, once for goalkeepers with ``target=``
+    :data:`GOALKEEPER_STARTERS_PER_CLUB` — since a real starting XI's own goalkeeper/outfield split
+    (1 vs 10) is a separate physical constraint from the outfield total.
+
+    Every prior stage of this engine scores one player at a time — the minutes model, every
+    downstream component, even :func:`MinutesModel.predict` itself, has no way to see that its own
+    predictions, summed across one club's own squad, must respect a real physical constraint (one
+    XI, one goalkeeper). A real 2026/27 GW3 pull found this un-checked: club-level outfield
+    p_60_plus sums ranged 8.7 to 15.3 against a true 10, and two goalkeepers at the same club both
+    individually rated 76% to start.
+
+    ``is_known_unavailable`` (parallel to ``distributions``) marks each player already floored by
+    :data:`KNOWN_UNAVAILABLE_P_ZERO` — excluded entirely from the rescale (their ``p_60_plus`` is
+    already 0.0 and must stay there; rescaling would otherwise be free to inflate an injured
+    player's minutes back up purely to make the club total add up).
+
+    ``p_zero``/``p_1_to_59`` are adjusted alongside ``p_60_plus`` to keep each row's own three
+    buckets summing to exactly 1: the probability mass gained or lost by ``p_60_plus`` is taken
+    from, or returned to, ``p_zero`` and ``p_1_to_59`` in proportion to their existing split (the
+    minimal-assumption redistribution — this function has no basis to prefer moving mass from one
+    of those two buckets over the other).
+    """
+    if len(distributions) != len(is_known_unavailable):
+        raise ValueError("distributions and is_known_unavailable must be the same length")
+    if not distributions:
+        return []
+
+    eligible_indices = [i for i, excluded in enumerate(is_known_unavailable) if not excluded]
+    eligible_p_60_plus = [distributions[i].p_60_plus for i in eligible_indices]
+    rescaled = _rescale_p_60_plus_to_target(eligible_p_60_plus, target)
+    new_p_60_plus_by_index = dict(zip(eligible_indices, rescaled, strict=True))
+
+    results: list[MinutesDistribution] = []
+    for i, distribution in enumerate(distributions):
+        if i not in new_p_60_plus_by_index:
+            results.append(distribution)
+            continue
+        new_p_60_plus = new_p_60_plus_by_index[i]
+        old_total_low = distribution.p_zero + distribution.p_1_to_59
+        new_total_low = 1.0 - new_p_60_plus
+        if old_total_low > 0.0:
+            factor = new_total_low / old_total_low
+            new_p_zero = distribution.p_zero * factor
+            new_p_1_to_59 = distribution.p_1_to_59 * factor
+        else:
+            # p_60_plus was already 1.0 (no low-bucket mass to scale) -- split whatever's now
+            # freed/needed evenly between the two buckets as a neutral fallback.
+            new_p_zero = new_total_low / 2.0
+            new_p_1_to_59 = new_total_low / 2.0
+        results.append(
+            MinutesDistribution(
+                p_zero=new_p_zero,
+                p_1_to_59=new_p_1_to_59,
+                p_60_plus=new_p_60_plus,
+                expected_minutes_given_1_to_59=distribution.expected_minutes_given_1_to_59,
+                expected_minutes_given_60_plus=distribution.expected_minutes_given_60_plus,
+            )
+        )
+    return results

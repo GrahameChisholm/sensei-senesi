@@ -93,6 +93,7 @@ from engine.models.clean_sheets import (
 )
 from engine.models.defensive_contribution import (
     DEFAULT_OVERDISPERSION,
+    MAX_DC_ACTIONS_PER_90_PER_MATCH,
     expected_defensive_action_rate,
     fit_overdispersion,
 )
@@ -214,6 +215,38 @@ OWN_GOAL_SHRINKAGE_K = 500.0
 # matches — a much smaller prior weight than the card constants above is appropriate. Initial
 # evidence-based value, not yet swept.
 SAVE_RATE_SHRINKAGE_K = 90.0
+
+# Defensive-contribution thin-sample-rate shrinkage strength, in effective-minutes units -- see
+# MAX_DC_ACTIONS_PER_90_PER_MATCH's own comment for why dc_per_90 needed thin-sample protection at
+# all (previously neither a per-match winsorization cap nor shrinkage, the one per-player rate this
+# engine estimates that had none).
+#
+# Swept on the real 2025/26 walk-forward (the one season with real DC archive data), scored against
+# a thin-cohort MAE (card_effective_minutes < 100) and an established-cohort MAE
+# (card_effective_minutes >= 400), not pooled DC MAE alone -- pooled MAE moved by only 0.0056
+# across the whole {0..800} range while the thin cohort (n=3498) moved by 0.0112 (a 22% relative
+# improvement) and the established cohort (n=7692) moved by 0.0092 the WRONG way, proving pooled
+# MAE is too diluted by the larger established cohort to see what this constant actually trades
+# off, the same defect GOALS_SHRINKAGE_K's own sweep notes for the played-only objective:
+#
+#     k       thin_MAE  established_MAE  pooled_DC_MAE  worst_thin_outlier(pts, ceiling 2.0)
+#     0       0.0505    0.3875           0.2498         1.313
+#     20      0.0429    0.3876           0.2481         0.824
+#     50      0.0410    0.3879           0.2477         0.728
+#     100     0.0400    0.3885           0.2478         0.633
+#     200     0.0395    0.3898           0.2486         0.540
+#     400     0.0394    0.3924           0.2504         0.469
+#     800     0.0393    0.3967           0.2533         0.464
+#
+# Thin-cohort MAE plateaus hard past k=100 (0.0400 -> 0.0393 all the way to k=800, versus 0.0505 at
+# k=0) while established-cohort MAE keeps getting worse the whole way, and pooled DC MAE bottoms
+# out at k=50-100 -- k=400 (this constant's first, unswept, placeholder value) sat well past the
+# point of diminishing returns on the metric it exists for, while paying an avoidable cost on
+# established players. k=100 captures 94% of the total achievable thin-cohort improvement
+# ((0.0505-0.0400)/(0.0505-0.0393)), ties the pooled-MAE optimum, costs only +0.26% relative on the
+# established cohort, and still more than halves the worst thin-sample outlier versus no shrinkage
+# at all. Revisit with the same sweep once real minutes accumulate across more seasons of DC data.
+DC_SHRINKAGE_K = 100.0
 
 __all__ = [
     "DEFAULT_CACHE_DIR",
@@ -1129,7 +1162,13 @@ def engineer_features(
     dc_data_available = "defensive_contribution" in gw.columns
     if dc_data_available:
         gw["dc_per_90"] = _per_player_series(
-            gw, lambda g: ewma_rate_asof(g, "defensive_contribution", minutes_col="minutes")
+            gw,
+            lambda g: ewma_rate_asof(
+                g,
+                "defensive_contribution",
+                minutes_col="minutes",
+                max_rate_per_90=MAX_DC_ACTIONS_PER_90_PER_MATCH,
+            ),
         )
     else:
         gw["defensive_contribution"] = 0.0
@@ -1489,6 +1528,15 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
     league_avg_yellow_card_rate = _fit_league_avg_rate_by_position(training_history, "yellow_cards")
     league_avg_red_card_rate = _fit_league_avg_rate_by_position(training_history, "red_cards")
     league_avg_own_goal_rate = _fit_league_avg_rate_by_position(training_history, "own_goals")
+    # dc_per_90's shrinkage prior, same pattern as the card/own-goal priors above. `fit_fn` (unlike
+    # `engineer_features`) has no direct access to `dc_data_available`, but doesn't need it: a
+    # season with no real DC archive data already has `training_history["defensive_contribution"]`
+    # fixed at 0.0 for every row (engineer_features' own dc_data_available branch), so this fit
+    # naturally returns 0.0 per position there too -- shrinkage toward 0.0 is a no-op on top of
+    # dc_per_90's own 0.0 placeholder, not a special case to detect and branch on here.
+    league_avg_dc_rate = _fit_league_avg_rate_by_position(
+        training_history, "defensive_contribution"
+    )
     # ENGINE_IMPROVEMENTS_3.md D.1: league-average GK saves-per-90 rate, the shrinkage prior for
     # the own-rate saves fallback.
     league_avg_save_rate = _fit_league_avg_rate_by_position(
@@ -1515,6 +1563,8 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
         save_rate_shrinkage_k=SAVE_RATE_SHRINKAGE_K,
         goal_conversion_factor_by_position=goal_conversion_factor,
         assist_conversion_factor_by_position=assist_conversion_factor,
+        league_avg_dc_rate_by_position=league_avg_dc_rate,
+        dc_shrinkage_k=DC_SHRINKAGE_K,
     )
     return FittedEngineState(
         minutes_model=minutes_model, bonus_model=bonus_model, fitted_constants=fitted_constants

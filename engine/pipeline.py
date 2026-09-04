@@ -38,7 +38,14 @@ from engine.models.defensive_contribution import (
 )
 from engine.models.goals import DEFAULT_PENALTY_CONVERSION_RATE, project_goals
 from engine.models.minutes import FEATURE_COLUMNS as MINUTES_FEATURE_COLUMNS
-from engine.models.minutes import MinutesDistribution, MinutesModel
+from engine.models.minutes import (
+    GOALKEEPER_STARTERS_PER_CLUB,
+    KNOWN_UNAVAILABLE_P_ZERO,
+    OUTFIELD_STARTERS_PER_CLUB,
+    MinutesDistribution,
+    MinutesModel,
+    normalize_within_club,
+)
 from engine.models.saves import (
     DEFAULT_AWAY_SHOT_MULTIPLIER,
     DEFAULT_SAVE_CONVERSION_RATE,
@@ -137,6 +144,11 @@ class FittedConstants:
     # (goals 24% over, assists 8% under), and only the played-rows figure dissented.
     goal_conversion_factor_by_position: Mapping[str, float] = field(default_factory=dict)
     assist_conversion_factor_by_position: Mapping[str, float] = field(default_factory=dict)
+    # Defensive contribution's shrinkage prior/strength, same opt-in-disabled-by-default shape as
+    # the card constants above -- dc_per_90 previously had no thin-sample protection at all (see
+    # backtest.run_season.DC_SHRINKAGE_K's own comment for the real outlier this caused).
+    league_avg_dc_rate_by_position: Mapping[str, float] = field(default_factory=dict)
+    dc_shrinkage_k: float = 0.0
 
 
 # Every column ``project_gameweek_pool`` reads from its ``players`` input, beyond the minutes
@@ -369,6 +381,12 @@ def _compute_player_components(
             minutes_given_1_to_59=minutes_distribution.expected_minutes_given_1_to_59,
             p_60_plus=minutes_distribution.p_60_plus,
             minutes_given_60_plus=minutes_distribution.expected_minutes_given_60_plus,
+            # dc_per_90 is built from the same FPL `minutes` column card_effective_minutes already
+            # weights, so it's the correct evidence weight here too, not
+            # understat_effective_minutes.
+            individual_weight=card_effective_minutes,
+            league_avg_dc_per_90=fitted_constants.league_avg_dc_rate_by_position.get(position),
+            shrinkage_k=fitted_constants.dc_shrinkage_k,
         )
         p_clears_threshold = defensive_contribution.p_clears_threshold
         saves = None
@@ -416,6 +434,45 @@ _BONUS_STRENGTH_FLOOR = 1e-6
 # model is certain will not feature, whose conditional figure is a counterfactual about an event of
 # probability ~0 and so is not meaningfully estimable either way.
 _MIN_AVAILABILITY_FOR_CONDITIONAL = 0.02
+
+
+def _normalize_pool_minutes_within_club(
+    players: pd.DataFrame, minutes_distributions: list[MinutesDistribution]
+) -> list[MinutesDistribution]:
+    """Apply :func:`engine.models.minutes.normalize_within_club` across the whole pool, grouped by
+    ``(team, is_goalkeeper)`` so each club's own outfield players and goalkeepers are each
+    rescaled toward a real starting XI's share independently. Every downstream component reads the
+    normalized distribution, not the minutes model's own raw per-player output, since the whole
+    point is that appearance points, the clean-sheet gate, defensive contribution, and bonus's
+    availability weighting all inherit the same club-level physical constraint.
+
+    Omitted (unchanged output) when the optional ``team`` column isn't supplied, the same
+    silent-default convention ``_distribute_bonus_by_fixture`` already uses for its own optional
+    fixture columns — a synthetic pool in a unit test, or a horizon/backtest caller that hasn't
+    wired ``team`` through, is unaffected either way.
+    """
+    if "team" not in players.columns:
+        return minutes_distributions
+
+    teams = players["team"].to_numpy()
+    is_gk = (players["position"] == GK).to_numpy()
+    is_known_unavailable = [
+        distribution.p_zero >= KNOWN_UNAVAILABLE_P_ZERO for distribution in minutes_distributions
+    ]
+
+    groups: dict[tuple[object, bool], list[int]] = {}
+    for i in range(len(players)):
+        groups.setdefault((teams[i], bool(is_gk[i])), []).append(i)
+
+    result = list(minutes_distributions)
+    for (_team, gk_flag), indices in groups.items():
+        group_distributions = [minutes_distributions[i] for i in indices]
+        group_excluded = [is_known_unavailable[i] for i in indices]
+        target = GOALKEEPER_STARTERS_PER_CLUB if gk_flag else OUTFIELD_STARTERS_PER_CLUB
+        normalized = normalize_within_club(group_distributions, group_excluded, target=target)
+        for i, distribution in zip(indices, normalized, strict=True):
+            result[i] = distribution
+    return result
 
 
 def _plays_60_counterfactual(distribution: MinutesDistribution) -> MinutesDistribution:
@@ -600,6 +657,14 @@ def project_gameweek_pool(
     ``bonus_model``'s independent per-player prediction used directly (T-G, ENGINE_IMPROVEMENTS_3.md
     D.2). See ``_distribute_bonus_by_fixture`` for how, and for the optional ``team``/
     ``opponent_team_name`` columns that activate it.
+
+    The optional ``team`` column also activates ``_normalize_pool_minutes_within_club``, rescaling
+    each club's own ``p_60_plus`` values (goalkeepers and outfield players separately) toward a
+    real starting XI's share before any downstream component reads them — see that function's own
+    docstring and ``engine.models.minutes.normalize_within_club``. Every field this function
+    returns that derives from minutes (``p_60_plus``, ``expected_minutes``, every component
+    gated/scaled by either) reflects the normalized distribution, not the minutes model's raw
+    per-player output.
     """
     if players.empty:
         raise ValueError("players must not be empty")
@@ -607,6 +672,7 @@ def project_gameweek_pool(
     fitted_constants = fitted_constants or FittedConstants()
 
     minutes_distributions = minutes_model.predict(players)
+    minutes_distributions = _normalize_pool_minutes_within_club(players, minutes_distributions)
     player_ids: list[int] = []
     positions: list[str] = []
     components_by_player: dict[int, _PlayerComponents] = {}

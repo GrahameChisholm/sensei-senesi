@@ -12,6 +12,7 @@ from engine.models.minutes import (
     MinutesDistribution,
     MinutesModel,
     encode_status,
+    normalize_within_club,
 )
 
 
@@ -397,3 +398,80 @@ def test_minutes_model_handles_single_class_training_data():
     results = model.predict(features)
     assert results[0].p_60_plus == pytest.approx(1.0, abs=1e-6)
     assert results[0].p_zero == pytest.approx(0.0, abs=1e-6)
+
+
+def _dist(p_zero: float, p_1_to_59: float, p_60_plus: float) -> MinutesDistribution:
+    return MinutesDistribution(
+        p_zero=p_zero,
+        p_1_to_59=p_1_to_59,
+        p_60_plus=p_60_plus,
+        expected_minutes_given_1_to_59=30.0,
+        expected_minutes_given_60_plus=88.0,
+    )
+
+
+class TestNormalizeWithinClub:
+    def test_rescales_sum_to_target(self):
+        # A real 2026/27 GW3 pull: an over-covered club summed to 15.3 against a true 10.
+        distributions = [_dist(0.05, 0.15, 0.80) for _ in range(15)]
+        result = normalize_within_club(distributions, [False] * 15, target=10.0)
+        assert sum(d.p_60_plus for d in result) == pytest.approx(10.0, abs=0.05)
+
+    def test_rescales_up_when_under_covered(self):
+        distributions = [_dist(0.3, 0.2, 0.5) for _ in range(15)]
+        result = normalize_within_club(distributions, [False] * 15, target=10.0)
+        total = sum(d.p_60_plus for d in result)
+        assert total > 7.5
+        assert total <= 10.0 + 1e-6
+
+    def test_every_row_stays_valid_probability_distribution(self):
+        distributions = [_dist(0.1, 0.3, 0.6), _dist(0.6, 0.3, 0.1), _dist(0.02, 0.03, 0.95)]
+        result = normalize_within_club(distributions, [False] * 3, target=1.0)
+        for d in result:
+            assert d.p_zero >= 0.0
+            assert d.p_1_to_59 >= 0.0
+            assert 0.0 <= d.p_60_plus <= 1.0
+            assert (d.p_zero + d.p_1_to_59 + d.p_60_plus) == pytest.approx(1.0)
+
+    def test_no_individual_player_exceeds_ceiling(self):
+        # Two players, one club, both nailed on -- an unbounded proportional scale toward a
+        # target of 10 outfield starters (impossible for two players) must not push either past
+        # 1.0, which MinutesDistribution itself would reject.
+        distributions = [_dist(0.05, 0.05, 0.90), _dist(0.05, 0.05, 0.90)]
+        result = normalize_within_club(distributions, [False, False], target=10.0)
+        for d in result:
+            assert d.p_60_plus < 1.0
+
+    def test_known_unavailable_player_excluded_from_rescale(self):
+        # An injured player, already floored to p_60_plus=0.0 by KNOWN_UNAVAILABLE_P_ZERO, must
+        # not be inflated back up just to help the club total reach its target.
+        injured = _dist(KNOWN_UNAVAILABLE_P_ZERO, 1.0 - KNOWN_UNAVAILABLE_P_ZERO, 0.0)
+        healthy = [_dist(0.2, 0.2, 0.6) for _ in range(9)]
+        distributions = [injured, *healthy]
+        result = normalize_within_club(distributions, [True] + [False] * 9, target=10.0)
+        assert result[0].p_60_plus == 0.0
+        assert result[0] == injured
+
+    def test_two_tied_goalkeepers_diverge_after_normalizing_to_one_starter(self):
+        # The real defect: two goalkeepers at the same club both independently rated ~0.76 to
+        # start. Normalizing the pair to a real one-starting-goalkeeper target must not leave them
+        # identical -- this function alone can't pick which one starts (no signal to break the tie
+        # on), but it must at least stop both individually reading as "likely to start".
+        tied = [_dist(0.24, 0.0, 0.76), _dist(0.24, 0.0, 0.76)]
+        result = normalize_within_club(tied, [False, False], target=1.0)
+        assert sum(d.p_60_plus for d in result) == pytest.approx(1.0, abs=0.02)
+        for d in result:
+            assert d.p_60_plus < 0.76
+
+    def test_empty_input_returns_empty(self):
+        assert normalize_within_club([], []) == []
+
+    def test_all_zero_p_60_plus_left_unchanged(self):
+        # No signal to redistribute -- must not divide by zero or fabricate a uniform split.
+        distributions = [_dist(0.9, 0.1, 0.0), _dist(0.9, 0.1, 0.0)]
+        result = normalize_within_club(distributions, [False, False], target=1.0)
+        assert result == distributions
+
+    def test_mismatched_lengths_raise(self):
+        with pytest.raises(ValueError):
+            normalize_within_club([_dist(0.5, 0.3, 0.2)], [False, False])
