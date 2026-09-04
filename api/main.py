@@ -25,7 +25,7 @@ from api.mini_league_panel import (
     get_cached_league_snapshot,
 )
 from api.panel import build_panel_rows, build_team_fixture_map
-from api.player_stats_panel import build_player_stats_rows
+from api.player_stats_panel import PlayerAvailability, build_player_stats_rows
 from api.squad_state import SquadState
 from api.state import (
     AppState,
@@ -1017,6 +1017,14 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> schemas.PlayerSta
     low_confidence_ids = {
         pid for pid, data in app_state.players.items() if data.get("low_confidence")
     }
+    availability_by_player = {
+        pid: PlayerAvailability(
+            status=data.get("status", "a"),
+            chance_of_playing_next_round=data.get("chance_of_playing_next_round", 100.0),
+            news=data.get("news"),
+        )
+        for pid, data in app_state.players.items()
+    }
     ownership_status, ownership_by_player = _resolve_player_stats_ownership()
     penalty_takers = frozenset(
         pid for pid, data in app_state.players.items() if data.get("penalties_order") == 1
@@ -1043,6 +1051,7 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> schemas.PlayerSta
         app_state.team_id_by_player,
         app_state.position_by_player,
         low_confidence_ids,
+        availability_by_player,
         fixture_map,
         app_state.horizon_gameweeks,
     )
@@ -1056,6 +1065,15 @@ def list_player_stats(gameweek_from: int, gameweek_to: int) -> schemas.PlayerSta
                 position=row.position,
                 price=row.price,
                 low_confidence=row.low_confidence,
+                availability=(
+                    schemas.AvailabilityOut(
+                        status=row.availability.status,
+                        chance_of_playing_next_round=row.availability.chance_of_playing_next_round,
+                        news=row.availability.news,
+                    )
+                    if row.availability is not None
+                    else None
+                ),
                 actuals=schemas.ActualStatsOut(
                     gameweek_from=row.actuals.gameweek_from,
                     gameweek_to=row.actuals.gameweek_to,

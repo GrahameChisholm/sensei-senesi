@@ -52,6 +52,16 @@ required, there is no bare no-argument form. To point a running API process at a
 season instead of live data, set `FPL_REPLAY_SEASON=2025-26` before starting uvicorn (see
 `api/state.py`).
 
+`build_projections.py` also appends one availability observation batch per run to
+`data_store/availability/observations.parquet` (see `engine/data/availability_log.py`), but a full
+build is a several-minute operation, so how a player's listed availability moves through the week
+is in practice only captured whenever a build happens to run. To capture a batch cheaply, without
+a full build:
+```bash
+uv run python scripts/capture_availability.py --season 2026-27
+```
+Auto-detects the gameweek to tag from FPL's own `is_next` event; pass `--gameweek` to override.
+
 Copy `.env.example` to `.env` for local secrets (only needed for the market overlay's odds API key,
 the core engine has no external-key dependency). Never commit `.env`.
 

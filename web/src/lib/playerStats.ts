@@ -1,4 +1,4 @@
-import { OwnershipStatus, PlayerStatsRowOut, RateRatioOut } from "../api";
+import { AvailabilityOut, OwnershipStatus, PlayerStatsRowOut, RateRatioOut } from "../api";
 
 export type StatKey =
   | "goals_scored"
@@ -278,5 +278,37 @@ export function overperformanceBadge(
       decisive.ratio,
       decisive.kind,
     )}`,
+  };
+}
+
+/** Whether `availability` represents a real doubt worth badging: status other than fully
+ * available ("a"), or a chance-of-playing reading under 100%. Exported so the "hide unavailable"
+ * filter and the badge agree on what counts as unavailable versus merely doubtful. */
+export function isDefinitelyUnavailable(availability: AvailabilityOut | null): boolean {
+  if (availability === null) return false;
+  return availability.status !== "a" && availability.status !== "d";
+}
+
+function hasAvailabilityDoubt(availability: AvailabilityOut | null): boolean {
+  if (availability === null) return false;
+  return availability.status !== "a" || availability.chance_of_playing_next_round < 100;
+}
+
+/** A badge for FPL's own live availability signal -- distinct from the low-confidence badge,
+ * which flags the engine's cold-start fallback and carries no injury/rotation information.
+ * `null` when the player carries no doubt at all, mirroring `overperformanceBadge`'s own
+ * "nothing to say" convention. FPL's status codes: "a" available, "d" doubtful, and "i"/"s"/"u"/
+ * "n" all mean out, so "d" gets the warning colour and everything else gets danger. */
+export function availabilityBadge(
+  row: PlayerStatsRowOut,
+): { label: string; className: string; title: string } | null {
+  const availability = row.availability;
+  if (!hasAvailabilityDoubt(availability) || availability === null) return null;
+
+  const doubtful = availability.status === "d";
+  return {
+    label: `${Math.round(availability.chance_of_playing_next_round)}%`,
+    className: doubtful ? "availability-doubtful" : "availability-out",
+    title: availability.news ?? (doubtful ? "Doubtful" : "Not expected to play"),
   };
 }

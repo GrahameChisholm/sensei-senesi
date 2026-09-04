@@ -3,6 +3,7 @@ import { PlayerStatsFilters } from "../components/PlayerStatsFilters";
 import { PlayerStatsTable } from "../components/PlayerStatsTable";
 import { useGameweek, useTeams } from "../hooks/useProjections";
 import { usePlayerStats } from "../hooks/usePlayerStats";
+import { isDefinitelyUnavailable } from "../lib/playerStats";
 
 export function PlayerStats() {
   const [gameweek] = useGameweek();
@@ -14,6 +15,7 @@ export function PlayerStats() {
   const [minPrice, setMinPrice] = useState(40);
   const [maxPrice, setMaxPrice] = useState(155);
   const [perNinety, setPerNinety] = useState(false);
+  const [hideUnavailable, setHideUnavailable] = useState(false);
   const [gameweekFrom, setGameweekFrom] = useState(1);
   const [gameweekTo, setGameweekTo] = useState(1);
   const [rangeInitialized, setRangeInitialized] = useState(false);
@@ -72,6 +74,7 @@ export function PlayerStats() {
         return false;
       }
       if (row.price !== null && (row.price < minPrice || row.price > maxPrice)) return false;
+      if (hideUnavailable && isDefinitelyUnavailable(row.availability)) return false;
       if (normalizedSearch) {
         const teamName = row.team_id !== null ? teams[row.team_id]?.name ?? "" : "";
         const haystack = `${row.name} ${teamName}`.toLowerCase();
@@ -79,7 +82,7 @@ export function PlayerStats() {
       }
       return true;
     });
-  }, [rows, search, selectedPositions, selectedTeamIds, minPrice, maxPrice, teams]);
+  }, [rows, search, selectedPositions, selectedTeamIds, minPrice, maxPrice, hideUnavailable, teams]);
 
   // Comparing shows exactly the checked players, off the full unfiltered pool -- a player checked
   // under one search/team/position filter should still show up in the comparison even after the
@@ -115,6 +118,8 @@ export function PlayerStats() {
         }}
         perNinety={perNinety}
         onPerNinetyChange={setPerNinety}
+        hideUnavailable={hideUnavailable}
+        onHideUnavailableChange={setHideUnavailable}
       />
       {loading ? (
         <p>Loading…</p>

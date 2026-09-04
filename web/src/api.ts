@@ -201,6 +201,14 @@ export interface RateRatioOut {
   exposure: number;
 }
 
+/** FPL's own live availability signal, distinct from `low_confidence` (the engine's cold-start
+ * flag, which carries no injury/rotation information). */
+export interface AvailabilityOut {
+  status: string;
+  chance_of_playing_next_round: number;
+  news: string | null;
+}
+
 export interface PlayerStatsRowOut {
   player_id: number;
   name: string;
@@ -208,6 +216,7 @@ export interface PlayerStatsRowOut {
   position: string;
   price: number | null;
   low_confidence: boolean;
+  availability: AvailabilityOut | null;
   actuals: ActualStatsOut;
   fixtures: FixtureCellOut[];
 }

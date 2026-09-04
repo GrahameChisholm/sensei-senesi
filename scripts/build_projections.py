@@ -40,7 +40,12 @@ from backtest.run_season import (
     fetch_vaastav_merged_gw,
     fetch_vaastav_teams,
 )
-from engine.data.availability_log import append_observations, build_availability_observations
+from engine.data.availability_log import (
+    append_observations,
+    build_availability_observations,
+    realised_from_player_history,
+    training_frame,
+)
 from engine.data.cold_start import ColdStartPriors, baseline_projection, fit_cold_start_priors
 from engine.data.cross_season import (
     fetch_vaastav_players_raw,
@@ -359,6 +364,7 @@ def assemble_projection_cache(
         # FPL leaves penalties_order null for a non-taker, so a missing value is "not on
         # penalties" rather than unknown -- the same reading engine.data.live_adapter gives it.
         penalties_order = getattr(row, "penalties_order", None)
+        news = getattr(row, "news", None)
         players[str(player_id)] = {
             "web_name": row.web_name,
             "full_name": f"{row.first_name} {row.second_name}",
@@ -367,6 +373,7 @@ def assemble_projection_cache(
             "price": int(row.now_cost),
             "status": row.status,
             "chance_of_playing_next_round": float(chance) if pd.notna(chance) else 100.0,
+            "news": news if pd.notna(news) and str(news).strip() else None,
             "low_confidence": player_id in cold_start_ids,
             "source": "cold_start" if player_id in cold_start_ids else "engine",
             "selected_by_percent": float(ownership) if pd.notna(ownership) else None,
@@ -596,7 +603,8 @@ def build_projections(
         # nothing per run and cannot be backfilled later, so it starts now rather than when the
         # modelling work that consumes it begins.
         append_observations(
-            build_availability_observations(live_elements, gameweek, captured_at),
+            build_availability_observations(live_elements, season, gameweek, captured_at),
+            season,
             gameweek,
             captured_at,
         )
@@ -658,12 +666,21 @@ def build_projections(
         deadline_passed = captured_at >= deadline_time
         deadline_times = _deadline_times_for_gameweeks(events, target_gameweeks)
 
+        # ENGINE_IMPROVEMENTS_5.md Tier 1.1: how many (season, player, gameweek) availability
+        # observations now have a resolved outcome -- the readiness signal for when the minutes
+        # model's live-only availability features have enough labelled data to be worth refitting,
+        # rather than that decision resting on a guess about how much has silently accumulated.
+        labelled_availability_rows = len(
+            training_frame(realised=realised_from_player_history(player_history, season))
+        )
+
         diagnostics = {
             "training_rows": int(len(augmented.merged_gw)),
             "engine_projected_players": len(horizon_result.projections),
             "cold_start_players": len(cold_start_ids),
             "used_prior_season_history": True,
             "used_cold_start_pooling": True,
+            "labelled_availability_rows": labelled_availability_rows,
         }
 
         cache = assemble_projection_cache(
@@ -698,6 +715,8 @@ def _print_summary(cache: dict, diagnostics: dict, path: Path) -> None:
     )
     print(f"  training rows: {diagnostics['training_rows']}")
     print(f"  deadline_passed: {cache['deadline_passed']}")
+    if "labelled_availability_rows" in diagnostics:
+        print(f"  labelled availability rows: {diagnostics['labelled_availability_rows']}")
     significant_dropped = [
         p for pid, p in cache["players"].items() if p["source"] == "cold_start" and p["price"] >= 60
     ]

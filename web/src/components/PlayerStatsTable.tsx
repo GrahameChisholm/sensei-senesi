@@ -14,6 +14,7 @@ import {
   StatColumn,
   StatGroupKey,
   StatKey,
+  availabilityBadge,
   averageMinutesPerMatch,
   formatRatio,
   formatStat,
@@ -348,6 +349,14 @@ export function PlayerStatsTable({
               <td>
                 {row.name}
                 {row.low_confidence && <span className="badge low-confidence-badge">!</span>}
+                {(() => {
+                  const badge = availabilityBadge(row);
+                  return badge === null ? null : (
+                    <span className={`availability-badge ${badge.className}`} title={badge.title}>
+                      {badge.label}
+                    </span>
+                  );
+                })()}
                 {row.actuals.is_penalty_taker && (
                   <span
                     className="badge penalty-taker-badge"

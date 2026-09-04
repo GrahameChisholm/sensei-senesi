@@ -106,8 +106,9 @@ def _fixture_app_state():
             "team_id": 101,
             "position": MID,
             "price": 70,
-            "status": "a",
-            "chance_of_playing_next_round": 100.0,
+            "status": "d",
+            "chance_of_playing_next_round": 75.0,
+            "news": "Knock - assessed on Friday",
             "low_confidence": False,
             "source": "engine",
             "selected_by_percent": None,
@@ -223,3 +224,19 @@ def test_players_stats_requires_both_range_params(client: TestClient):
     response = client.get("/players/stats")
 
     assert response.status_code == 422
+
+
+def test_players_stats_includes_availability_signal(client: TestClient):
+    response = client.get("/players/stats", params={"gameweek_from": 1, "gameweek_to": 10})
+
+    rows = {row["player_id"]: row["availability"] for row in response.json()["rows"]}
+    assert rows[1] == {
+        "status": "a",
+        "chance_of_playing_next_round": 100.0,
+        "news": None,
+    }
+    assert rows[2] == {
+        "status": "d",
+        "chance_of_playing_next_round": 75.0,
+        "news": "Knock - assessed on Friday",
+    }

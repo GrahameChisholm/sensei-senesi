@@ -20,6 +20,8 @@ interface PlayerStatsFiltersProps {
   onGameweekRangeChange: (from: number, to: number) => void;
   perNinety: boolean;
   onPerNinetyChange: (value: boolean) => void;
+  hideUnavailable: boolean;
+  onHideUnavailableChange: (value: boolean) => void;
 }
 
 const PRICE_FLOOR = 40; // £4.0m
@@ -42,6 +44,8 @@ export function PlayerStatsFilters({
   onGameweekRangeChange,
   perNinety,
   onPerNinetyChange,
+  hideUnavailable,
+  onHideUnavailableChange,
 }: PlayerStatsFiltersProps) {
   const teamList = Object.values(teams).sort((a, b) => a.short_name.localeCompare(b.short_name));
 
@@ -61,6 +65,15 @@ export function PlayerStatsFilters({
             type="checkbox"
             checked={perNinety}
             onChange={(e) => onPerNinetyChange(e.target.checked)}
+          />
+        </label>
+
+        <label>
+          Hide unavailable
+          <input
+            type="checkbox"
+            checked={hideUnavailable}
+            onChange={(e) => onHideUnavailableChange(e.target.checked)}
           />
         </label>
       </div>

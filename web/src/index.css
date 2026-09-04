@@ -705,6 +705,29 @@ button {
   color: var(--accent);
 }
 
+/* FPL's own live availability signal (Player Stats), deliberately separate from
+   .low-confidence-badge: that one flags the engine's cold-start fallback and carries no
+   injury/rotation information, this one is FPL's status/chance-of-playing reading. Same pill
+   shape as .overperf-badge, since the label carries a percentage rather than a single glyph. */
+.availability-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+  margin-left: 0.3rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.availability-doubtful {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+
+.availability-out {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .card-remove-button {
   position: absolute;
   top: -0.5rem;

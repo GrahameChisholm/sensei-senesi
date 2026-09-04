@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 
 from engine.models.bonus import expected_bonus_from_fixture_strengths
+from engine.models.minutes import KNOWN_UNAVAILABLE_P_ZERO
 from engine.regression import (
     PerPositionRegression,
     RegressionKind,
@@ -55,6 +56,8 @@ __all__ = [
     "run_all_component_regression_diagnostics",
     "RankBasedBonusReport",
     "rank_based_bonus_diagnostics",
+    "AvailabilityCalibrationReport",
+    "availability_calibration_diagnostics",
 ]
 
 
@@ -247,4 +250,66 @@ def rank_based_bonus_diagnostics(
         mae_rank_based=float(rank_err.mean()),
         corr_shipped=float(np.corrcoef(scored["expected_bonus"], scored["bonus"])[0, 1]),
         corr_rank_based=float(np.corrcoef(scored["rank_based_bonus"], scored["bonus"])[0, 1]),
+    )
+
+
+@dataclass(frozen=True)
+class AvailabilityCalibrationReport:
+    """How well FPL's live-only availability signals (``chance_of_playing_next_round``, ``status``)
+    predict a player's realised minutes outcome, measured against
+    :func:`~engine.data.availability_log.training_frame`'s resolved rows
+    (ENGINE_IMPROVEMENTS_5.md Tier 1.1).
+
+    Not wired into any fit -- the minutes model cannot yet be refit on this feature at all, and
+    not merely for lack of volume. ``backtest.run_season``'s training archive hardcodes
+    ``chance_of_playing_next_round`` to 100.0 on every row (that field has no retrospective
+    source), so it cannot be mixed with this store's honest live-only rows in one fit without
+    teaching the model that "100% fit" often means "did not play". This report is the thing that
+    says when a refit becomes viable: watch ``by_chance``'s bucket counts grow toward something
+    fittable, and whether the gap between the 100% and doubtful buckets' ``p_60_plus`` (not
+    ``p_zero`` -- see the module's own findings) survives more gameweeks.
+    """
+
+    by_chance: pd.DataFrame  # index: chance_of_playing_next_round -> n, p_zero, p_60_plus
+    by_status: pd.DataFrame  # index: status                       -> n, p_zero, p_60_plus
+    floor_error: float  # observed P(zero) at chance == 0.0, minus KNOWN_UNAVAILABLE_P_ZERO
+    n_labelled: int
+
+
+def _availability_outcome_rates(training: pd.DataFrame, key: str) -> pd.DataFrame:
+    return training.groupby(key)["minutes"].agg(
+        n="size",
+        p_zero=lambda minutes: float((minutes == 0).mean()),
+        p_60_plus=lambda minutes: float((minutes >= 60).mean()),
+    )
+
+
+def availability_calibration_diagnostics(training: pd.DataFrame) -> AvailabilityCalibrationReport:
+    """``training`` is :func:`~engine.data.availability_log.training_frame`'s output: one row per
+    resolved ``(season, player_id, gameweek)``, carrying both the pre-deadline signal and the
+    realised ``minutes``.
+
+    Reports, per ``chance_of_playing_next_round`` bucket and per ``status`` code, how often the
+    player actually recorded zero minutes and how often they played 60+.
+    ``engine.models.minutes.KNOWN_UNAVAILABLE_P_ZERO`` is imported rather than restated, so
+    ``floor_error`` measures this report against the live constant rather than a copy of it that
+    could drift out of sync. ``floor_error`` is ``nan`` when no row in ``training`` yet carries an
+    explicit 0% reading, which is expected early on -- an empty bucket is a fact about how little
+    data has accumulated, not a report failure.
+    """
+    by_chance = _availability_outcome_rates(training, "chance_of_playing_next_round")
+    by_status = _availability_outcome_rates(training, "status")
+
+    zero_bucket = by_chance[by_chance.index == 0.0]
+    floor_error = (
+        float(zero_bucket["p_zero"].iloc[0] - KNOWN_UNAVAILABLE_P_ZERO)
+        if not zero_bucket.empty
+        else float("nan")
+    )
+
+    return AvailabilityCalibrationReport(
+        by_chance=by_chance,
+        by_status=by_status,
+        floor_error=floor_error,
+        n_labelled=len(training),
     )

@@ -14,7 +14,21 @@ from api.panel import FixtureCell
 from engine.projections import PlayerHorizonProjection
 from features.player_stats import PlayerActualStats
 
-__all__ = ["PlayerStatsRow", "build_player_stats_rows"]
+__all__ = ["PlayerAvailability", "PlayerStatsRow", "build_player_stats_rows"]
+
+
+@dataclass(frozen=True)
+class PlayerAvailability:
+    """FPL's own live availability signal for one player -- distinct from ``low_confidence``,
+    which is the engine's cold-start flag and carries no information about injury or rotation
+    risk. ``status``/``chance_of_playing_next_round`` are always present in the projection cache;
+    ``news`` is the free-text display field, kept strictly for display per BUILD_PLAN 2.1 (never
+    parsed into a feature -- ``has_news``, in ``engine.data.availability_log``, is the structured
+    signal for "was anything reported at all")."""
+
+    status: str
+    chance_of_playing_next_round: float
+    news: str | None
 
 
 @dataclass(frozen=True)
@@ -25,6 +39,7 @@ class PlayerStatsRow:
     position: str
     price: int | None
     low_confidence: bool
+    availability: PlayerAvailability | None
     actuals: PlayerActualStats
     fixtures: tuple[FixtureCell, ...]
 
@@ -37,6 +52,7 @@ def build_player_stats_rows(
     team_id_by_player: Mapping[int, int],
     position_by_player: Mapping[int, str],
     low_confidence_ids: set[int],
+    availability_by_player: Mapping[int, PlayerAvailability],
     fixture_map: Mapping[tuple[int, int], list[tuple[int, bool]]],
     horizon_gameweeks: Sequence[int],
 ) -> list[PlayerStatsRow]:
@@ -72,6 +88,7 @@ def build_player_stats_rows(
                 position=position_by_player.get(player_id, ""),
                 price=buy_prices.get(player_id),
                 low_confidence=player_id in low_confidence_ids,
+                availability=availability_by_player.get(player_id),
                 actuals=actuals,
                 fixtures=tuple(fixtures),
             )

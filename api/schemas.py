@@ -215,6 +215,15 @@ class ActualStatsOut(BaseModel):
     is_penalty_taker: bool = False
 
 
+class AvailabilityOut(BaseModel):
+    """FPL's own live availability signal, distinct from ``low_confidence`` (the engine's
+    cold-start flag)."""
+
+    status: str
+    chance_of_playing_next_round: float
+    news: str | None
+
+
 class PlayerStatsRowOut(BaseModel):
     player_id: int
     name: str
@@ -222,6 +231,7 @@ class PlayerStatsRowOut(BaseModel):
     position: str
     price: int | None
     low_confidence: bool
+    availability: AvailabilityOut | None = None
     actuals: ActualStatsOut
     fixtures: list[FixtureCellOut]
 

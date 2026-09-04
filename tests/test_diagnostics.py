@@ -7,15 +7,18 @@ import numpy as np
 import pandas as pd
 
 from backtest.diagnostics import (
+    AvailabilityCalibrationReport,
     ComponentRegressionReport,
     RankBasedBonusReport,
     assists_regression_diagnostics,
+    availability_calibration_diagnostics,
     bonus_regression_diagnostics,
     defensive_contribution_regression_diagnostics,
     goals_regression_diagnostics,
     rank_based_bonus_diagnostics,
     run_all_component_regression_diagnostics,
 )
+from engine.models.minutes import KNOWN_UNAVAILABLE_P_ZERO
 
 
 def _synthetic_engineered(n_per_position: int = 60, seed: int = 0) -> pd.DataFrame:
@@ -212,3 +215,49 @@ def test_rank_based_bonus_diagnostics_favors_the_standout_player_in_their_own_fi
     strengths = fixture["expected_bps"].clip(lower=0.01).to_numpy()
     expected = expected_bonus_from_fixture_strengths(strengths)
     assert expected[0] == max(expected)  # the standout (bps=40.0) is listed first
+
+
+def _synthetic_availability_training() -> pd.DataFrame:
+    """A small resolved training frame, sized to exercise every bucket
+    :func:`availability_calibration_diagnostics` reports on, not to be statistically realistic."""
+    return pd.DataFrame(
+        {
+            "chance_of_playing_next_round": [0.0, 0.0, 0.0, 75.0, 75.0, 100.0, 100.0, 100.0, 100.0],
+            "status": ["i", "i", "i", "d", "d", "a", "a", "a", "a"],
+            "minutes": [0, 0, 5, 45, 0, 90, 90, 0, 60],
+        }
+    )
+
+
+def test_availability_calibration_diagnostics_reports_bucket_counts_and_rates():
+    training = _synthetic_availability_training()
+
+    report = availability_calibration_diagnostics(training)
+
+    assert isinstance(report, AvailabilityCalibrationReport)
+    assert report.n_labelled == len(training)
+    zero_bucket = report.by_chance.loc[0.0]
+    assert zero_bucket["n"] == 3
+    assert zero_bucket["p_zero"] == 2 / 3
+    assert zero_bucket["p_60_plus"] == 0.0
+    fit_bucket = report.by_status.loc["a"]
+    assert fit_bucket["n"] == 4
+    assert fit_bucket["p_60_plus"] == 0.75  # minutes [90, 90, 0, 60] -> 3 of 4 played 60+
+
+
+def test_availability_calibration_diagnostics_measures_the_floor_against_the_live_constant():
+    training = _synthetic_availability_training()
+
+    report = availability_calibration_diagnostics(training)
+
+    observed_p_zero = 2 / 3
+    assert report.floor_error == observed_p_zero - KNOWN_UNAVAILABLE_P_ZERO
+
+
+def test_availability_calibration_diagnostics_floor_error_is_nan_without_a_zero_bucket():
+    training = _synthetic_availability_training()
+    training = training[training["chance_of_playing_next_round"] != 0.0]
+
+    report = availability_calibration_diagnostics(training)
+
+    assert report.floor_error != report.floor_error  # nan != nan
