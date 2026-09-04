@@ -145,6 +145,8 @@ class FixtureTickerRowOut(BaseModel):
     team_id: int
     gameweeks: list[FixtureTickerCellOut]
     average_difficulty: float | None
+    total_expected_goals_for: float | None
+    total_expected_goals_against: float | None
 
 
 class HorizonDifficultyOut(BaseModel):

@@ -191,6 +191,8 @@ def list_fixture_ticker(
                 for cell in row.gameweeks
             ],
             average_difficulty=row.average_difficulty,
+            total_expected_goals_for=row.total_expected_goals_for,
+            total_expected_goals_against=row.total_expected_goals_against,
         )
         for row in rows
     ]
