@@ -1435,7 +1435,22 @@ def fit_fn(training_history: pd.DataFrame) -> FittedEngineState:
     """Real ``fit_fn`` for :func:`backtest.harness.run_walk_forward` — fits the minutes model, the
     bonus regression proxy, and (ENGINE_IMPROVEMENTS.md Tier 1.2) all five previously-unfitted
     component constants, entirely from ``training_history`` (gameweeks strictly before the one
-    being predicted — the harness's own no-leakage guarantee)."""
+    being predicted — the harness's own no-leakage guarantee).
+
+    Sorted by ``(player_id, gameweek)`` first, a stable key with no possible ties (doubles are
+    already collapsed to one row per player per gameweek by ``engineer_features``) — a real
+    reproducibility defect, not a hypothetical one: two builds fit on the exact same real rows but
+    delivered in a different arrival order (e.g. a live network fetch's own response ordering)
+    produced different individual minutes predictions with nothing else changed, because
+    scikit-learn's ``StratifiedKFold`` assigns cross-validation folds by row *position*, not row
+    *identity*. Sorting here fixes it at the source, for every model fit below, not only the
+    minutes model's own calibration layer (see ``engine.models.minutes._make_classifier``'s
+    ``CALIBRATION_RANDOM_STATE``, which independently makes the fold split itself reproducible
+    given a stable input order, but cannot fix an unstable input order on its own).
+    """
+    training_history = training_history.sort_values(["player_id", "gameweek"]).reset_index(
+        drop=True
+    )
     minutes_model = MinutesModel().fit(
         training_history[MINUTES_FEATURE_COLUMNS],
         training_history["starts"].astype(int),

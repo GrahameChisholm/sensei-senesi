@@ -22,12 +22,17 @@ import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 # Cross-validation folds for the isotonic calibration layer (see :func:`_make_classifier`). Fit
 # entirely within the training fold, so this stays point-in-time safe.
 CALIBRATION_FOLDS = 5
+
+# Fixed seed for the calibration layer's own StratifiedKFold split (see :func:`_make_classifier`).
+# Not tuned -- any fixed value works equally well; what matters is that it IS fixed.
+CALIBRATION_RANDOM_STATE = 0
 
 logger = logging.getLogger(__name__)
 
@@ -214,8 +219,25 @@ def _make_classifier() -> CalibratedClassifierCV:
     S-shape a single sigmoid cannot express. ``cv`` folds are drawn from the training fold only, so
     no future information enters; :class:`_SafeBinaryClassifier` drops back to the bare pipeline
     when a class is too thin to cross-validate.
+
+    ``cv`` is an explicit, seeded, shuffled :class:`~sklearn.model_selection.StratifiedKFold`
+    rather than the bare integer ``CALIBRATION_FOLDS`` sklearn would otherwise default to — a
+    bare integer defaults to ``shuffle=False``, which assigns folds by the training data's own row
+    order. Two builds fit on the same real rows in a different order (e.g. a different Understat/
+    vaastav fetch ordering) then land in different folds, so the isotonic calibration curve, and
+    therefore every downstream ``p_60_plus``, differs between two builds that are meant to be
+    identical. Confirmed directly: fitting on identical rows in shuffled order versus original
+    order produced different individual predictions with nothing else changed. Shuffling with a
+    fixed ``random_state`` makes the fold assignment (and so the fitted model) depend only on the
+    data's *content*, never its incidental arrival order.
     """
-    return CalibratedClassifierCV(_make_base_classifier(), method="isotonic", cv=CALIBRATION_FOLDS)
+    return CalibratedClassifierCV(
+        _make_base_classifier(),
+        method="isotonic",
+        cv=StratifiedKFold(
+            n_splits=CALIBRATION_FOLDS, shuffle=True, random_state=CALIBRATION_RANDOM_STATE
+        ),
+    )
 
 
 @dataclass

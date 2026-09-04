@@ -41,6 +41,7 @@ from backtest.run_season import (
 )
 from engine.data.crosswalk import CrosswalkEntry
 from engine.models.goals import MAX_NPXG_PER_90_PER_MATCH
+from engine.models.minutes import FEATURE_COLUMNS as MINUTES_FEATURE_COLUMNS
 from engine.models.minutes import MAX_TRANSFER_SHARE as MINUTES_MAX_TRANSFER_SHARE
 from engine.models.minutes import encode_status
 
@@ -1031,6 +1032,150 @@ def test_engineer_features_without_penalties_order_column_is_unchanged():
         with_column_absent,
         with_column_all_nan.drop(columns=["penalties_order"]),
     )
+
+
+def _large_synthetic_season() -> tuple[pd.DataFrame, pd.DataFrame, dict, dict]:
+    """20 players across 2 teams over 10 gameweeks, with a real mix of starts/non-starts (roughly
+    half started, half not, per gameweek) -- large and balanced enough that MinutesModel's real
+    CalibratedClassifierCV path is exercised rather than _SafeBinaryClassifier's single-class or
+    thin-minority-class fallback (which _synthetic_season's always-start/always-90-minutes rows
+    trigger and which would make a row-order reproducibility test pass trivially, since neither
+    fallback path depends on row order at all).
+    """
+    teams = pd.DataFrame({"id": [1, 2], "name": ["Team A", "Team B"]})
+    kickoffs = pd.date_range("2025-08-16", periods=10, freq="7D", tz="UTC")
+    # Real football data is noisy relative to any feature set -- a deterministic (player_id,
+    # gameweek)-based start pattern is perfectly separable, which saturates the classifier to
+    # hard 0/1 regardless of fold assignment and so cannot exercise (or even detect) the
+    # StratifiedKFold row-order sensitivity this fixture exists to test. A fixed-seed coin flip
+    # on top of the base pattern keeps the fixture itself deterministic while making the
+    # classification problem genuinely uncertain, the way real data is.
+    noise = np.random.default_rng(7).uniform(0.0, 1.0, size=(10, 21))
+
+    rows = []
+    for i, kickoff in enumerate(kickoffs):
+        gw_num = i + 1
+        a_home = i % 2 == 0
+        a_score, b_score = (2, 0) if a_home else (0, 2)
+        for player_id in range(1, 21):
+            team = "Team A" if player_id <= 10 else "Team B"
+            position = ["MID", "DEF", "FWD"][player_id % 3]
+            opponent_id = 2 if team == "Team A" else 1
+            is_home = a_home if team == "Team A" else not a_home
+            # Alternating start pattern, varied by player and gameweek, flipped on ~30% of rows by
+            # the fixed noise draw above, so both classes have real, non-trivial, non-separable
+            # representation.
+            base_started = (player_id + i) % 2 == 0
+            started = base_started != (noise[i, player_id] < 0.3)
+            minutes = 90 if started else ((player_id * 7 + i) % 30)
+            rows.append(
+                {
+                    "element": player_id,
+                    "name": f"Player {player_id}",
+                    "position": position,
+                    "team": team,
+                    "GW": gw_num,
+                    "kickoff_time": kickoff.isoformat(),
+                    "minutes": minutes,
+                    "starts": int(started),
+                    "was_home": is_home,
+                    "opponent_team": opponent_id,
+                    "total_points": 2 + player_id % 3,
+                    "bonus": player_id % 3,
+                    "goals_scored": 0,
+                    "assists": 0,
+                    "value": 40 + player_id,
+                    "selected": 5000 * player_id,
+                    "transfers_in": 100,
+                    "transfers_out": 50,
+                    "transfers_balance": 50,
+                    "clean_sheets": (
+                        1
+                        if (team == "Team A" and b_score == 0)
+                        or (team == "Team B" and a_score == 0)
+                        else 0
+                    ),
+                    "yellow_cards": 0,
+                    "red_cards": 0,
+                    "own_goals": 0,
+                    "saves": 0,
+                    "bps": 10 + player_id,
+                    "defensive_contribution": 8 if position == "DEF" else 5,
+                    "penalties_missed": 0,
+                    "team_h_score": a_score if a_home else b_score,
+                    "team_a_score": b_score if a_home else a_score,
+                }
+            )
+    merged_gw = pd.DataFrame(rows)
+
+    def _team_history(is_home_seq: list[bool]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": kickoffs,
+                "xG": [1.5 if h else 0.8 for h in is_home_seq],
+                "xGA": [0.7 if h else 1.4 for h in is_home_seq],
+                "minutes": 90.0,
+                "is_home": is_home_seq,
+            }
+        )
+
+    a_home_seq = [i % 2 == 0 for i in range(10)]
+    team_histories = {
+        "Team A": _team_history(a_home_seq),
+        "Team B": _team_history([not h for h in a_home_seq]),
+    }
+
+    def _player_history(base_npxg: float, base_xa: float) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": kickoffs,
+                "npxG": [base_npxg] * 10,
+                "xA": [base_xa] * 10,
+                "goals": [0] * 10,
+                "npg": [0] * 10,
+                "time": [90] * 10,
+                "season": ["2025"] * 10,
+            }
+        )
+
+    player_histories = {
+        player_id: _player_history(0.05 + 0.02 * (player_id % 5), 0.03 + 0.01 * (player_id % 5))
+        for player_id in range(1, 21)
+    }
+    return merged_gw, teams, team_histories, player_histories
+
+
+def test_fit_fn_is_reproducible_regardless_of_training_history_row_order():
+    # A real reproducibility defect found in production: scikit-learn's StratifiedKFold (used by
+    # the minutes model's isotonic calibration layer) assigns cross-validation folds by row
+    # POSITION, not row identity. Two builds fit on the exact same real training rows delivered in
+    # a different arrival order (e.g. a live network fetch's own response ordering) produced
+    # different individual p_60_plus predictions with nothing else changed. fit_fn now sorts by
+    # (player_id, gameweek) before fitting anything, specifically to close this.
+    merged_gw, teams, team_histories, player_histories = _large_synthetic_season()
+    engineered = engineer_features(merged_gw, teams, team_histories, player_histories)
+    training_history = engineered[engineered["gameweek"] < 10].reset_index(drop=True)
+    assert training_history["starts"].nunique() == 2, "fixture must exercise both classes"
+
+    shuffled = training_history.sample(frac=1.0, random_state=42).reset_index(drop=True)
+    assert not shuffled["player_id"].equals(training_history["player_id"]), (
+        "shuffle must actually change row order for this test to mean anything"
+    )
+
+    held_out_features = engineered[engineered["gameweek"] == 10][MINUTES_FEATURE_COLUMNS]
+
+    fitted_original = fit_fn(training_history)
+    fitted_shuffled = fit_fn(shuffled)
+
+    predictions_original = fitted_original.minutes_model.predict(held_out_features)
+    predictions_shuffled = fitted_shuffled.minutes_model.predict(held_out_features)
+
+    for original, shuffled_pred in zip(predictions_original, predictions_shuffled, strict=True):
+        assert original.p_60_plus == pytest.approx(shuffled_pred.p_60_plus, abs=1e-9)
+        assert original.p_zero == pytest.approx(shuffled_pred.p_zero, abs=1e-9)
+        assert original.expected_minutes == pytest.approx(
+            shuffled_pred.expected_minutes, abs=1e-9
+        )
 
 
 def test_fit_fn_and_predict_fn_wire_together_via_walk_forward():
