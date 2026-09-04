@@ -12,6 +12,7 @@ from backtest.metrics import (
     CalibrationReport,
     DecisionSetRankReport,
     MeanCalibrationReport,
+    club_minutes_coverage,
     fixture_bonus_total,
     fixture_minutes_coverage,
     goalkeeper_saves_plausibility,
@@ -336,6 +337,42 @@ def test_gate_passes_on_fixture_minutes_coverage_near_target():
     assert result.passed
 
 
+def test_gate_fails_on_club_minutes_coverage_skew():
+    # Real 2026/27 GW3 pull: two goalkeepers at the same club both rated 76% to start -- a
+    # club-level skew the fixture-combined check can't isolate.
+    predictions = pd.DataFrame(
+        {
+            "team": ["Ipswich"] * 2,
+            "gameweek": [1, 1],
+            "position": ["GK", "GK"],
+            "p_60_plus": [0.76, 0.76],
+        }
+    )
+    report = club_minutes_coverage(predictions)
+
+    result = _evaluate_with_defaults(club_minutes_coverage_report=report)
+
+    assert not result.passed
+    assert not result.club_minutes_coverage_acceptable
+
+
+def test_gate_passes_on_club_minutes_coverage_near_target():
+    predictions = pd.DataFrame(
+        {
+            "team": ["Ipswich"],
+            "gameweek": [1],
+            "position": ["GK"],
+            "p_60_plus": [0.97],
+        }
+    )
+    report = club_minutes_coverage(predictions)
+
+    result = _evaluate_with_defaults(club_minutes_coverage_report=report)
+
+    assert result.club_minutes_coverage_acceptable
+    assert result.passed
+
+
 def test_fixture_bonus_total_report_computes_gap_per_fixture():
     predictions = pd.DataFrame({"fixture_id": ["A"] * 22, "bonus": [6.0 / 22] * 22})
     report = fixture_bonus_total(predictions)
@@ -522,6 +559,7 @@ def test_gate_omits_t_j_checks_when_not_supplied():
     result = _evaluate_with_defaults()
 
     assert result.fixture_minutes_coverage_acceptable
+    assert result.club_minutes_coverage_acceptable
     assert result.fixture_bonus_total_acceptable
     assert result.minutes_bucket_shares_acceptable
     assert result.goalkeeper_saves_acceptable

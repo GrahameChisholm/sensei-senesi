@@ -21,6 +21,7 @@ from backtest.baselines import PairedBootstrapResult, PermutationTestResult
 from backtest.metrics import (
     BiasReport,
     CalibrationReport,
+    ClubMinutesCoverageReport,
     DecisionSetRankReport,
     FixtureBonusTotalReport,
     FixtureMinutesCoverageReport,
@@ -52,6 +53,17 @@ DEFAULT_MAX_MEAN_CALIBRATION_RELATIVE_GAP = 0.05
 # was. Tighten them once a season of passing runs establishes real week-to-week noise.
 DEFAULT_FIXTURE_MINUTES_COVERAGE_TARGET = 22.0
 DEFAULT_FIXTURE_MINUTES_COVERAGE_TOLERANCE = 1.0
+# Real 2026/27 GW3 pull: club-level outfield p_60_plus sums ranged 8.7 to 15.3 against a true 10,
+# and two goalkeepers at the same club both individually rated 76% to start (a group-of-2 gap of
+# 0.52 against a true 1.0) -- a defect the fixture-combined check above cannot isolate (see
+# ClubMinutesCoverageReport's own docstring). Set tight enough to catch that real goalkeeper case
+# (a group whose target is only 1.0, so even a modest absolute gap is a large relative one) rather
+# than the fixture-combined check's own 1.0, which was sized for a target of 22 and would pass
+# that same 0.52 gap outright. A single absolute tolerance applied to both the goalkeeper (target
+# 1) and outfield (target 10) groups is the same simplification fixture_minutes_coverage's own
+# single tolerance already makes; revisit with two separate tolerances if a real walk-forward run
+# shows outfield noise alone routinely tripping this.
+DEFAULT_CLUB_MINUTES_COVERAGE_TOLERANCE = 0.5
 DEFAULT_FIXTURE_BONUS_TOTAL_TARGET = 6.0
 DEFAULT_FIXTURE_BONUS_TOTAL_TOLERANCE = 0.5
 DEFAULT_MINUTES_BUCKET_SHARE_TOLERANCE = 0.03
@@ -114,6 +126,8 @@ class DefinitionOfDoneReport:
     # convention `mean_calibration_reports` established for B3.
     fixture_minutes_coverage_acceptable: bool = True
     fixture_minutes_coverage_report: FixtureMinutesCoverageReport | None = None
+    club_minutes_coverage_acceptable: bool = True
+    club_minutes_coverage_report: ClubMinutesCoverageReport | None = None
     fixture_bonus_total_acceptable: bool = True
     fixture_bonus_total_report: FixtureBonusTotalReport | None = None
     minutes_bucket_shares_acceptable: bool = True
@@ -143,6 +157,7 @@ class DefinitionOfDoneReport:
             and self.mean_calibration_acceptable
             and self.decision_set_ranking_acceptable
             and self.fixture_minutes_coverage_acceptable
+            and self.club_minutes_coverage_acceptable
             and self.fixture_bonus_total_acceptable
             and self.minutes_bucket_shares_acceptable
             and self.goalkeeper_saves_acceptable
@@ -166,6 +181,7 @@ class DefinitionOfDoneReport:
             ),
             "Aggregate/fixture-level plausibility holds (T-J)": (
                 self.fixture_minutes_coverage_acceptable
+                and self.club_minutes_coverage_acceptable
                 and self.fixture_bonus_total_acceptable
                 and self.minutes_bucket_shares_acceptable
                 and self.goalkeeper_saves_acceptable
@@ -194,6 +210,8 @@ def evaluate_definition_of_done(
     mean_calibration_relative_gap_thresholds: Mapping[str, float] | None = None,
     fixture_minutes_coverage_report: FixtureMinutesCoverageReport | None = None,
     fixture_minutes_coverage_tolerance: float = DEFAULT_FIXTURE_MINUTES_COVERAGE_TOLERANCE,
+    club_minutes_coverage_report: ClubMinutesCoverageReport | None = None,
+    club_minutes_coverage_tolerance: float = DEFAULT_CLUB_MINUTES_COVERAGE_TOLERANCE,
     fixture_bonus_total_report: FixtureBonusTotalReport | None = None,
     fixture_bonus_total_tolerance: float = DEFAULT_FIXTURE_BONUS_TOTAL_TOLERANCE,
     minutes_bucket_share_report: MinutesBucketShareReport | None = None,
@@ -228,15 +246,18 @@ def evaluate_definition_of_done(
     model, not the component. Omitted (the default), this check is a no-op and never fails the
     gate, so existing callers are unaffected.
 
-    The five ``*_report`` parameters from ``fixture_minutes_coverage_report`` onward (T-J,
+    The ``*_report`` parameters from ``fixture_minutes_coverage_report`` onward (T-J,
     ``planning/ENGINE_AUDIT_FIXES-implementation.md``) are the aggregate/fixture-level/pool-wide
     plausibility invariants no per-player metric above can see: per-fixture minutes coverage
-    (sum of ``p_60_plus`` near 22), per-fixture bonus total (near 6.0), pool-wide minutes-bucket
-    shares against the prior season's real empirical split, goalkeeper saves plausibility against
-    the prior season's real per-match rate, and horizon minutes non-decay. Each is omitted by
-    default, the same no-op convention as ``mean_calibration_reports``. A caller that hasn't wired
-    one of these up yet (e.g. no ``fixture_id`` column available) doesn't retroactively fail a
-    report built before this check existed.
+    (sum of ``p_60_plus`` near 22), per-club minutes coverage split goalkeeper/outfield (sum of
+    ``p_60_plus`` near 1/10 respectively — catches a per-club skew, or two players at one club
+    both individually reading as likely starters, that the fixture-combined check above cannot
+    isolate), per-fixture bonus total (near 6.0), pool-wide minutes-bucket shares against the
+    prior season's real empirical split, goalkeeper saves plausibility against the prior season's
+    real per-match rate, and horizon minutes non-decay. Each is omitted by default, the same no-op
+    convention as ``mean_calibration_reports``. A caller that hasn't wired one of these up yet
+    (e.g. no ``fixture_id``/``team`` column available) doesn't retroactively fail a report built
+    before this check existed.
 
     ``decision_set_rank_report`` and ``conditional_bias_reports`` (ENGINE_IMPROVEMENTS_5.md Tier
     0.1) close the gap this gate had between what it measured and what a manager acts on. Every
@@ -286,6 +307,10 @@ def evaluate_definition_of_done(
         fixture_minutes_coverage_report is None
         or fixture_minutes_coverage_report.mean_absolute_gap <= fixture_minutes_coverage_tolerance
     )
+    club_minutes_coverage_acceptable = (
+        club_minutes_coverage_report is None
+        or club_minutes_coverage_report.mean_absolute_gap <= club_minutes_coverage_tolerance
+    )
     fixture_bonus_total_acceptable = (
         fixture_bonus_total_report is None
         or fixture_bonus_total_report.mean_absolute_gap <= fixture_bonus_total_tolerance
@@ -329,6 +354,8 @@ def evaluate_definition_of_done(
         mean_calibration_reports=mean_calibration_reports,
         fixture_minutes_coverage_acceptable=fixture_minutes_coverage_acceptable,
         fixture_minutes_coverage_report=fixture_minutes_coverage_report,
+        club_minutes_coverage_acceptable=club_minutes_coverage_acceptable,
+        club_minutes_coverage_report=club_minutes_coverage_report,
         fixture_bonus_total_acceptable=fixture_bonus_total_acceptable,
         fixture_bonus_total_report=fixture_bonus_total_report,
         minutes_bucket_shares_acceptable=minutes_bucket_shares_acceptable,

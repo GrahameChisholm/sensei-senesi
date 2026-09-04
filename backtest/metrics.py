@@ -72,6 +72,12 @@ __all__ = [
     "goalkeeper_saves_plausibility",
     "HorizonMonotonicityReport",
     "horizon_minutes_monotonicity",
+    "ClubMinutesCoverageReport",
+    "club_minutes_coverage",
+    "RatePlausibilityReport",
+    "rate_plausibility_by_evidence",
+    "ThinTailAccuracyReport",
+    "thin_tail_accuracy",
 ]
 
 
@@ -1040,3 +1046,174 @@ def horizon_minutes_monotonicity(
         .reset_index(drop=True)
     )
     return HorizonMonotonicityReport(by_gameweek=by_gameweek)
+
+
+@dataclass(frozen=True)
+class ClubMinutesCoverageReport:
+    """Per-club (not per-fixture-combined) sum of ``p_60_plus``, goalkeepers scored separately
+    from outfield players.
+
+    :func:`fixture_minutes_coverage` already checks that BOTH squads in a fixture sum close to 22,
+    but that combined check is blind to two real failure modes a 2026/27 GW3 pull found: one club
+    over-covered and its opponent under-covered can still average out to a combined 22 while each
+    individually diverges from a real XI (real spread: outfield ``p_60_plus`` summed 8.7 to 15.3
+    against a true 10, per club), and two players at the SAME club both individually reading as
+    likely starters (two goalkeepers at one club each rating ~76% to start the same match) doesn't
+    show up at all once summed together with the other ~20 players in the fixture. Splitting by
+    club and by goalkeeper/outfield is what catches both.
+    """
+
+    # columns: <club_id_col>, <gameweek_col>, is_goalkeeper, sum_p_60_plus, n_players, gap
+    by_club: pd.DataFrame
+    mean_absolute_gap: float
+    max_absolute_gap: float
+
+
+def club_minutes_coverage(
+    predictions: pd.DataFrame,
+    club_id_col: str = "team",
+    gameweek_col: str = GAMEWEEK_COL,
+    position_col: str = POSITION_COL,
+    p_60_plus_col: str = "p_60_plus",
+    goalkeeper_position: str = "GK",
+    outfield_target: float = 10.0,
+    goalkeeper_target: float = 1.0,
+) -> ClubMinutesCoverageReport:
+    """``club_id_col`` must identify one real club shared by every player from that squad in a
+    given gameweek (e.g. the vaastav/live ``team`` short name). Goalkeepers (rows where
+    ``position_col == goalkeeper_position``) are scored against ``goalkeeper_target`` (a real club
+    starts exactly one), every other position against ``outfield_target`` (a real club starts ten)
+    — the same real-XI-shape reasoning as
+    ``engine.models.minutes.normalize_within_club``/``OUTFIELD_STARTERS_PER_CLUB``/
+    ``GOALKEEPER_STARTERS_PER_CLUB``, checked here as an independent measurement rather than
+    trusted from the model that applies it.
+    """
+    if predictions.empty:
+        raise ValueError("predictions must not be empty")
+    df = predictions.copy()
+    df["_is_goalkeeper"] = df[position_col] == goalkeeper_position
+    by_club = (
+        df.groupby([club_id_col, gameweek_col, "_is_goalkeeper"])[p_60_plus_col]
+        .agg(sum_p_60_plus="sum", n_players="count")
+        .reset_index()
+        .rename(columns={"_is_goalkeeper": "is_goalkeeper"})
+    )
+    by_club["target"] = np.where(by_club["is_goalkeeper"], goalkeeper_target, outfield_target)
+    by_club["gap"] = by_club["sum_p_60_plus"] - by_club["target"]
+    return ClubMinutesCoverageReport(
+        by_club=by_club,
+        mean_absolute_gap=float(by_club["gap"].abs().mean()),
+        max_absolute_gap=float(by_club["gap"].abs().max()),
+    )
+
+
+@dataclass(frozen=True)
+class RatePlausibilityReport:
+    """A per-player rate's own distribution (p50/p90/max), split into a thin-evidence and an
+    established-evidence cohort.
+
+    The specific defect this targets: a real 2026/27 GW3 pull found a 13-minute cameo (5 defensive
+    actions) implying 28.3 actions/90 sustained indefinitely — ABOVE the highest rate any
+    established (170+ effective minutes) player in the same pool actually carried (18.5). No
+    per-player accuracy metric in this module can see this, and it is provably invisible to pooled
+    MAE: a real sweep of ``GOALS_SHRINKAGE_K`` from 10 to 45 moved pooled MAE by only 0.0005 while
+    the thin-sample tail (a single match's rate treated as a season-long true rate) is exactly
+    where an unshrunk/unwinsorized rate does the most damage. A correctly protected rate should
+    show LESS spread in the thin cohort than the established one — there is strictly less real
+    signal behind a thin-sample estimate — so ``thin_cohort_exceeds_established`` flags the
+    inverted (and wrong) case.
+    """
+
+    by_cohort: pd.DataFrame  # columns: cohort, n, p50, p90, max
+    thin_cohort_exceeds_established: bool
+
+
+def rate_plausibility_by_evidence(
+    predictions: pd.DataFrame,
+    rate_col: str,
+    evidence_col: str,
+    thin_threshold: float = 100.0,
+    established_threshold: float = 400.0,
+) -> RatePlausibilityReport:
+    """Splits ``predictions`` into a "thin" cohort (``evidence_col`` below ``thin_threshold``) and
+    an "established" cohort (``evidence_col`` at or above ``established_threshold``) — rows
+    strictly between the two thresholds are excluded by design, so the two cohorts being compared
+    stay cleanly separated rather than blurred together at a single boundary. ``evidence_col`` is
+    typically an effective-minutes weight already computed for shrinkage, e.g.
+    ``understat_effective_minutes`` (goals/assists) or ``card_effective_minutes`` (cards/own
+    goals/defensive contribution) from ``backtest.run_season.engineer_features``.
+    """
+    if predictions.empty:
+        raise ValueError("predictions must not be empty")
+    thin = predictions[predictions[evidence_col] < thin_threshold]
+    established = predictions[predictions[evidence_col] >= established_threshold]
+
+    rows = []
+    for label, subset in (("thin", thin), ("established", established)):
+        if subset.empty:
+            rows.append(
+                {
+                    "cohort": label,
+                    "n": 0,
+                    "p50": float("nan"),
+                    "p90": float("nan"),
+                    "max": float("nan"),
+                }
+            )
+            continue
+        rows.append(
+            {
+                "cohort": label,
+                "n": int(len(subset)),
+                "p50": float(subset[rate_col].quantile(0.5)),
+                "p90": float(subset[rate_col].quantile(0.9)),
+                "max": float(subset[rate_col].max()),
+            }
+        )
+    by_cohort = pd.DataFrame(rows)
+
+    thin_row = by_cohort.loc[by_cohort["cohort"] == "thin"].iloc[0]
+    established_row = by_cohort.loc[by_cohort["cohort"] == "established"].iloc[0]
+    exceeds = False
+    if thin_row["n"] > 0 and established_row["n"] > 0:
+        exceeds = bool(
+            thin_row["p90"] > established_row["p90"] or thin_row["max"] > established_row["max"]
+        )
+    return RatePlausibilityReport(by_cohort=by_cohort, thin_cohort_exceeds_established=exceeds)
+
+
+@dataclass(frozen=True)
+class ThinTailAccuracyReport:
+    """MAE restricted to rows whose evidence weight is below ``threshold`` — the objective a
+    thin-sample shrinkage constant (``GOALS_SHRINKAGE_K``, the new ``DC_SHRINKAGE_K``, ...) should
+    actually be swept against, not pooled MAE. A real sweep of ``GOALS_SHRINKAGE_K`` over {10, 20,
+    25, 30, 35, 45} moved pooled MAE by only 0.0005 across the whole range — provably too coarse an
+    instrument to see a thin-sample-specific defect, since that population is a small, MAE-diluting
+    fraction of the pooled sample by construction."""
+
+    mae: float
+    n: int
+    threshold: float
+    evidence_col: str
+
+
+def thin_tail_accuracy(
+    predictions: pd.DataFrame,
+    actuals: pd.DataFrame,
+    evidence_col: str,
+    threshold: float = 100.0,
+    predicted_col: str = PREDICTED_COL,
+    actual_col: str = ACTUAL_COL,
+) -> ThinTailAccuracyReport:
+    if evidence_col not in predictions.columns:
+        raise ValueError(f"predictions is missing evidence column {evidence_col!r}")
+    thin = predictions[predictions[evidence_col] < threshold]
+    if thin.empty:
+        raise ValueError("no rows with evidence below threshold to score")
+    merged = _merge_predictions_and_actuals(thin, actuals, predicted_col, actual_col)
+    return ThinTailAccuracyReport(
+        mae=float(merged["error"].abs().mean()),
+        n=len(merged),
+        threshold=threshold,
+        evidence_col=evidence_col,
+    )

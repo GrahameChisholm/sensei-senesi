@@ -10,6 +10,7 @@ from backtest.metrics import (
     bias_by_group,
     brier_vs_constant,
     captaincy_hit_rate,
+    club_minutes_coverage,
     component_calibration,
     decision_set_rank_correlation,
     floor_ceiling_coverage,
@@ -18,6 +19,8 @@ from backtest.metrics import (
     player_accuracy,
     rank_correlation,
     rate_calibration_at_realised_minutes,
+    rate_plausibility_by_evidence,
+    thin_tail_accuracy,
     top_n_mean_actual,
 )
 
@@ -804,3 +807,114 @@ def test_decision_set_rank_correlation_rejects_unrankable_top_n():
 
     with pytest.raises(ValueError, match="at least 2"):
         decision_set_rank_correlation(predictions, actuals, top_n=1)
+
+
+def test_club_minutes_coverage_detects_over_and_under_covered_clubs():
+    # Real 2026/27 GW3 pull: outfield p_60_plus summed 8.7 (under) to 15.3 (over) against a true
+    # 10 per club -- a defect fixture_minutes_coverage's combined-both-squads check can't isolate
+    # since one club's over-coverage can offset the other's under-coverage in the fixture total.
+    predictions = pd.DataFrame(
+        {
+            "team": ["Over"] * 15 + ["Under"] * 8,
+            "gameweek": [1] * 23,
+            "position": ["MID"] * 15 + ["MID"] * 8,
+            "p_60_plus": [15.3 / 15] * 15 + [8.7 / 8] * 8,
+        }
+    )
+    report = club_minutes_coverage(predictions, outfield_target=10.0, goalkeeper_target=1.0)
+    by_club = report.by_club.set_index("team")
+    assert by_club.loc["Over", "sum_p_60_plus"] == pytest.approx(15.3)
+    assert by_club.loc["Under", "sum_p_60_plus"] == pytest.approx(8.7)
+    assert report.max_absolute_gap == pytest.approx(5.3, abs=0.01)
+
+
+def test_club_minutes_coverage_scores_goalkeepers_separately_from_outfield():
+    # The real defect: two goalkeepers at the same club both individually rating 76% to start.
+    predictions = pd.DataFrame(
+        {
+            "team": ["Ipswich", "Ipswich", "Ipswich"],
+            "gameweek": [1, 1, 1],
+            "position": ["GK", "GK", "MID"],
+            "p_60_plus": [0.76, 0.76, 0.9],
+        }
+    )
+    report = club_minutes_coverage(predictions, outfield_target=10.0, goalkeeper_target=1.0)
+    gk_row = report.by_club.loc[report.by_club["is_goalkeeper"]].iloc[0]
+    assert gk_row["sum_p_60_plus"] == pytest.approx(1.52)
+    assert gk_row["gap"] == pytest.approx(0.52)
+
+
+def test_club_minutes_coverage_rejects_empty_predictions():
+    with pytest.raises(ValueError):
+        club_minutes_coverage(pd.DataFrame(columns=["team", "gameweek", "position", "p_60_plus"]))
+
+
+def test_rate_plausibility_flags_thin_cohort_exceeding_established():
+    # Real GW3 pull: a 13-minute cameo implied 28.3 dc_per_90, above the highest rate any
+    # established (170+ effective minutes) player actually carried (18.5) -- the exact inverted
+    # spread this check exists to catch.
+    established_minutes = [180.0, 180.0, 176.0, 180.0, 180.0, 180.0, 180.0]
+    predictions = pd.DataFrame(
+        {
+            "dc_per_90": [28.3, 21.0, 20.97] + [18.5, 13.96, 11.99, 7.0, 5.0, 4.0, 3.0],
+            "effective_minutes": [13.0, 8.0, 28.0] + established_minutes,
+        }
+    )
+    report = rate_plausibility_by_evidence(
+        predictions,
+        "dc_per_90",
+        "effective_minutes",
+        thin_threshold=100.0,
+        established_threshold=150.0,
+    )
+    assert report.thin_cohort_exceeds_established is True
+
+
+def test_rate_plausibility_does_not_flag_a_well_shrunk_rate():
+    established_minutes = [180.0, 180.0, 176.0, 180.0, 180.0, 180.0, 180.0]
+    predictions = pd.DataFrame(
+        {
+            "dc_per_90": [7.0, 7.2, 6.8] + [18.5, 13.96, 11.99, 7.0, 5.0, 4.0, 3.0],
+            "effective_minutes": [13.0, 8.0, 28.0] + established_minutes,
+        }
+    )
+    report = rate_plausibility_by_evidence(
+        predictions,
+        "dc_per_90",
+        "effective_minutes",
+        thin_threshold=100.0,
+        established_threshold=150.0,
+    )
+    assert report.thin_cohort_exceeds_established is False
+
+
+def test_rate_plausibility_handles_empty_cohort():
+    predictions = pd.DataFrame({"dc_per_90": [7.0, 8.0], "effective_minutes": [500.0, 600.0]})
+    report = rate_plausibility_by_evidence(predictions, "dc_per_90", "effective_minutes")
+    assert report.thin_cohort_exceeds_established is False
+    thin_row = report.by_cohort.set_index("cohort").loc["thin"]
+    assert thin_row["n"] == 0
+
+
+def test_thin_tail_accuracy_scores_only_low_evidence_rows():
+    predictions = pd.DataFrame(
+        {
+            "player_id": [1, 2, 3],
+            "gameweek": [1, 1, 1],
+            "expected_points": [10.0, 2.0, 3.0],
+            "effective_minutes": [50.0, 500.0, 30.0],
+        }
+    )
+    actuals = pd.DataFrame(
+        {"player_id": [1, 2, 3], "gameweek": [1, 1, 1], "total_points": [2.0, 2.5, 3.5]}
+    )
+    report = thin_tail_accuracy(predictions, actuals, "effective_minutes", threshold=100.0)
+    assert report.n == 2
+    assert report.mae == pytest.approx((abs(10.0 - 2.0) + abs(3.0 - 3.5)) / 2)
+
+
+def test_thin_tail_accuracy_rejects_missing_evidence_column():
+    predictions = pd.DataFrame({"player_id": [1], "gameweek": [1], "expected_points": [1.0]})
+    actuals = pd.DataFrame({"player_id": [1], "gameweek": [1], "total_points": [1.0]})
+    with pytest.raises(ValueError):
+        thin_tail_accuracy(predictions, actuals, "missing_col")
