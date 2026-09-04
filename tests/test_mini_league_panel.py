@@ -170,6 +170,28 @@ class TestBuildMiniLeaguePanel:
         with pytest.raises(ValueError):
             build_mini_league_panel(_app_state(), _team_state(), snapshot, my_entry_id=MY_ENTRY_ID)
 
+    def test_not_found_error_states_membership_definitively_when_the_whole_league_was_fetched(self):
+        """rival_limit_truncated is False means every entry in the league was checked, so the
+        message shouldn't hedge with "or beyond the fetched rival limit" -- that phrase is
+        actively misleading when it's known not to be the case."""
+        snapshot = _snapshot([_rival(1, {})])
+        with pytest.raises(ValueError, match="not a member of this league"):
+            build_mini_league_panel(_app_state(), _team_state(), snapshot, my_entry_id=MY_ENTRY_ID)
+        with pytest.raises(ValueError) as exc_info:
+            build_mini_league_panel(_app_state(), _team_state(), snapshot, my_entry_id=MY_ENTRY_ID)
+        assert "fetched rival limit" not in str(exc_info.value)
+
+    def test_not_found_error_mentions_the_rival_limit_when_the_league_was_truncated(self):
+        snapshot = LeagueSnapshot(
+            league_id=999,
+            league_name="Test League",
+            picks_gameweek=1,
+            entries=(_rival(1, {}),),
+            rival_limit_truncated=True,
+        )
+        with pytest.raises(ValueError, match="fetched rival limit"):
+            build_mini_league_panel(_app_state(), _team_state(), snapshot, my_entry_id=MY_ENTRY_ID)
+
     def test_excludes_my_own_entry_from_the_rivals_list(self):
         snapshot = _snapshot([_rival(MY_ENTRY_ID, {}), _rival(1, {}), _rival(2, {})])
         panel = build_mini_league_panel(_app_state(), _team_state(), snapshot, MY_ENTRY_ID)
