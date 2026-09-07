@@ -27,6 +27,7 @@ from scripts.build_projections import (
     assemble_projection_cache,
     build_fixture_list,
     merge_cold_start_projections,
+    resolve_build_gameweek,
     write_projection_cache,
 )
 
@@ -579,6 +580,37 @@ class TestDeadlineTimesForGameweeks:
         deadlines = _deadline_times_for_gameweeks(self._events(), [1, 2, 3])
 
         assert set(deadlines) == {1, 2}
+
+
+class TestResolveBuildGameweek:
+    def _events(self, data_checked: dict[int, bool]) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"id": gameweek, "data_checked": checked}
+                for gameweek, checked in data_checked.items()
+            ]
+        )
+
+    def test_override_always_wins(self):
+        events = self._events({1: True, 2: False})
+
+        assert resolve_build_gameweek(events, override=1) == 1
+
+    def test_picks_the_earliest_gameweek_not_yet_confirmed_final(self):
+        events = self._events({1: True, 2: False, 3: False})
+
+        assert resolve_build_gameweek(events) == 2
+
+    def test_true_gw1_resolves_to_the_lowest_id_when_nothing_is_checked_yet(self):
+        events = self._events({1: False, 2: False, 3: False})
+
+        assert resolve_build_gameweek(events) == 1
+
+    def test_raises_when_every_event_is_checked_and_no_override_given(self):
+        events = self._events({1: True, 2: True})
+
+        with pytest.raises(ValueError):
+            resolve_build_gameweek(events)
 
 
 class TestSerializeSimulationStdRoundTrip:

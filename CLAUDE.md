@@ -44,13 +44,18 @@ uv run uvicorn api.main:app --reload   # http://localhost:8000
 The API serves precomputed data only; it never fetches or computes projections on request. Run
 `build_projections.py` first to populate `data_store/projections/` from a live snapshot, e.g.:
 ```bash
-uv run python scripts/build_projections.py --season 2026-27 --gameweek 1 \
+uv run python scripts/build_projections.py --season 2026-27 \
   --understat-season-start-year 2026 --prior-season-start-year 2025
 ```
-`--season`, `--gameweek`, `--understat-season-start-year`, and `--prior-season-start-year` are all
-required, there is no bare no-argument form. To point a running API process at a historical replay
-season instead of live data, set `FPL_REPLAY_SEASON=2025-26` before starting uvicorn (see
-`api/state.py`).
+`--season`, `--understat-season-start-year`, and `--prior-season-start-year` are required, there is
+no bare no-argument form for those three. `--gameweek` is optional: left unset, it auto-resolves to
+the earliest gameweek FPL's own `bootstrap-static` hasn't yet flagged `data_checked` (i.e. whichever
+gameweek is still being decided or is mid-way through being played), so a plain rerun always targets
+the right gameweek without an operator having to track that by hand; pass `--gameweek` to override.
+Note this is purely about which gameweek gets *built*: `AppState.decision_gameweek` (`api/state.py`)
+still advances at a gameweek's deadline, not at match completion, since normally nothing is left to
+decide once a gameweek locks. To point a running API process at a historical replay season instead
+of live data, set `FPL_REPLAY_SEASON=2025-26` before starting uvicorn (see `api/state.py`).
 
 `build_projections.py` also appends one availability observation batch per run to
 `data_store/availability/observations.parquet` (see `engine/data/availability_log.py`), but a full

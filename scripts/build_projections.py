@@ -55,7 +55,7 @@ from engine.data.cross_season import (
     synthetic_team_rows,
     team_id_map,
 )
-from engine.data.fpl_client import FPLClient
+from engine.data.fpl_client import FPLClient, bootstrap_to_dataframes
 from engine.data.ingest import capture_current_gameweek
 from engine.data.live_adapter import (
     DEFAULT_TOTAL_MANAGERS,
@@ -82,6 +82,7 @@ __all__ = [
     "DEFAULT_OUTPUT_DIR",
     "build_fixture_list",
     "merge_cold_start_projections",
+    "resolve_build_gameweek",
     "assemble_projection_cache",
     "write_projection_cache",
     "build_projections",
@@ -471,6 +472,28 @@ def _deadline_times_for_gameweeks(
     return deadlines
 
 
+def resolve_build_gameweek(events: pd.DataFrame, override: int | None = None) -> int:
+    """The gameweek to build for: ``override`` if given, otherwise the earliest gameweek FPL has
+    not yet confirmed final (``data_checked`` is False) -- the gameweek still worth deciding right
+    now.
+
+    Correct in every case that matters: mid-gameweek (stays on the gameweek in progress rather than
+    rolling to the next the moment its deadline passes), the normal week-to-week roll (advances the
+    moment the previous gameweek is confirmed), and true GW1 (nothing is data_checked yet, so it
+    resolves to the lowest id). Raises rather than guessing when every event is already
+    data_checked and no override was given, since that only happens once the season itself is over.
+    """
+    if override is not None:
+        return override
+    open_events = events[~events["data_checked"].astype(bool)]
+    if open_events.empty:
+        raise ValueError(
+            "every FPL event is data_checked and no --gameweek override was given "
+            "(season likely over)"
+        )
+    return int(open_events["id"].min())
+
+
 # =================================================================================================
 # Orchestration -- real network/disk I/O
 # =================================================================================================
@@ -478,7 +501,7 @@ def _deadline_times_for_gameweeks(
 
 def build_projections(
     season: str,
-    gameweek: int,
+    gameweek: int | None,
     understat_season_start_year: int,
     prior_season_start_year: int,
     horizon: int = DEFAULT_HORIZON,
@@ -491,21 +514,30 @@ def build_projections(
     reuse_snapshot: datetime | None = None,
     n_prior_seasons_for_team_rates: int = 3,
 ) -> Path:
-    """The real end-to-end build: capture (or reuse) a live snapshot, close the GW1 cold start with
-    cross-season history, fit once and project ``horizon`` gameweeks, fill every remaining live
-    player with a flagged baseline, log predictions immutably, and write the cache atomically.
+    """The real end-to-end build: resolve which gameweek to build for, capture (or reuse) a live
+    snapshot, close the GW1 cold start with cross-season history, fit once and project ``horizon``
+    gameweeks, fill every remaining live player with a flagged baseline, log predictions
+    immutably, and write the cache atomically.
+
+    ``gameweek`` is an override; ``None`` (the normal case) auto-resolves via
+    :func:`resolve_build_gameweek` against a fresh ``bootstrap-static`` pull, so a plain rerun
+    always targets whichever gameweek FPL itself hasn't yet confirmed final, rather than requiring
+    an operator to track that by hand.
 
     Raises whatever :func:`~engine.data.live_horizon.build_live_horizon_from_feature_inputs` raises
     if even the cross-season-augmented training history is too thin -- a real, loud failure rather
     than a silent bad cache, exactly as that function's own docstring intends.
     """
-    target_gameweeks = list(range(gameweek, gameweek + horizon))
-
     with (
         httpx.Client(timeout=30.0) as http_client,
         FPLClient() as fpl_client,
         UnderstatClient() as understat_client,
     ):
+        gameweek = resolve_build_gameweek(
+            bootstrap_to_dataframes(fpl_client.get_bootstrap_static())["events"], gameweek
+        )
+        target_gameweeks = list(range(gameweek, gameweek + horizon))
+
         if reuse_snapshot is not None:
             captured_at = reuse_snapshot
         else:
@@ -730,7 +762,12 @@ def main(argv: list[str] | None = None) -> None:
         description="Build the team-selection page's projection cache from live data."
     )
     parser.add_argument("--season", required=True, help='e.g. "2026-27"')
-    parser.add_argument("--gameweek", type=int, required=True)
+    parser.add_argument(
+        "--gameweek",
+        type=int,
+        default=None,
+        help="Override the auto-detected (earliest not yet data_checked) gameweek",
+    )
     parser.add_argument("--understat-season-start-year", type=int, required=True, help="e.g. 2026")
     parser.add_argument("--prior-season-start-year", type=int, required=True, help="e.g. 2025")
     parser.add_argument("--horizon", type=int, default=DEFAULT_HORIZON)
