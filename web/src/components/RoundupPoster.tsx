@@ -31,10 +31,11 @@ const COLUMN_GAP = 24;
 const COLUMN_WIDTH = (CONTENT_WIDTH - COLUMN_GAP) / 2;
 const TOP_BOTTOM_CARD_HEIGHT = 170;
 // Rows 2 and 4 each pair a single-stat card (Highest Scoring Player, Points Left on the Bench)
-// with a two-sub-block card (Captaincy, Rank Movement) -- the two-sub-block layout is always the
-// taller of the two (second sub-block starts at local y=130ish, its own content runs to about
-// y=160), so this is that height plus bottom breathing room, and both cards in the row share it
-// rather than the single-stat card carrying a lot of dead space underneath.
+// with a multi-sub-block card (Captaincy's Best/Worst Call/Most Captained, Rank Movement's
+// Highest Climber/Biggest Fall). This is the shared floor height for a row when its content is
+// short enough not to need more -- each row's actual height is Math.max(this, however tall its
+// own wrapped sub-blocks need to be), so both cards in the row always share one height rather
+// than the single-stat card carrying dead space underneath.
 const TWO_STAT_CARD_HEIGHT = 185;
 const CARD_GAP_Y = 24;
 const CHART_ROW_HEIGHT = 40;
@@ -110,6 +111,27 @@ function wrapText(text: string, maxCharsPerLine: number): string[] {
   return lines;
 }
 
+/** Lays out a vertical list of rows (e.g. a leaderboard, a list of chip users) whose own label may
+ * wrap onto extra lines. A wrapped row pushes every row below it down rather than overlapping, so
+ * the block grows to fit instead of clipping. `endY` is where a row immediately after the last one
+ * would start, i.e. the bottom of the block plus the same inter-row gap `baseRowHeight` bakes in. */
+function layoutWrappedRows(
+  labels: string[],
+  maxCharsPerLine: number,
+  firstY: number,
+  baseRowHeight: number,
+  lineHeight: number,
+): { rows: { lines: string[]; y: number }[]; endY: number } {
+  let y = firstY;
+  const rows = labels.map((label) => {
+    const lines = wrapText(label, maxCharsPerLine);
+    const rowY = y;
+    y += baseRowHeight + Math.max(lines.length - 1, 0) * lineHeight;
+    return { lines, y: rowY };
+  });
+  return { rows, endY: y };
+}
+
 /** One end of the captaincy card: the extreme (highest or lowest) points return, and every row
  * tied on that exact value. A tie of one just names that manager; a tie of several is reported
  * as a headcount, naming the shared player only when every tied manager actually captained the
@@ -134,6 +156,28 @@ function describeCaptainExtreme(
     label: `Captained by ${tied.length} managers${sharedPlayerName ? ` · ${sharedPlayerName}` : ""}`,
     points: extreme.points,
   };
+}
+
+/** The other end of the captaincy card: not the best/worst return, but the player picked as
+ * captain by the most managers, regardless of how it paid off. A tie for the top count names
+ * every tied player rather than picking one arbitrarily. */
+function describeMostCaptained(
+  rows: CaptainReturnOut[],
+  players: Record<number, RoundupPlayerRefOut>,
+): { label: string; count: number } | null {
+  const eligible = rows.filter((row) => row.captain_player_id !== null);
+  if (eligible.length === 0) return null;
+  const counts = new Map<number, number>();
+  for (const row of eligible) {
+    const playerId = row.captain_player_id as number;
+    counts.set(playerId, (counts.get(playerId) ?? 0) + 1);
+  }
+  const maxCount = Math.max(...counts.values());
+  const topPlayerIds = [...counts.entries()]
+    .filter(([, count]) => count === maxCount)
+    .map(([playerId]) => playerId);
+  const label = topPlayerIds.map((id) => players[id]?.web_name ?? "").join(" · ");
+  return { label, count: maxCount };
 }
 
 /** Card chrome shared by every stat card: surface, border, rounded corners, and a small-caps
@@ -198,6 +242,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
     (a, b) => (b.points < a.points ? b : a),
     data.players,
   );
+  const mostCaptained = describeMostCaptained(data.captain_returns, data.players);
 
   const mostTemplate = data.template_overlap.reduce<
     (typeof data.template_overlap)[number] | null
@@ -236,12 +281,33 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
   const worstCaptainLines = worstCaptain
     ? wrapText(worstCaptain.label, CAPTAIN_LABEL_CHARS_PER_LINE)
     : [];
+  const mostCaptainedLines = mostCaptained
+    ? wrapText(mostCaptained.label, CAPTAIN_LABEL_CHARS_PER_LINE)
+    : [];
   const captainBlockHeight = (lines: string[]) =>
     26 + Math.max(lines.length - 1, 0) * CAPTAIN_LABEL_LINE_HEIGHT;
   const worstCaptainBlockY =
     CAPTAIN_BLOCK_TOP + captainBlockHeight(bestCaptainLines) + CAPTAIN_BLOCK_GAP;
+  const mostCaptainedBlockY =
+    worstCaptainBlockY + captainBlockHeight(worstCaptainLines) + CAPTAIN_BLOCK_GAP;
   const captaincyCardHeight =
-    worstCaptainBlockY + captainBlockHeight(worstCaptainLines) + CAPTAIN_BOTTOM_PADDING;
+    mostCaptainedBlockY + captainBlockHeight(mostCaptainedLines) + CAPTAIN_BOTTOM_PADDING;
+
+  // Template & Unique: both manager names wrap instead of truncating. If "Most Template"'s name
+  // wraps, "Most Unique"'s whole block (name, then its differential list) shifts down to match.
+  const TEMPLATE_NAME_CHARS_PER_LINE = 24;
+  const TEMPLATE_NAME_LINE_HEIGHT = 22;
+  const mostTemplateNameLines = mostTemplate
+    ? wrapText(mostTemplate.manager_name, TEMPLATE_NAME_CHARS_PER_LINE)
+    : [];
+  const mostTemplateCountY =
+    26 + Math.max(mostTemplateNameLines.length - 1, 0) * TEMPLATE_NAME_LINE_HEIGHT + 24;
+  const biggestHaulBlockY = 60 + mostTemplateCountY + 50;
+  const biggestHaulNameLines = biggestHaul
+    ? wrapText(biggestHaul.manager_name, TEMPLATE_NAME_CHARS_PER_LINE)
+    : [];
+  const biggestHaulNameExtra =
+    Math.max(biggestHaulNameLines.length - 1, 0) * TEMPLATE_NAME_LINE_HEIGHT;
 
   // Most Unique: list every true differential, not just as many as fit on one line -- the same
   // "don't cut off real information" fix, wrapped onto as many lines as the actual list needs.
@@ -251,31 +317,142 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
     ? biggestHaul.differential_player_ids.map((id) => data.players[id]?.web_name ?? "").join(" · ")
     : "";
   const differentialLines = wrapText(differentialNames, DIFFERENTIAL_LIST_CHARS_PER_LINE);
-  const differentialListY = 50;
+  const differentialListY = 50 + biggestHaulNameExtra;
   const differentialCountY =
     differentialListY + differentialLines.length * DIFFERENTIAL_LIST_LINE_HEIGHT + 5;
-  const templateUniqueCardHeight = biggestHaul ? 160 + differentialCountY + 24 : ROW3_HEIGHT;
+  const templateUniqueCardHeight = biggestHaul
+    ? biggestHaulBlockY + differentialCountY + 24
+    : Math.max(ROW3_HEIGHT, mostTemplate ? 60 + mostTemplateCountY + 24 : ROW3_HEIGHT);
+
+  // Highest/Lowest Point Scorer: manager names wrap instead of truncating, same "grow, don't
+  // clip" rule as everywhere else. A wrapped row pushes the rows below it down.
+  const ROW1_NAME_CHARS_PER_LINE = 24;
+  const ROW1_LINE_HEIGHT = 17;
+  const ROW1_ROW_HEIGHT = 34;
+  const ROW1_FIRST_Y = 64;
+  const ROW1_BOTTOM_PADDING = 20;
+  const topManagers = data.top_managers.slice(0, 3);
+  const bottomManagers = data.bottom_managers.slice(0, 3);
+  const topManagerLayout = layoutWrappedRows(
+    topManagers.map((row) => row.manager_name),
+    ROW1_NAME_CHARS_PER_LINE,
+    ROW1_FIRST_Y,
+    ROW1_ROW_HEIGHT,
+    ROW1_LINE_HEIGHT,
+  );
+  const bottomManagerLayout = layoutWrappedRows(
+    bottomManagers.map((row) => row.manager_name),
+    ROW1_NAME_CHARS_PER_LINE,
+    ROW1_FIRST_Y,
+    ROW1_ROW_HEIGHT,
+    ROW1_LINE_HEIGHT,
+  );
+  const row1Height = Math.max(
+    TOP_BOTTOM_CARD_HEIGHT,
+    topManagerLayout.endY + ROW1_BOTTOM_PADDING,
+    bottomManagerLayout.endY + ROW1_BOTTOM_PADDING,
+  );
+
+  // Highest Scoring Player: the owner-names list wraps instead of truncating -- it was previously
+  // clipped with an ellipsis part-way through the list of owners' names, cutting off exactly the
+  // information the card exists to show.
+  const HSP_OWNER_LIST_LINE_HEIGHT = 16;
+  const HSP_OWNER_LIST_TOP = 52;
+  const HSP_BOTTOM_PADDING = 24;
+  // The player's photo (when FPL's media CDN had one) sits to the left, text shifted right to
+  // clear it -- narrower text needs a shorter wrap width so a line doesn't run past the card.
+  const HSP_PHOTO_WIDTH = 64;
+  const HSP_PHOTO_HEIGHT = 82;
+  const HSP_PHOTO_Y = -14;
+  const topPlayerPhoto = data.top_player
+    ? data.players[data.top_player.player_id]?.photo_data_uri ?? null
+    : null;
+  const HSP_TEXT_X = topPlayerPhoto ? HSP_PHOTO_WIDTH + 16 : 0;
+  const HSP_OWNER_LIST_CHARS_PER_LINE = topPlayerPhoto ? 36 : 46;
+  const ownerListLines = data.top_player
+    ? wrapText(
+        data.top_player.owner_entry_ids.map((id) => managerNameByEntry.get(id) ?? "").join(" · "),
+        HSP_OWNER_LIST_CHARS_PER_LINE,
+      )
+    : [];
+  const highestScoringPlayerCardHeight = data.top_player
+    ? Math.max(
+        70 + HSP_OWNER_LIST_TOP + ownerListLines.length * HSP_OWNER_LIST_LINE_HEIGHT + HSP_BOTTOM_PADDING,
+        topPlayerPhoto ? 70 + HSP_PHOTO_Y + HSP_PHOTO_HEIGHT + HSP_BOTTOM_PADDING : 0,
+      )
+    : TWO_STAT_CARD_HEIGHT;
 
   const row1Y = HEADER_HEIGHT + chartHeight + CARD_GAP_Y;
-  const row2Height = Math.max(TWO_STAT_CARD_HEIGHT, captaincyCardHeight);
+  const row2Height = Math.max(TWO_STAT_CARD_HEIGHT, captaincyCardHeight, highestScoringPlayerCardHeight);
   const row3Height = Math.max(ROW3_HEIGHT, templateUniqueCardHeight);
-  const row2Y = row1Y + TOP_BOTTOM_CARD_HEIGHT + CARD_GAP_Y;
+  const row2Y = row1Y + row1Height + CARD_GAP_Y;
   const row3Y = row2Y + row2Height + CARD_GAP_Y;
+
+  // Points Left on the Bench: manager name and the list of contributing players both wrap. Rank
+  // Movement: both manager names wrap and, as with Template & Unique, a wrapped climber pushes the
+  // "Biggest Fall" block down.
+  const BENCH_NAME_CHARS_PER_LINE = 18;
+  const BENCH_NAME_LINE_HEIGHT = 26;
+  const BENCH_LIST_CHARS_PER_LINE = 40;
+  const BENCH_LIST_LINE_HEIGHT = 16;
+  const benchNameLines = worstBenchRegret
+    ? wrapText(worstBenchRegret.manager_name, BENCH_NAME_CHARS_PER_LINE)
+    : [];
+  const benchListLines = worstBenchRegret
+    ? wrapText(
+        worstBenchRegret.contributing_player_ids
+          .map((id) => data.players[id]?.web_name ?? "")
+          .join(" · "),
+        BENCH_LIST_CHARS_PER_LINE,
+      )
+    : [];
+  const benchNameExtra = Math.max(benchNameLines.length - 1, 0) * BENCH_NAME_LINE_HEIGHT;
+  const benchListY = 30 + benchNameExtra;
+  const benchCardHeight = worstBenchRegret
+    ? 66 + benchListY + benchListLines.length * BENCH_LIST_LINE_HEIGHT + 20
+    : TWO_STAT_CARD_HEIGHT;
+
+  const CLIMB_NAME_CHARS_PER_LINE = 22;
+  const CLIMB_NAME_LINE_HEIGHT = 20;
+  const climberNameLines = biggestClimb
+    ? wrapText(biggestClimb.manager_name, CLIMB_NAME_CHARS_PER_LINE)
+    : [];
+  const climberContentY = 26 + Math.max(climberNameLines.length - 1, 0) * CLIMB_NAME_LINE_HEIGHT;
+  const fallBlockY = 62 + climberContentY + 44;
+  const fallNameLines = biggestFall
+    ? wrapText(biggestFall.manager_name, CLIMB_NAME_CHARS_PER_LINE)
+    : [];
+  const fallContentY = 26 + Math.max(fallNameLines.length - 1, 0) * CLIMB_NAME_LINE_HEIGHT;
+  const rankMovementCardHeight = biggestFall
+    ? fallBlockY + fallContentY + 27
+    : biggestClimb
+      ? 62 + climberContentY + 27
+      : TWO_STAT_CARD_HEIGHT;
+
   const row4Y = row3Y + row3Height + CARD_GAP_Y;
-  const chipsY = row4Y + TWO_STAT_CARD_HEIGHT + CARD_GAP_Y;
+  const row4Height = Math.max(TWO_STAT_CARD_HEIGHT, benchCardHeight, rankMovementCardHeight);
+  const chipsY = row4Y + row4Height + CARD_GAP_Y;
   // First row sits at local y=52; each badge is 24 tall; CHIPS_BOTTOM_PADDING below the last
   // badge's bottom edge is the card's own close, matching every other card's bottom margin.
   const CHIPS_FIRST_ROW_Y = 52;
   const CHIPS_ROW_HEIGHT = 36;
   const CHIPS_BADGE_HEIGHT = 24;
   const CHIPS_BOTTOM_PADDING = 20;
+  const CHIP_NAME_CHARS_PER_LINE = 22;
+  const CHIP_NAME_LINE_HEIGHT = 16;
+  // Chip manager names wrap instead of truncating; a wrapped name pushes the chip rows below it
+  // down, same as the leaderboard rows above.
+  const chipLayout = layoutWrappedRows(
+    data.chips.map((chip) => chip.manager_name),
+    CHIP_NAME_CHARS_PER_LINE,
+    CHIPS_FIRST_ROW_Y,
+    CHIPS_ROW_HEIGHT,
+    CHIP_NAME_LINE_HEIGHT,
+  );
   const chipsHeight =
-    CHIPS_FIRST_ROW_Y +
-    Math.max(data.chips.length - 1, 0) * CHIPS_ROW_HEIGHT +
-    CHIPS_BADGE_HEIGHT +
-    CHIPS_BOTTOM_PADDING;
+    chipLayout.endY - CHIPS_ROW_HEIGHT + CHIPS_BADGE_HEIGHT + CHIPS_BOTTOM_PADDING;
   const posterHeight =
-    (data.chips.length > 0 ? chipsY + chipsHeight : row4Y + TWO_STAT_CARD_HEIGHT) + MARGIN;
+    (data.chips.length > 0 ? chipsY + chipsHeight : row4Y + row4Height) + MARGIN;
 
   return (
     <svg
@@ -399,17 +576,19 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN}
         y={row1Y}
         width={COLUMN_WIDTH}
-        height={TOP_BOTTOM_CARD_HEIGHT}
+        height={row1Height}
         label="Highest Point Scorer"
       >
-        {data.top_managers.slice(0, 3).map((row, i) => (
-          <g key={row.entry_id} transform={`translate(20, ${64 + i * 34})`}>
+        {topManagers.map((row, i) => (
+          <g key={row.entry_id} transform={`translate(20, ${topManagerLayout.rows[i].y})`}>
             <text fontSize={14} fontWeight={700} fill={GOLD}>
               {i + 1}
             </text>
-            <text x={28} fontSize={15} fontWeight={600} fill={TEXT}>
-              {truncate(row.manager_name, 22)}
-            </text>
+            {topManagerLayout.rows[i].lines.map((line, li) => (
+              <text key={li} x={28} y={li * ROW1_LINE_HEIGHT} fontSize={15} fontWeight={600} fill={TEXT}>
+                {line}
+              </text>
+            ))}
             <text x={COLUMN_WIDTH - 60} fontSize={16} fontWeight={700} fill={HIGH_TEXT}>
               {row.gameweek_points}
             </text>
@@ -420,17 +599,19 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN + COLUMN_WIDTH + COLUMN_GAP}
         y={row1Y}
         width={COLUMN_WIDTH}
-        height={TOP_BOTTOM_CARD_HEIGHT}
+        height={row1Height}
         label="Lowest Point Scorer"
       >
-        {data.bottom_managers.slice(0, 3).map((row, i) => (
-          <g key={row.entry_id} transform={`translate(20, ${64 + i * 34})`}>
+        {bottomManagers.map((row, i) => (
+          <g key={row.entry_id} transform={`translate(20, ${bottomManagerLayout.rows[i].y})`}>
             <text fontSize={14} fontWeight={700} fill={TEXT_MUTED}>
               {nEntries > 0 ? nEntries - i : ""}
             </text>
-            <text x={28} fontSize={15} fontWeight={600} fill={TEXT}>
-              {truncate(row.manager_name, 22)}
-            </text>
+            {bottomManagerLayout.rows[i].lines.map((line, li) => (
+              <text key={li} x={28} y={li * ROW1_LINE_HEIGHT} fontSize={15} fontWeight={600} fill={TEXT}>
+                {line}
+              </text>
+            ))}
             <text x={COLUMN_WIDTH - 60} fontSize={16} fontWeight={700} fill={LOW_TEXT}>
               {row.gameweek_points}
             </text>
@@ -448,26 +629,35 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
       >
         {data.top_player && (
           <g transform="translate(20, 70)">
-            <text fontSize={26} fontWeight={700} fill={TEXT}>
-              {truncate(data.players[data.top_player.player_id]?.web_name ?? "", 18)}
+            {topPlayerPhoto && (
+              <image
+                href={topPlayerPhoto}
+                x={0}
+                y={HSP_PHOTO_Y}
+                width={HSP_PHOTO_WIDTH}
+                height={HSP_PHOTO_HEIGHT}
+              />
+            )}
+            <text x={HSP_TEXT_X} fontSize={26} fontWeight={700} fill={TEXT}>
+              {truncate(data.players[data.top_player.player_id]?.web_name ?? "", 24)}
             </text>
             <text x={COLUMN_WIDTH - 90} fontSize={30} fontWeight={700} fill={HIGH_TEXT}>
               {data.top_player.live_points}
             </text>
-            <text y={26} fontSize={13} fontWeight={600} fill={TEXT_MUTED}>
-              {truncate(
-                `Owned by ${data.top_player.owner_entry_ids.length} of ${nEntries}`,
-                40,
-              )}
+            <text x={HSP_TEXT_X} y={26} fontSize={13} fontWeight={600} fill={TEXT_MUTED}>
+              {`Owned by ${data.top_player.owner_entry_ids.length} of ${nEntries}`}
             </text>
-            <text y={52} fontSize={13} fill={TEXT_MUTED}>
-              {truncate(
-                data.top_player.owner_entry_ids
-                  .map((id) => managerNameByEntry.get(id) ?? "")
-                  .join(" · "),
-                52,
-              )}
-            </text>
+            {ownerListLines.map((line, i) => (
+              <text
+                key={i}
+                x={HSP_TEXT_X}
+                y={HSP_OWNER_LIST_TOP + i * HSP_OWNER_LIST_LINE_HEIGHT}
+                fontSize={13}
+                fill={TEXT_MUTED}
+              >
+                {line}
+              </text>
+            ))}
           </g>
         )}
       </Card>
@@ -494,7 +684,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
                 {line}
               </text>
             ))}
-            <text x={COLUMN_WIDTH - 60} y={26} fontSize={20} fontWeight={700} fill={HIGH_TEXT}>
+            <text x={COLUMN_WIDTH - 40} y={26} fontSize={20} fontWeight={700} fill={HIGH_TEXT} textAnchor="end">
               {bestCaptain.points}
             </text>
           </g>
@@ -515,8 +705,29 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
                 {line}
               </text>
             ))}
-            <text x={COLUMN_WIDTH - 60} y={26} fontSize={20} fontWeight={700} fill={DANGER}>
+            <text x={COLUMN_WIDTH - 40} y={26} fontSize={20} fontWeight={700} fill={DANGER} textAnchor="end">
               {worstCaptain.points}
+            </text>
+          </g>
+        )}
+        {mostCaptained && (
+          <g transform={`translate(20, ${mostCaptainedBlockY})`}>
+            <text fontSize={11} fontWeight={700} letterSpacing={0.5} fill={TEXT_MUTED}>
+              MOST CAPTAINED
+            </text>
+            {mostCaptainedLines.map((line, i) => (
+              <text
+                key={i}
+                y={26 + i * CAPTAIN_LABEL_LINE_HEIGHT}
+                fontSize={17}
+                fontWeight={700}
+                fill={TEXT}
+              >
+                {line}
+              </text>
+            ))}
+            <text x={COLUMN_WIDTH - 40} y={26} fontSize={20} fontWeight={700} fill={ACCENT} textAnchor="end">
+              {`${mostCaptained.count} of ${nEntries}`}
             </text>
           </g>
         )}
@@ -532,7 +743,8 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
           const rowOrder: ("GK" | "DEF" | "MID" | "FWD")[] = ["GK", "DEF", "MID", "FWD"];
           const rowHeight = pitchHeight / rowOrder.length;
           const tokenWidth = 88;
-          const tokenHeight = 42;
+          const TOKEN_NAME_CHARS_PER_LINE = 10;
+          const TOKEN_NAME_LINE_HEIGHT = 12;
 
           function rowTokenXs(count: number): number[] {
             if (count === 0) return [];
@@ -594,31 +806,43 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
                   <g key={position}>
                     {ids.map((playerId, i) => {
                       const starterCount = data.template_starter_counts[playerId] ?? 0;
+                      // A hyphenated or two-part surname (e.g. "Alexander-Arnold") can run past
+                      // 10 characters -- wrapped onto a second line, growing just this token,
+                      // rather than clipped with an ellipsis.
+                      const nameLines = wrapText(
+                        data.players[playerId]?.web_name ?? "",
+                        TOKEN_NAME_CHARS_PER_LINE,
+                      );
+                      const ownedY = 17 + (nameLines.length - 1) * TOKEN_NAME_LINE_HEIGHT + 15;
+                      const thisTokenHeight = ownedY + 10;
                       return (
                         <g
                           key={playerId}
-                          transform={`translate(${xs[i]}, ${rowCenterY - tokenHeight / 2})`}
+                          transform={`translate(${xs[i]}, ${rowCenterY - thisTokenHeight / 2})`}
                         >
                           <rect
                             width={tokenWidth}
-                            height={tokenHeight}
+                            height={thisTokenHeight}
                             rx={8}
                             fill={SURFACE}
                             stroke="rgba(0, 0, 0, 0.08)"
                           />
+                          {nameLines.map((line, li) => (
+                            <text
+                              key={li}
+                              x={tokenWidth / 2}
+                              y={17 + li * TOKEN_NAME_LINE_HEIGHT}
+                              fontSize={11}
+                              fontWeight={700}
+                              fill={TEXT}
+                              textAnchor="middle"
+                            >
+                              {line}
+                            </text>
+                          ))}
                           <text
                             x={tokenWidth / 2}
-                            y={17}
-                            fontSize={11}
-                            fontWeight={700}
-                            fill={TEXT}
-                            textAnchor="middle"
-                          >
-                            {truncate(data.players[playerId]?.web_name ?? "", 11)}
-                          </text>
-                          <text
-                            x={tokenWidth / 2}
-                            y={32}
+                            y={ownedY}
                             fontSize={10}
                             fontWeight={600}
                             fill={TEXT_MUTED}
@@ -648,22 +872,26 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
             <text fontSize={11} fontWeight={700} letterSpacing={0.5} fill={TEXT_MUTED}>
               MOST TEMPLATE
             </text>
-            <text y={26} fontSize={18} fontWeight={700} fill={TEXT}>
-              {truncate(mostTemplate.manager_name, 20)}
-            </text>
-            <text y={50} fontSize={14} fontWeight={600} fill={TEXT_MUTED}>
+            {mostTemplateNameLines.map((line, i) => (
+              <text key={i} y={26 + i * TEMPLATE_NAME_LINE_HEIGHT} fontSize={18} fontWeight={700} fill={TEXT}>
+                {line}
+              </text>
+            ))}
+            <text y={mostTemplateCountY} fontSize={14} fontWeight={600} fill={TEXT_MUTED}>
               {`${mostTemplate.overlap_count} of ${mostTemplate.template_size} template players`}
             </text>
           </g>
         )}
         {biggestHaul && (
-          <g transform="translate(20, 160)">
+          <g transform={`translate(20, ${biggestHaulBlockY})`}>
             <text fontSize={11} fontWeight={700} letterSpacing={0.5} fill={TEXT_MUTED}>
               MOST UNIQUE
             </text>
-            <text y={26} fontSize={18} fontWeight={700} fill={TEXT}>
-              {truncate(biggestHaul.manager_name, 20)}
-            </text>
+            {biggestHaulNameLines.map((line, i) => (
+              <text key={i} y={26 + i * TEMPLATE_NAME_LINE_HEIGHT} fontSize={18} fontWeight={700} fill={TEXT}>
+                {line}
+              </text>
+            ))}
             <text x={TEMPLATE_UNIQUE_CARD_WIDTH - 60} y={26} fontSize={18} fontWeight={700} fill={HIGH_TEXT}>
               {biggestHaul.total_points}
             </text>
@@ -689,25 +917,24 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN}
         y={row4Y}
         width={COLUMN_WIDTH}
-        height={TWO_STAT_CARD_HEIGHT}
+        height={row4Height}
         label="Points Left on the Bench"
       >
         {worstBenchRegret && (
           <g transform="translate(20, 66)">
-            <text fontSize={22} fontWeight={700} fill={TEXT}>
-              {truncate(worstBenchRegret.manager_name, 20)}
-            </text>
+            {benchNameLines.map((line, i) => (
+              <text key={i} y={i * BENCH_NAME_LINE_HEIGHT} fontSize={22} fontWeight={700} fill={TEXT}>
+                {line}
+              </text>
+            ))}
             <text x={COLUMN_WIDTH - 70} fontSize={26} fontWeight={700} fill={DANGER}>
               {worstBenchRegret.points_left_on_bench}
             </text>
-            <text y={30} fontSize={13} fill={TEXT_MUTED}>
-              {truncate(
-                worstBenchRegret.contributing_player_ids
-                  .map((id) => data.players[id]?.web_name ?? "")
-                  .join(" · "),
-                44,
-              )}
-            </text>
+            {benchListLines.map((line, i) => (
+              <text key={i} y={benchListY + i * BENCH_LIST_LINE_HEIGHT} fontSize={13} fill={TEXT_MUTED}>
+                {line}
+              </text>
+            ))}
           </g>
         )}
       </Card>
@@ -715,7 +942,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN + COLUMN_WIDTH + COLUMN_GAP}
         y={row4Y}
         width={COLUMN_WIDTH}
-        height={TWO_STAT_CARD_HEIGHT}
+        height={row4Height}
         label="Rank Movement"
       >
         {biggestClimb && (
@@ -723,22 +950,26 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
             <text fontSize={11} fontWeight={700} letterSpacing={0.5} fill={TEXT_MUTED}>
               HIGHEST CLIMBER
             </text>
-            <text y={26} fontSize={16} fontWeight={700} fill={TEXT}>
-              {truncate(biggestClimb.manager_name, 24)}
-            </text>
+            {climberNameLines.map((line, i) => (
+              <text key={i} y={26 + i * CLIMB_NAME_LINE_HEIGHT} fontSize={16} fontWeight={700} fill={TEXT}>
+                {line}
+              </text>
+            ))}
             <text x={COLUMN_WIDTH - 90} y={26} fontSize={18} fontWeight={700} fill={HIGH_TEXT}>
               {`${biggestClimb.rank_before} → ${biggestClimb.rank_after}`}
             </text>
           </g>
         )}
         {biggestFall && (
-          <g transform="translate(20, 132)">
+          <g transform={`translate(20, ${fallBlockY})`}>
             <text fontSize={11} fontWeight={700} letterSpacing={0.5} fill={TEXT_MUTED}>
               BIGGEST FALL
             </text>
-            <text y={26} fontSize={16} fontWeight={700} fill={TEXT}>
-              {truncate(biggestFall.manager_name, 24)}
-            </text>
+            {fallNameLines.map((line, i) => (
+              <text key={i} y={26 + i * CLIMB_NAME_LINE_HEIGHT} fontSize={16} fontWeight={700} fill={TEXT}>
+                {line}
+              </text>
+            ))}
             <text x={COLUMN_WIDTH - 90} y={26} fontSize={18} fontWeight={700} fill={DANGER}>
               {`${biggestFall.rank_before} → ${biggestFall.rank_after}`}
             </text>
@@ -750,7 +981,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
       {data.chips.length > 0 && (
         <Card x={MARGIN} y={chipsY} width={CONTENT_WIDTH} height={chipsHeight} label="Chips Used">
           {data.chips.map((chip, i) => (
-            <g key={chip.entry_id} transform={`translate(20, ${52 + i * 36})`}>
+            <g key={chip.entry_id} transform={`translate(20, ${chipLayout.rows[i].y})`}>
               <rect width={128} height={24} rx={12} fill={chipColour(chip.chip_name)} />
               <text
                 x={64}
@@ -762,9 +993,11 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
               >
                 {chipDisplayName(chip.chip_name)}
               </text>
-              <text x={150} y={17} fontSize={14} fontWeight={600} fill={TEXT}>
-                {truncate(chip.manager_name, 26)}
-              </text>
+              {chipLayout.rows[i].lines.map((line, li) => (
+                <text key={li} x={150} y={17 + li * CHIP_NAME_LINE_HEIGHT} fontSize={14} fontWeight={600} fill={TEXT}>
+                  {line}
+                </text>
+              ))}
               <text
                 x={CONTENT_WIDTH - 220}
                 y={17}
