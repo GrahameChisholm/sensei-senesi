@@ -408,6 +408,100 @@ export interface MiniLeaguePanelOut {
   rivals: MiniLeagueRivalOut[];
 }
 
+// --- Roundup (ROUNDUP_PLAN) -------------------------------------------------------------------
+
+export interface ManagerGameweekRowOut {
+  entry_id: number;
+  manager_name: string;
+  team_name: string;
+  gameweek_points: number;
+}
+
+export interface PlayerRoundupRowOut {
+  player_id: number;
+  live_points: number;
+  owner_entry_ids: number[];
+  starter_entry_ids: number[];
+  captain_entry_ids: number[];
+}
+
+export interface CaptainReturnOut {
+  entry_id: number;
+  manager_name: string;
+  captain_player_id: number | null;
+  multiplier: number;
+  points: number;
+}
+
+export interface BenchRegretRowOut {
+  entry_id: number;
+  manager_name: string;
+  points_left_on_bench: number;
+  contributing_player_ids: number[];
+}
+
+export interface MoverOut {
+  entry_id: number;
+  manager_name: string;
+  rank_before: number;
+  rank_after: number;
+  delta: number;
+}
+
+export interface TemplateOverlapRowOut {
+  entry_id: number;
+  manager_name: string;
+  overlap_count: number;
+  template_size: number;
+}
+
+export interface DifferentialHaulRowOut {
+  entry_id: number;
+  manager_name: string;
+  differential_player_ids: number[];
+  total_points: number;
+}
+
+export interface ChipSummaryOut {
+  entry_id: number;
+  manager_name: string;
+  chip_name: string;
+  resulting_rank: number | null;
+  points_effect: number | null;
+}
+
+export interface RoundupPlayerRefOut {
+  web_name: string;
+  team_id: number;
+  position: string;
+}
+
+export interface RoundupTeamRefOut {
+  name: string;
+  short_name: string;
+}
+
+export interface RoundupOut {
+  league_id: number;
+  league_name: string;
+  gameweek: number;
+  /** Every gameweek from 1 to `gameweek`, mapping to every entry_id ranked by cumulative points
+   * as of it -- the bump chart's data. */
+  standings_by_gameweek: Record<number, number[]>;
+  top_managers: ManagerGameweekRowOut[];
+  bottom_managers: ManagerGameweekRowOut[];
+  top_player: PlayerRoundupRowOut | null;
+  captain_returns: CaptainReturnOut[];
+  bench_regret: BenchRegretRowOut[];
+  movers: MoverOut[];
+  template_xi: number[];
+  template_overlap: TemplateOverlapRowOut[];
+  differential_hauls: DifferentialHaulRowOut[];
+  chips: ChipSummaryOut[];
+  players: Record<number, RoundupPlayerRefOut>;
+  teams: Record<number, RoundupTeamRefOut>;
+}
+
 export interface TransferMoveOut {
   out_player_id: number;
   in_player_id: number;
@@ -609,5 +703,10 @@ export const api = {
   getMiniLeague: (leagueId: number, options?: { refresh?: boolean; chip?: string | null }) =>
     request<MiniLeaguePanelOut>(
       `/mini-league/${leagueId}${query({ refresh: options?.refresh, chip: options?.chip })}`,
+    ),
+
+  getRoundup: (leagueId: number, options?: { gameweek?: number; refresh?: boolean }) =>
+    request<RoundupOut>(
+      `/roundup/${leagueId}${query({ gameweek: options?.gameweek, refresh: options?.refresh })}`,
     ),
 };
