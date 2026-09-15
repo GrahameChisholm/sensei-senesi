@@ -86,6 +86,39 @@ export function useSquadPoints(
   return points;
 }
 
+/** How many transfers each horizon gameweek's own plan has made, keyed by gameweek -- what the
+ * gameweek pill selector badges itself with. Fetches `GET /squad?gameweek=X` for every gameweek in
+ * parallel (the list is short, today at most 3) rather than needing a dedicated bulk endpoint, and
+ * refetches whenever `refreshKey` (the currently-viewed squad's own identity) changes, since an
+ * edit to one gameweek can change another's count (a swap at GW2 changes GW3's live-followed
+ * squad, for instance, even though GW3 itself wasn't touched). */
+export function useSquadTransferCounts(
+  gameweeks: number[],
+  refreshKey: unknown,
+): Record<number, number> {
+  const [counts, setCounts] = useState<Record<number, number>>({});
+  const gameweeksKey = gameweeks.join(",");
+
+  useEffect(() => {
+    if (gameweeks.length === 0) return;
+    let cancelled = false;
+    Promise.all(gameweeks.map((gw) => api.getSquad(gw)))
+      .then((results) => {
+        if (cancelled) return;
+        setCounts(Object.fromEntries(results.map((r) => [r.gameweek, r.transfers_made])));
+      })
+      .catch(() => {
+        if (!cancelled) setCounts({});
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameweeksKey, refreshKey]);
+
+  return counts;
+}
+
 export function usePlayerPanel(filters: {
   position?: string;
   min_price?: number;

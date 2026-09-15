@@ -50,8 +50,11 @@ export interface SquadPlayerOut {
   price: number;
 }
 
-// The one live sandbox squad -- 0 to 15 players, no confirm step, no transfer economy.
+// One gameweek's squad plan -- 0 to 15 players, no confirm step. A gameweek with no plan of its
+// own live-follows the nearest earlier gameweek that has one (the week-on-week simulator).
 export interface SquadOut {
+  /** Which horizon gameweek this plan is for. */
+  gameweek: number;
   squad: SquadPlayerOut[];
   starting_xi: number[];
   bench_order: number[];
@@ -60,6 +63,13 @@ export interface SquadOut {
   is_complete: boolean;
   budget_ceiling: number;
   budget_remaining: number;
+  /** Player swaps made in this gameweek versus whichever earlier gameweek it was forked from. 0
+   * while it's still live-following an earlier gameweek. */
+  transfers_made: number;
+  /** A different, account-level number: FPL's own real transfer count for the imported entry this
+   * season, refreshed on every import. Unrelated to `transfers_made` and doesn't vary with which
+   * gameweek is being viewed. */
+  season_transfers_made: number;
 }
 
 export interface SquadPointsOut {
@@ -489,35 +499,43 @@ function query(params: Record<string, string | number | boolean | undefined | nu
 export const api = {
   getGameweek: () => request<GameweekOut>("/gameweek"),
   getTeams: () => request<TeamOut[]>("/teams"),
-  getSquad: () => request<SquadOut>("/squad"),
+  // `gameweek` selects which horizon gameweek's plan to read/edit -- omit it for the decision
+  // gameweek. `clearSquad`/`importSquad` always reset/resync at the decision gameweek regardless
+  // (they represent your *real* squad), so they take no `gameweek` of their own.
+  getSquad: (gameweek?: number) => request<SquadOut>(`/squad${query({ gameweek })}`),
 
-  addPlayer: (player_id: number, position: string, price: number) =>
-    request<SquadOut>("/squad/players", {
+  addPlayer: (player_id: number, position: string, price: number, gameweek?: number) =>
+    request<SquadOut>(`/squad/players${query({ gameweek })}`, {
       method: "POST",
       body: JSON.stringify({ player_id, position, price }),
     }),
-  removePlayer: (playerId: number) =>
-    request<SquadOut>(`/squad/players/${playerId}`, { method: "DELETE" }),
+  removePlayer: (playerId: number, gameweek?: number) =>
+    request<SquadOut>(`/squad/players/${playerId}${query({ gameweek })}`, { method: "DELETE" }),
   clearSquad: () => request<SquadOut>("/squad/players", { method: "DELETE" }),
 
-  setCaptain: (player_id: number, role: "captain" | "vice") =>
-    request<SquadOut>("/squad/captain", {
+  setCaptain: (player_id: number, role: "captain" | "vice", gameweek?: number) =>
+    request<SquadOut>(`/squad/captain${query({ gameweek })}`, {
       method: "POST",
       body: JSON.stringify({ player_id, role }),
     }),
-  setBenchOrder: (starting_xi: number[], bench_order: number[]) =>
-    request<SquadOut>("/squad/bench-order", {
+  setBenchOrder: (starting_xi: number[], bench_order: number[], gameweek?: number) =>
+    request<SquadOut>(`/squad/bench-order${query({ gameweek })}`, {
       method: "POST",
       body: JSON.stringify({ starting_xi, bench_order }),
     }),
-  substitute: (out_id: number, in_id: number) =>
-    request<SquadOut>("/squad/substitute", {
+  substitute: (out_id: number, in_id: number, gameweek?: number) =>
+    request<SquadOut>(`/squad/substitute${query({ gameweek })}`, {
       method: "POST",
       body: JSON.stringify({ out_id, in_id }),
     }),
-  optimiseXi: () => request<SquadOut>("/squad/optimise-xi", { method: "POST" }),
-  optimise: (objective: "full_squad" | "starting_xi" = "full_squad", captainMultiplier = 2.0) =>
-    request<SquadOut>("/squad/optimise", {
+  optimiseXi: (gameweek?: number) =>
+    request<SquadOut>(`/squad/optimise-xi${query({ gameweek })}`, { method: "POST" }),
+  optimise: (
+    objective: "full_squad" | "starting_xi" = "full_squad",
+    captainMultiplier = 2.0,
+    gameweek?: number,
+  ) =>
+    request<SquadOut>(`/squad/optimise${query({ gameweek })}`, {
       method: "POST",
       body: JSON.stringify({ objective, captain_multiplier: captainMultiplier }),
     }),
@@ -585,6 +603,7 @@ export const api = {
     horizon?: number;
     chip?: string | null;
     leagueId?: number;
+    gameweek?: number;
   }) =>
     request<TransferSuggestionOut>(
       `/squad/transfers${query({
@@ -592,10 +611,11 @@ export const api = {
         horizon: options.horizon ?? 1,
         chip: options.chip ?? undefined,
         league_id: options.leagueId,
+        gameweek: options.gameweek,
       })}`,
     ),
-  applyTransfers: (outPlayerIds: number[], inPlayerIds: number[]) =>
-    request<SquadOut>("/squad/transfers/apply", {
+  applyTransfers: (outPlayerIds: number[], inPlayerIds: number[], gameweek?: number) =>
+    request<SquadOut>(`/squad/transfers/apply${query({ gameweek })}`, {
       method: "POST",
       body: JSON.stringify({ out_player_ids: outPlayerIds, in_player_ids: inPlayerIds }),
     }),

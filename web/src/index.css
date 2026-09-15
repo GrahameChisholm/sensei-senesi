@@ -1628,6 +1628,17 @@ button {
   color: var(--accent);
 }
 
+.transfer-count-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--surface);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
 .previewing-badge {
   margin: 3px 0 0;
   color: var(--accent);

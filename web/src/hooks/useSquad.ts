@@ -4,14 +4,19 @@ import { api, ApiError, SquadOut } from "../api";
 // The server is always the source of truth: every mutation just calls the API and replaces
 // local state with whatever it returns -- never reconstructed client-side. Every action here
 // applies instantly, there is no confirm step anywhere.
-export function useSquad() {
+//
+// `gameweek` selects which horizon gameweek's plan this hook reads/edits (the week-on-week
+// simulator) -- omit it for the decision gameweek. Every mutation targets that same gameweek, and
+// the squad refetches whenever `gameweek` changes so switching the selector shows that gameweek's
+// own plan.
+export function useSquad(gameweek?: number) {
   const [squad, setSquad] = useState<SquadOut | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
-      const result = await api.getSquad();
+      const result = await api.getSquad(gameweek);
       setSquad(result);
       setError(null);
     } catch (e) {
@@ -19,7 +24,7 @@ export function useSquad() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [gameweek]);
 
   useEffect(() => {
     void refresh();
@@ -44,19 +49,20 @@ export function useSquad() {
     clearError: () => setError(null),
     refresh,
     addPlayer: (playerId: number, position: string, price: number) =>
-      run(() => api.addPlayer(playerId, position, price)),
-    removePlayer: (playerId: number) => run(() => api.removePlayer(playerId)),
+      run(() => api.addPlayer(playerId, position, price, gameweek)),
+    removePlayer: (playerId: number) => run(() => api.removePlayer(playerId, gameweek)),
     clearSquad: () => run(() => api.clearSquad()),
     setCaptain: (playerId: number, role: "captain" | "vice") =>
-      run(() => api.setCaptain(playerId, role)),
+      run(() => api.setCaptain(playerId, role, gameweek)),
     setBenchOrder: (startingXi: number[], benchOrder: number[]) =>
-      run(() => api.setBenchOrder(startingXi, benchOrder)),
-    substitute: (outId: number, inId: number) => run(() => api.substitute(outId, inId)),
-    optimiseXi: () => run(() => api.optimiseXi()),
+      run(() => api.setBenchOrder(startingXi, benchOrder, gameweek)),
+    substitute: (outId: number, inId: number) =>
+      run(() => api.substitute(outId, inId, gameweek)),
+    optimiseXi: () => run(() => api.optimiseXi(gameweek)),
     optimise: (objective: "starting_xi" | "full_squad", captainMultiplier?: number) =>
-      run(() => api.optimise(objective, captainMultiplier)),
+      run(() => api.optimise(objective, captainMultiplier, gameweek)),
     importSquad: (teamId: number) => run(() => api.importSquad(teamId)),
     applyTransfers: (outPlayerIds: number[], inPlayerIds: number[]) =>
-      run(() => api.applyTransfers(outPlayerIds, inPlayerIds)),
+      run(() => api.applyTransfers(outPlayerIds, inPlayerIds, gameweek)),
   };
 }

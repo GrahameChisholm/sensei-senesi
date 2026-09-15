@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { useSquad } from "../hooks/useSquad";
-import { useGameweek, usePlayerDirectory, useSquadPoints, useTeams } from "../hooks/useProjections";
+import {
+  useGameweek,
+  usePlayerDirectory,
+  useSquadPoints,
+  useSquadTransferCounts,
+  useTeams,
+} from "../hooks/useProjections";
 import { GameweekHeader } from "../components/GameweekHeader";
 import { ActiveChip, ChipBar } from "../components/ChipBar";
 import { Pitch, QUOTA } from "../components/Pitch";
@@ -12,14 +18,16 @@ import { useStoredState } from "../hooks/useStoredState";
 import { TransferPlanOut } from "../api";
 
 export function TeamSelection() {
-  const squadState = useSquad();
   const [gameweek] = useGameweek();
   const teams = useTeams();
-  const [directory] = usePlayerDirectory();
+  const [directory, refreshDirectory] = usePlayerDirectory();
 
   const [horizon, setHorizon] = useState<"next" | "three">("next");
   const [activeChip, setActiveChip] = useState<ActiveChip>(null);
+  // Doubles as both the projection-preview gameweek and, now, which gameweek's squad plan is
+  // being edited -- the week-on-week simulator's one selector for "what am I planning right now."
   const [viewGameweek, setViewGameweek] = useState<number | null>(null);
+  const squadState = useSquad(viewGameweek ?? undefined);
   const [swapSourceId, setSwapSourceId] = useState<number | null>(null);
   // Persisted: how many transfers a manager plans in a week is a standing preference, not a
   // per-visit one, and re-picking it on every page load would be busywork.
@@ -52,9 +60,12 @@ export function TeamSelection() {
     transfers,
     horizon: horizon === "three" ? 3 : 1,
     chip: activeChip,
+    gameweek: viewGameweek ?? undefined,
     squadKey,
     enabled: squad?.is_complete ?? false,
   });
+
+  const transferCounts = useSquadTransferCounts(gameweek?.horizon_gameweeks ?? [], squadKey);
 
   if (loading || squad === null) {
     return <p className="loading">Loading…</p>;
@@ -111,13 +122,23 @@ export function TeamSelection() {
   async function handleClearSquad() {
     if (
       !window.confirm(
-        "Clear your entire squad and start over with a fresh £100m budget? This can't be undone.",
+        "Clear your entire squad and start over with a fresh £100m budget? This resets every " +
+          "planned gameweek, not just the one you're viewing, and can't be undone.",
       )
     ) {
       return;
     }
     setSwapSourceId(null);
     await squadState.clearSquad();
+  }
+
+  async function handleImportSquad(teamId: number) {
+    setSwapSourceId(null);
+    await squadState.importSquad(teamId);
+    // Import refreshes every known player's price app-wide (server-side), but the player
+    // directory this page already fetched at load is a client-side snapshot from before that --
+    // without this, the "add player" panel keeps showing pre-import prices until a full reload.
+    await refreshDirectory();
   }
 
   return (
@@ -132,12 +153,10 @@ export function TeamSelection() {
         onHorizonChange={setHorizon}
         viewGameweek={viewGameweek}
         onViewGameweekChange={setViewGameweek}
+        transferCounts={transferCounts}
         onAutoBuild={() => void handleAutoBuild()}
         onClearSquad={() => void handleClearSquad()}
-        onImportSquad={(teamId) => {
-          setSwapSourceId(null);
-          void squadState.importSquad(teamId);
-        }}
+        onImportSquad={(teamId) => void handleImportSquad(teamId)}
       />
 
       <ChipBar activeChip={activeChip} onChange={setActiveChip} />

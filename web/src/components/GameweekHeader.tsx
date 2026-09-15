@@ -12,6 +12,9 @@ interface GameweekHeaderProps {
    * gameweek, shared with the Fixtures page so the two stay in sync. */
   viewGameweek: number | null;
   onViewGameweekChange: (gameweek: number | null) => void;
+  /** How many transfers each horizon gameweek's own plan has made, keyed by gameweek -- badged
+   * onto the gameweek pill selector. */
+  transferCounts: Record<number, number>;
   onAutoBuild: () => void;
   /** Empties the squad and resets the personal budget ceiling back to the classic £100m -- a
    * sandbox reset, not a real transfer: no sell prices involved, just the classic budget/quota/
@@ -31,6 +34,7 @@ export function GameweekHeader({
   onHorizonChange,
   viewGameweek,
   onViewGameweekChange,
+  transferCounts,
   onAutoBuild,
   onClearSquad,
   onImportSquad,
@@ -84,6 +88,7 @@ export function GameweekHeader({
             currentGameweek={gameweek.gameweek}
             selected={viewGameweek}
             onSelect={onViewGameweekChange}
+            transferCounts={transferCounts}
           />
         )}
 
@@ -101,6 +106,10 @@ export function GameweekHeader({
               {squad.budget_ceiling !== 1000 &&
                 ` (of £${(squad.budget_ceiling / 10).toFixed(1)}m)`}
             </div>
+          </div>
+          <div className="tile" title="How many transfers your real FPL team has made this season, refreshed on every import">
+            <div className="tile-value">{squad.season_transfers_made}</div>
+            <div className="tile-label">Transfers this season</div>
           </div>
         </div>
       </div>
@@ -127,7 +136,7 @@ export function GameweekHeader({
           </button>
           <ImportTeamForm
             onImport={onImportSquad}
-            confirmMessage="Import your real FPL team? This replaces your current squad. This can't be undone."
+            confirmMessage="Import your real FPL team? This replaces your current squad and resets every planned gameweek, not just the one you're viewing. This can't be undone."
           />
           <button className="btn-primary" onClick={onAutoBuild}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

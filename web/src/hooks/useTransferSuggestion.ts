@@ -12,10 +12,11 @@ export function useTransferSuggestion(options: {
   transfers: number;
   horizon: number;
   chip: string | null;
+  gameweek?: number;
   squadKey: string;
   enabled: boolean;
 }) {
-  const { transfers, horizon, chip, squadKey, enabled } = options;
+  const { transfers, horizon, chip, gameweek, squadKey, enabled } = options;
   const [suggestion, setSuggestion] = useState<TransferSuggestionOut | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +28,7 @@ export function useTransferSuggestion(options: {
     }
     setLoading(true);
     try {
-      setSuggestion(await api.getTransferSuggestions({ transfers, horizon, chip }));
+      setSuggestion(await api.getTransferSuggestions({ transfers, horizon, chip, gameweek }));
       setError(null);
     } catch (e) {
       setError(e instanceof ApiError ? e.violation.message : "Failed to load transfer suggestions");
@@ -38,7 +39,7 @@ export function useTransferSuggestion(options: {
     // squadKey is a real dependency even though it is not passed to the request: it is what makes
     // a squad edit refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transfers, horizon, chip, squadKey, enabled]);
+  }, [transfers, horizon, chip, gameweek, squadKey, enabled]);
 
   useEffect(() => {
     void load();
