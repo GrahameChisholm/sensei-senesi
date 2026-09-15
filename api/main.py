@@ -32,6 +32,8 @@ from api.state import (
     get_app_settings,
     get_app_state,
     get_squad_state,
+    get_squad_transfers_made,
+    reset_squad_state,
     set_app_settings,
     set_squad_state,
 )
@@ -288,8 +290,13 @@ def _squad_player_out(player: SquadPlayer) -> schemas.SquadPlayerOut:
     )
 
 
-def _squad_out() -> schemas.SquadOut:
-    state = get_squad_state()
+def _resolved_gameweek(gameweek: int | None) -> int:
+    return gameweek if gameweek is not None else get_app_state().decision_gameweek
+
+
+def _squad_out(gameweek: int | None = None) -> schemas.SquadOut:
+    target = _resolved_gameweek(gameweek)
+    state = get_squad_state(target)
     is_complete = (
         len(state.squad) == SQUAD_SIZE
         and state.captain_id is not None
@@ -297,6 +304,7 @@ def _squad_out() -> schemas.SquadOut:
     )
     budget_remaining = state.budget_ceiling - sum(player.price for player in state.squad)
     return schemas.SquadOut(
+        gameweek=target,
         squad=[_squad_player_out(player) for player in state.squad],
         starting_xi=list(state.starting_xi),
         bench_order=list(state.bench_order),
@@ -305,11 +313,13 @@ def _squad_out() -> schemas.SquadOut:
         is_complete=is_complete,
         budget_ceiling=state.budget_ceiling,
         budget_remaining=budget_remaining,
+        transfers_made=get_squad_transfers_made(target),
+        season_transfers_made=state.season_transfers_made,
     )
 
 
 def _reconcile_after_squad_change(
-    state: SquadState, new_squad: tuple[SquadPlayer, ...]
+    state: SquadState, new_squad: tuple[SquadPlayer, ...], gameweek: int
 ) -> SquadState:
     """After an add/remove changes the squad's membership, keep starting_xi/bench_order/captain/
     vice consistent with it. Below 15 players there's no legal starting XI to speak of, so those
@@ -328,7 +338,7 @@ def _reconcile_after_squad_change(
     app_state = get_app_state()
     team_state = assemble_team_state(
         new_squad,
-        app_state.expected_points(),
+        app_state.expected_points(gameweek),
         app_state.team_id_by_player,
         budget=state.budget_ceiling,
         preferred_captain_id=state.captain_id,
@@ -344,8 +354,8 @@ def _reconcile_after_squad_change(
     )
 
 
-def _require_team_state() -> tuple[SquadState, MyTeamState]:
-    state = get_squad_state()
+def _require_team_state(gameweek: int | None = None) -> tuple[SquadState, MyTeamState]:
+    state = get_squad_state(gameweek)
     if len(state.squad) != SQUAD_SIZE or state.captain_id is None or state.vice_captain_id is None:
         raise HTTPException(400, "no complete 15-player squad yet")
     team_state = MyTeamState(
@@ -359,7 +369,9 @@ def _require_team_state() -> tuple[SquadState, MyTeamState]:
     return state, team_state
 
 
-def _save_team_state(state: SquadState, team_state: MyTeamState) -> None:
+def _save_team_state(
+    state: SquadState, team_state: MyTeamState, gameweek: int | None = None
+) -> None:
     set_squad_state(
         replace(
             state,
@@ -368,31 +380,34 @@ def _save_team_state(state: SquadState, team_state: MyTeamState) -> None:
             bench_order=team_state.bench_order,
             captain_id=team_state.captain_id,
             vice_captain_id=team_state.vice_captain_id,
-        )
+        ),
+        gameweek,
     )
 
 
 @app.get("/squad", response_model=schemas.SquadOut)
-def get_squad() -> schemas.SquadOut:
-    return _squad_out()
+def get_squad(gameweek: int | None = None) -> schemas.SquadOut:
+    return _squad_out(gameweek)
 
 
 @app.post("/squad/players", response_model=schemas.SquadOut)
-def add_squad_player(body: schemas.AddPlayerIn) -> schemas.SquadOut:
-    state = get_squad_state()
+def add_squad_player(body: schemas.AddPlayerIn, gameweek: int | None = None) -> schemas.SquadOut:
+    target = _resolved_gameweek(gameweek)
+    state = get_squad_state(target)
     app_state = get_app_state()
     player = SquadPlayer(body.player_id, body.position, body.price)
     new_squad = add_player(state.squad, player, app_state.team_id_by_player, state.budget_ceiling)
-    set_squad_state(_reconcile_after_squad_change(state, new_squad))
-    return _squad_out()
+    set_squad_state(_reconcile_after_squad_change(state, new_squad, target), target)
+    return _squad_out(target)
 
 
 @app.delete("/squad/players/{player_id}", response_model=schemas.SquadOut)
-def remove_squad_player(player_id: int) -> schemas.SquadOut:
-    state = get_squad_state()
+def remove_squad_player(player_id: int, gameweek: int | None = None) -> schemas.SquadOut:
+    target = _resolved_gameweek(gameweek)
+    state = get_squad_state(target)
     new_squad = remove_player(state.squad, player_id)
-    set_squad_state(_reconcile_after_squad_change(state, new_squad))
-    return _squad_out()
+    set_squad_state(_reconcile_after_squad_change(state, new_squad, target), target)
+    return _squad_out(target)
 
 
 @app.delete("/squad/players", response_model=schemas.SquadOut)
@@ -400,9 +415,15 @@ def clear_squad() -> schemas.SquadOut:
     """Sandbox reset: empties the squad and resets the personal budget ceiling back to the
     classic £100m (:data:`~features.squad_rules.INITIAL_BUDGET`) — the team-selection page is a
     sandbox for exploring squad ideas, constrained only by the classic legality rules, not by what
-    the current squad happens to be worth."""
+    the current squad happens to be worth.
+
+    Always resets at the decision gameweek, whichever gameweek happens to be selected in the UI --
+    this is a reset of the *real* squad, not of whichever week is being previewed -- and wipes any
+    later horizon gameweek's own plan (:func:`~api.state.reset_squad_state`), since each was a fork
+    of a baseline that no longer exists. Those gameweeks resume live-following the decision
+    gameweek until edited again."""
     mini_league_ids = get_squad_state().mini_league_ids
-    set_squad_state(SquadState(mini_league_ids=mini_league_ids))
+    reset_squad_state(SquadState(mini_league_ids=mini_league_ids))
     return _squad_out()
 
 
@@ -413,9 +434,19 @@ def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
     Fetches live from the official FPL API at request time -- a team ID is per-request user input
     with no precomputable form, unlike projections (the API never fetches or computes those on
     request; it doesn't cover reading a manager's own squad by their own ID). Overwrites whatever
-    squad currently exists and recomputes the personal budget ceiling from this squad's total
-    current value, floored at the classic £100m, since re-importing is meant to be usable any time
-    as a re-sync, not just once at onboarding.
+    squad currently exists, since re-importing is meant to be usable any time as a re-sync, not
+    just once at onboarding.
+
+    The personal budget ceiling is recomputed as this squad's 15 current player prices (from the
+    same live ``bootstrap-static`` pull, not whatever the projection cache happened to have) plus
+    the entry's bank (``last_deadline_bank``), floored at the classic £100m. Not FPL's own
+    ``last_deadline_value``: that field is a snapshot frozen at the entry's *last deadline*, so it
+    reads stale for however many days have passed since, exactly the "squad value isn't updating"
+    a re-import is meant to fix. This does mean the ceiling reads slightly higher than FPL's own
+    official team value for a squad sitting on unrealised price-rise profit (FPL only credits half
+    of that on a sale, which this app has no purchase price to compute), but it moves with today's
+    real market instead of staying frozen for days at a time, which matters more for a live-tracking
+    tool than exact agreement with a number that itself only catches up at the next deadline.
 
     Picks are fetched for ``entry["current_event"]``, not ``app_state.gameweek``: FPL only has a
     ``picks`` record for a gameweek once its deadline has passed, or the manager has explicitly
@@ -426,7 +457,19 @@ def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
     Also records ``team_id`` as the app-wide ``fpl_team_id`` setting (MINI_LEAGUE_PLAN M14) --
     importing your own squad by ID is the one place this app already learns which FPL entry is
     "you", and the Mini League page needs exactly that to exclude your own entry from a league's
-    effective-ownership field.
+    effective-ownership field -- and refreshes ``season_transfers_made`` from FPL's own
+    ``last_deadline_total_transfers``, how many transfers that real manager has made this season.
+
+    The ``bootstrap-static`` pull already fetched for this covers every live player, not just the
+    15 just imported, so it's also used to refresh every already-known player's price app-wide
+    (``AppState.refresh_prices``) -- the Players/Player Stats/Differentials pages and the transfer
+    suggester/squad optimiser all read prices from this same cache, which otherwise only updates on
+    the next ``build_projections`` run.
+
+    Always imports at the decision gameweek, whichever gameweek happens to be selected in the UI,
+    and wipes any later horizon gameweek's own plan (:func:`~api.state.reset_squad_state`), since
+    each was a fork of a baseline this import has just replaced. Those gameweeks resume
+    live-following the decision gameweek until edited again.
     """
     app_state = get_app_state()
     with FPLClient() as client:
@@ -438,9 +481,14 @@ def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
             raise ValueError(f"could not import FPL team {payload.team_id}: {exc}") from exc
 
     team_state = build_my_team_state(picks, elements, app_state.team_id_by_player)
-    budget_ceiling = max(sum(player.price for player in team_state.squad), INITIAL_BUDGET)
+    budget_ceiling = max(
+        sum(player.price for player in team_state.squad) + int(entry["last_deadline_bank"]),
+        INITIAL_BUDGET,
+    )
+    season_transfers_made = int(entry["last_deadline_total_transfers"])
+    app_state.refresh_prices({int(row.id): int(row.now_cost) for row in elements.itertuples()})
     mini_league_ids = get_squad_state().mini_league_ids
-    set_squad_state(
+    reset_squad_state(
         SquadState(
             squad=team_state.squad,
             starting_xi=team_state.starting_xi,
@@ -449,6 +497,7 @@ def import_squad(payload: schemas.ImportSquadIn) -> schemas.SquadOut:
             vice_captain_id=team_state.vice_captain_id,
             mini_league_ids=mini_league_ids,
             budget_ceiling=budget_ceiling,
+            season_transfers_made=season_transfers_made,
         )
     )
     settings = get_app_settings()
@@ -614,23 +663,27 @@ def get_mini_league(
 
 
 @app.post("/squad/captain", response_model=schemas.SquadOut)
-def set_squad_captain(body: schemas.CaptainIn) -> schemas.SquadOut:
-    state, team_state = _require_team_state()
+def set_squad_captain(body: schemas.CaptainIn, gameweek: int | None = None) -> schemas.SquadOut:
+    target = _resolved_gameweek(gameweek)
+    state, team_state = _require_team_state(target)
     if body.role == "captain":
         new_team_state = set_captain(team_state, body.player_id)
     elif body.role == "vice":
         new_team_state = set_vice_captain(team_state, body.player_id)
     else:
         raise HTTPException(400, "role must be 'captain' or 'vice'")
-    _save_team_state(state, new_team_state)
-    return _squad_out()
+    _save_team_state(state, new_team_state, target)
+    return _squad_out(target)
 
 
 @app.post("/squad/bench-order", response_model=schemas.SquadOut)
-def set_squad_bench_order(body: schemas.BenchOrderIn) -> schemas.SquadOut:
+def set_squad_bench_order(
+    body: schemas.BenchOrderIn, gameweek: int | None = None
+) -> schemas.SquadOut:
     """Set the starting XI/bench partition directly — covers moving a player between XI and
     bench, and reordering the bench, in one call."""
-    state, team_state = _require_team_state()
+    target = _resolved_gameweek(gameweek)
+    state, team_state = _require_team_state(target)
     position_by_player = {player.player_id: player.position for player in state.squad}
     violations = validate_xi(body.starting_xi, position_by_player)
     if violations:
@@ -644,33 +697,37 @@ def set_squad_bench_order(body: schemas.BenchOrderIn) -> schemas.SquadOut:
     new_team_state = replace(
         team_state, starting_xi=tuple(body.starting_xi), bench_order=tuple(body.bench_order)
     )
-    _save_team_state(state, new_team_state)
-    return _squad_out()
+    _save_team_state(state, new_team_state, target)
+    return _squad_out(target)
 
 
 @app.post("/squad/substitute", response_model=schemas.SquadOut)
-def substitute_squad_player(body: schemas.SubstituteIn) -> schemas.SquadOut:
+def substitute_squad_player(
+    body: schemas.SubstituteIn, gameweek: int | None = None
+) -> schemas.SquadOut:
     """Swap one starting-XI player for one bench player."""
-    state, team_state = _require_team_state()
+    target = _resolved_gameweek(gameweek)
+    state, team_state = _require_team_state(target)
     position_by_player = {player.player_id: player.position for player in state.squad}
     new_team_state = substitute(team_state, body.out_id, body.in_id, position_by_player)
-    _save_team_state(state, new_team_state)
-    return _squad_out()
+    _save_team_state(state, new_team_state, target)
+    return _squad_out(target)
 
 
 @app.post("/squad/optimise-xi", response_model=schemas.SquadOut)
-def optimise_lineup() -> schemas.SquadOut:
+def optimise_lineup(gameweek: int | None = None) -> schemas.SquadOut:
     """Re-derive the best legal XI/bench from the current 15 — applies immediately, since it only
     ever rearranges players already owned."""
-    state, team_state = _require_team_state()
+    target = _resolved_gameweek(gameweek)
+    state, team_state = _require_team_state(target)
     app_state = get_app_state()
-    new_team_state = optimise_xi(team_state, app_state.expected_points())
-    _save_team_state(state, new_team_state)
-    return _squad_out()
+    new_team_state = optimise_xi(team_state, app_state.expected_points(target))
+    _save_team_state(state, new_team_state, target)
+    return _squad_out(target)
 
 
 @app.post("/squad/optimise", response_model=schemas.SquadOut)
-def auto_build_squad(body: schemas.OptimiseIn) -> schemas.SquadOut:
+def auto_build_squad(body: schemas.OptimiseIn, gameweek: int | None = None) -> schemas.SquadOut:
     """The best-possible-squad solver: keeps whatever's currently in the squad and fills any
     remaining slots with the legal combination that maximizes projected points (an empty squad and
     a squad missing a few players are the same call — nothing already picked is ever locked
@@ -680,7 +737,8 @@ def auto_build_squad(body: schemas.OptimiseIn) -> schemas.SquadOut:
     :func:`~features.formation.select_starting_xi`'s own highest-EV-of-the-15 pick afterward, so
     only the 11 starters' own points ever decide who starts.
     """
-    state = get_squad_state()
+    target = _resolved_gameweek(gameweek)
+    state = get_squad_state(target)
     app_state = get_app_state()
     candidates = [
         PlayerCandidate(
@@ -709,9 +767,10 @@ def auto_build_squad(body: schemas.OptimiseIn) -> schemas.SquadOut:
             bench_order=result.bench_order,
             captain_id=result.captain_id,
             vice_captain_id=result.vice_captain_id,
-        )
+        ),
+        target,
     )
-    return _squad_out()
+    return _squad_out(target)
 
 
 # --- Transfer banner (TRANSFER_BANNER) -----------------------------------------------------------
@@ -763,24 +822,32 @@ def _transfer_plan_out(
 
 @app.get("/squad/transfers", response_model=schemas.TransferSuggestionOut)
 def suggest_transfers(
-    transfers: int = 1, horizon: int = 1, chip: str | None = None, league_id: int | None = None
+    transfers: int = 1,
+    horizon: int = 1,
+    chip: str | None = None,
+    league_id: int | None = None,
+    gameweek: int | None = None,
 ) -> schemas.TransferSuggestionOut:
     """The Team page banner's suggestion: which players to sell and buy, ranked by projected
     finishing position in your mini-league rather than by expected points alone (see
     ``features.transfer_planner``'s module docstring for why those two are the same ranking once
     expectation is all you look at, and what variance adds).
 
-    ``horizon`` sets how many gameweeks the expected points gain is summed over, matching
-    ``/squad/points``' own argument, while the league math is always measured at the decision
-    gameweek alone, since rival picks exist for exactly one gameweek at a time.
+    Suggests transfers starting from ``gameweek``'s own squad plan (default: the decision
+    gameweek). ``horizon`` sets how many gameweeks from there the expected points gain is summed
+    over, matching ``/squad/points``' own argument, while the league math is always measured at the
+    decision gameweek alone, since rival picks exist for exactly one gameweek at a time.
 
     Needs a complete 15-player squad, like every other squad-dependent endpoint here. A league is
     optional: without one the suggestion is still returned, ranked on expected points, with
     ``league_id`` null and ``n_rivals`` zero so the banner can say which it is.
     """
-    state, team_state = _require_team_state()
+    target = _resolved_gameweek(gameweek)
+    state, team_state = _require_team_state(target)
     app_state = get_app_state()
-    gameweeks = app_state.remaining_horizon_gameweeks[: max(horizon, 1)]
+    gameweeks = [gw for gw in app_state.remaining_horizon_gameweeks if gw >= target][
+        : max(horizon, 1)
+    ]
 
     suggestion, league = build_transfer_suggestion(
         app_state,
@@ -821,9 +888,12 @@ def suggest_transfers(
 
 
 @app.post("/squad/transfers/apply", response_model=schemas.SquadOut)
-def apply_transfers(body: schemas.ApplyTransfersIn) -> schemas.SquadOut:
+def apply_transfers(
+    body: schemas.ApplyTransfersIn, gameweek: int | None = None
+) -> schemas.SquadOut:
     """Apply a suggested plan in one call: drop every ``out_player_ids`` player, add every
-    ``in_player_ids`` player at their current price, and re-derive the XI.
+    ``in_player_ids`` player at their current price, and re-derive the XI, applied to ``gameweek``'s
+    own squad plan (default: the decision gameweek).
 
     The whole final 15 is validated once (``features.squad_rules.assemble_team_state``) rather than
     each swap being applied and checked in turn. Applying one at a time can fail on a transient
@@ -835,7 +905,8 @@ def apply_transfers(body: schemas.ApplyTransfersIn) -> schemas.SquadOut:
     elsewhere never casually moves the armband, matching ``_reconcile_after_squad_change``'s own
     behaviour on an add or remove.
     """
-    state, team_state = _require_team_state()
+    target = _resolved_gameweek(gameweek)
+    state, team_state = _require_team_state(target)
     app_state = get_app_state()
 
     if len(body.out_player_ids) != len(body.in_player_ids):
@@ -871,14 +942,14 @@ def apply_transfers(body: schemas.ApplyTransfersIn) -> schemas.SquadOut:
     )
     new_team_state = assemble_team_state(
         new_squad,
-        app_state.expected_points(),
+        app_state.expected_points(target),
         app_state.team_id_by_player,
         budget=state.budget_ceiling,
         preferred_captain_id=state.captain_id,
         preferred_vice_captain_id=state.vice_captain_id,
     )
-    _save_team_state(state, new_team_state)
-    return _squad_out()
+    _save_team_state(state, new_team_state, target)
+    return _squad_out(target)
 
 
 @app.get("/squad/points", response_model=schemas.SquadPointsOut)
@@ -887,9 +958,8 @@ def get_squad_points(
 ) -> schemas.SquadPointsOut:
     """Pass ``chip`` (``"bench_boost"`` or ``"triple_captain"``) to preview points under that
     toggle — it's stateless, nothing is "spent" or remembered between calls. Pass ``gameweek`` to
-    rescore the saved starting XI as of a single future gameweek within the current horizon,
-    instead of summing ``horizon`` gameweeks from now."""
-    _, team_state = _require_team_state()
+    score that gameweek's own squad plan against itself, instead of summing the decision
+    gameweek's plan over ``horizon`` gameweeks from now."""
     app_state = get_app_state()
     if gameweek is not None:
         if gameweek not in app_state.horizon_gameweeks:
@@ -897,8 +967,10 @@ def get_squad_points(
                 f"gameweek {gameweek} is outside the current horizon "
                 f"{app_state.horizon_gameweeks}"
             )
+        _, team_state = _require_team_state(gameweek)
         gameweeks = [gameweek]
     else:
+        _, team_state = _require_team_state()
         gameweeks = app_state.remaining_horizon_gameweeks[: max(horizon, 1)]
     result = projected_points(team_state, app_state.projections, gameweeks, chip=chip)
     return schemas.SquadPointsOut(

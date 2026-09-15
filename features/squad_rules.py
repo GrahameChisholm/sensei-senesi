@@ -37,6 +37,7 @@ __all__ = [
     "validate_xi",
     "add_player",
     "remove_player",
+    "count_transfers",
     "build_team_state",
     "assemble_team_state",
     "substitute",
@@ -245,6 +246,16 @@ def validate_xi(
             ),
         )
     return ()
+
+
+def count_transfers(previous: Sequence[SquadPlayer], current: Sequence[SquadPlayer]) -> int:
+    """Number of player swaps between two squads: players in ``previous`` not in ``current``
+    (equivalently the reverse, since a swap always removes and adds the same count). Used to
+    report how many transfers a gameweek's squad plan made versus whichever earlier gameweek it
+    was forked from."""
+    previous_ids = {p.player_id for p in previous}
+    current_ids = {p.player_id for p in current}
+    return len(previous_ids - current_ids)
 
 
 def add_player(

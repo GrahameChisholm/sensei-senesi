@@ -73,9 +73,15 @@ class GameweekOut(BaseModel):
 
 
 class SquadOut(BaseModel):
-    """The one live sandbox squad — 0 to 15 players, no confirm step. ``is_complete`` is true once
-    all 15 slots are filled and captain/vice are set."""
+    """One gameweek's squad plan — 0 to 15 players, no confirm step. ``is_complete`` is true once
+    all 15 slots are filled and captain/vice are set. ``gameweek`` is which horizon gameweek this
+    is (the decision gameweek by default); ``transfers_made`` is how many player swaps it made
+    versus whichever earlier gameweek it was forked from (0 if it's still live-following one),
+    this app's own week-on-week simulator count. ``season_transfers_made`` is a different,
+    account-level number: FPL's own real transfer count for the imported entry this season,
+    refreshed on every import and unrelated to which gameweek is being viewed."""
 
+    gameweek: int
     squad: list[SquadPlayerOut]
     starting_xi: list[int]
     bench_order: list[int]
@@ -84,6 +90,8 @@ class SquadOut(BaseModel):
     is_complete: bool
     budget_ceiling: int
     budget_remaining: int
+    transfers_made: int
+    season_transfers_made: int
 
 
 class SquadPointsOut(BaseModel):

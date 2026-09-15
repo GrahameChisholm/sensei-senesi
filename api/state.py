@@ -1,6 +1,7 @@
 """In-memory application state the API's endpoints read from: the projection cache
-``scripts/build_projections.py`` writes, plus the squad's one live sandbox state
-(``api.squad_state.SquadState``), persisted via ``api.persistence``.
+``scripts/build_projections.py`` writes, plus the squad's per-gameweek plan state
+(``api.squad_state.SquadState``, one snapshot per horizon gameweek -- the week-on-week simulator),
+persisted via ``api.persistence``.
 
 Endpoints never fetch or compute projections themselves, and never touch squad legality directly —
 every mutation delegates to ``features.squad_rules``/``features.squad_optimizer``, matching this
@@ -10,19 +11,26 @@ page's "no FPL rule logic in the API" layering rule.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 from sqlalchemy.orm import Session
 
-from api.persistence import load_squad_state, save_squad_state
+from api.persistence import (
+    delete_squad_gameweeks_after,
+    latest_squad_gameweek_at_or_before,
+    load_squad_gameweek,
+    load_squad_state,
+    save_squad_account_fields,
+    save_squad_gameweek,
+)
 from api.settings import AppSettingsData, load_app_settings, save_app_settings
 from api.squad_state import SquadState
 from engine.aggregate import ComponentBreakdown
 from engine.data.player_history import PlayerGameweekActual
-from engine.data.storage import DEFAULT_DB_PATH, Base, get_engine
+from engine.data.storage import DEFAULT_DB_PATH, Base, ensure_saved_squads_schema, get_engine
 from engine.models.minutes import MinutesDistribution
 from engine.projections import (
     PlayerGameweekProjection,
@@ -32,6 +40,7 @@ from engine.projections import (
 )
 from engine.simulate import PlayerSimulationSummary
 from features.fixtures import TeamRates
+from features.squad_rules import INITIAL_BUDGET, count_transfers
 
 __all__ = [
     "DEFAULT_PROJECTION_CACHE_DIR",
@@ -41,6 +50,8 @@ __all__ = [
     "set_app_state",
     "get_squad_state",
     "set_squad_state",
+    "reset_squad_state",
+    "get_squad_transfers_made",
     "get_app_settings",
     "set_app_settings",
     "reset_state",
@@ -242,6 +253,25 @@ class AppState:
             if target in horizon.gameweeks
         }
 
+    def refresh_prices(self, now_cost_by_player: dict[int, int]) -> None:
+        """Overwrite every already-known player's price from a fresh live pull -- e.g. the
+        bootstrap-static snapshot a squad import already fetches -- so every price-dependent read
+        (the Players/Player Stats/Differentials pages, the transfer suggester, the squad
+        optimiser) reflects today's market rather than whatever this process's projection cache
+        happened to be built with, without needing a full ``build_projections`` rerun.
+
+        Silently skips any id this cache doesn't already know about; adding a brand new player is
+        not this method's job, only refreshing prices for ones the cache already has a full row
+        for. Updates ``buy_prices`` in lockstep with ``players``, since the former is a one-time
+        copy taken in ``__post_init__``, not a live view over the latter.
+        """
+        for player_id, price in now_cost_by_player.items():
+            player = self.players.get(player_id)
+            if player is None:
+                continue
+            player["price"] = price
+            self.buy_prices[player_id] = price
+
 
 def load_projection_cache(path: Path) -> AppState:
     raw = json.loads(path.read_text())
@@ -291,7 +321,6 @@ def _latest_cache_path(cache_dir: Path, season: str) -> Path:
 
 
 _app_state: AppState | None = None
-_squad_state: SquadState | None = None
 _app_settings: AppSettingsData | None = None
 _db_path: str = DEFAULT_DB_PATH
 
@@ -331,29 +360,104 @@ def set_app_state(state: AppState) -> None:
 def _get_session() -> Session:
     engine = get_engine(_db_path)
     Base.metadata.create_all(engine)
+    ensure_saved_squads_schema(engine)
     return Session(engine)
 
 
-def get_squad_state() -> SquadState:
-    """Loads the saved squad on first access, or starts a fresh empty one if none has ever been
-    saved for the current season."""
-    global _squad_state
-    if _squad_state is None:
-        app_state = get_app_state()
-        session = _get_session()
-        loaded = load_squad_state(session, app_state.season)
-        _squad_state = loaded if loaded is not None else SquadState()
-    return _squad_state
+def _resolve_gameweek_squad(session: Session, season: str, gameweek: int) -> SquadState | None:
+    """This exact gameweek's own saved squad, or -- if it has never been edited -- the nearest
+    earlier gameweek's, walked backward via
+    :func:`~api.persistence.latest_squad_gameweek_at_or_before`. Returns ``None`` only when no
+    gameweek this early has ever been saved for the season, which is the caller's cue to fall back
+    to the legacy pre-migration seed. A pure read: resolving a gameweek never writes anything,
+    which is what makes an unedited later gameweek "live follow" whatever an earlier one currently
+    resolves to."""
+    own = load_squad_gameweek(session, season, gameweek)
+    if own is not None:
+        return own
+    predecessor_gameweek = latest_squad_gameweek_at_or_before(session, season, gameweek - 1)
+    if predecessor_gameweek is None:
+        return None
+    return load_squad_gameweek(session, season, predecessor_gameweek)
 
 
-def set_squad_state(state: SquadState) -> None:
-    """Persist a new squad state and update the process-wide singleton — every successful
-    mutation calls this."""
-    global _squad_state
+def get_squad_state(gameweek: int | None = None) -> SquadState:
+    """The squad in effect for ``gameweek`` (default: the decision gameweek) -- its own saved
+    snapshot if it has one, else whichever earlier gameweek it currently resolves to, else the
+    legacy pre-per-gameweek squad, else a fresh empty squad. Account-level fields
+    (``budget_ceiling``/``mini_league_ids``/``season_transfers_made``), which don't vary week to
+    week, are always merged in from the legacy row regardless of which gameweek this resolves to."""
     app_state = get_app_state()
+    target = gameweek if gameweek is not None else app_state.decision_gameweek
     session = _get_session()
-    save_squad_state(session, app_state.season, state)
-    _squad_state = state
+
+    account = load_squad_state(session, app_state.season)
+    mini_league_ids = account.mini_league_ids if account is not None else ()
+    budget_ceiling = account.budget_ceiling if account is not None else INITIAL_BUDGET
+    season_transfers_made = account.season_transfers_made if account is not None else 0
+
+    resolved = _resolve_gameweek_squad(session, app_state.season, target)
+    if resolved is None:
+        resolved = account
+    if resolved is None:
+        return SquadState(
+            mini_league_ids=mini_league_ids,
+            budget_ceiling=budget_ceiling,
+            season_transfers_made=season_transfers_made,
+        )
+    return replace(
+        resolved,
+        mini_league_ids=mini_league_ids,
+        budget_ceiling=budget_ceiling,
+        season_transfers_made=season_transfers_made,
+    )
+
+
+def set_squad_state(state: SquadState, gameweek: int | None = None) -> None:
+    """Persist ``state`` as ``gameweek``'s own squad snapshot (default: the decision gameweek) --
+    every successful mutation calls this. Also persists the account-level fields
+    (``budget_ceiling``/``mini_league_ids``/``season_transfers_made``) to the legacy row, since
+    those apply across every gameweek rather than to this one alone -- but never the legacy row's
+    own squad columns, which stay frozen as the one-time migration seed (see
+    ``api.persistence.save_squad_account_fields``)."""
+    app_state = get_app_state()
+    target = gameweek if gameweek is not None else app_state.decision_gameweek
+    session = _get_session()
+    save_squad_gameweek(session, app_state.season, target, state)
+    save_squad_account_fields(
+        session,
+        app_state.season,
+        state.budget_ceiling,
+        state.mini_league_ids,
+        state.season_transfers_made,
+    )
+
+
+def reset_squad_state(state: SquadState, gameweek: int | None = None) -> None:
+    """Like :func:`set_squad_state`, but for resetting/resyncing the *real* squad (clear/import):
+    also drops every later gameweek's saved snapshot, since each was a fork of a baseline that no
+    longer exists. Those gameweeks go back to live-following ``gameweek`` until edited again."""
+    app_state = get_app_state()
+    target = gameweek if gameweek is not None else app_state.decision_gameweek
+    session = _get_session()
+    delete_squad_gameweeks_after(session, app_state.season, target)
+    set_squad_state(state, target)
+
+
+def get_squad_transfers_made(gameweek: int | None = None) -> int:
+    """How many player swaps ``gameweek``'s squad made versus whichever earlier gameweek it was
+    forked from (or the legacy pre-migration squad, for the earliest gameweek). 0 for a gameweek
+    that is still live-following an earlier one, since it hasn't diverged from it yet."""
+    app_state = get_app_state()
+    target = gameweek if gameweek is not None else app_state.decision_gameweek
+    session = _get_session()
+
+    account = load_squad_state(session, app_state.season)
+    current = _resolve_gameweek_squad(session, app_state.season, target) or account
+    predecessor = _resolve_gameweek_squad(session, app_state.season, target - 1) or account
+    if current is None or predecessor is None:
+        return 0
+    return count_transfers(predecessor.squad, current.squad)
 
 
 def get_app_settings() -> AppSettingsData:
@@ -379,9 +483,11 @@ def set_app_settings(settings: AppSettingsData) -> None:
 
 
 def reset_state(db_path: str = DEFAULT_DB_PATH) -> None:
-    """Test-only: clear every process-wide singleton so the next access reloads from scratch."""
-    global _app_state, _squad_state, _app_settings, _db_path
+    """Test-only: clear every process-wide singleton so the next access reloads from scratch.
+    Squad state itself is never cached process-wide (see :func:`get_squad_state`), so there is no
+    squad singleton to clear here -- only ``_db_path`` needs updating for it to read from
+    ``db_path`` next call."""
+    global _app_state, _app_settings, _db_path
     _app_state = None
-    _squad_state = None
     _app_settings = None
     _db_path = db_path

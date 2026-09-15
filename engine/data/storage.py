@@ -133,11 +133,18 @@ class AppSettings(Base):
 
 
 class SavedSquad(Base):
-    """The team-selection page's persisted squad: a single row (``id`` is always 1 — this is a
-    single-user local tool) holding the one permanently-live sandbox squad (0 to 15 players, no
-    confirm step, no transfer economy). ``budget_ceiling`` is the personal budget ceiling checked
-    on every add/remove/optimize call — the classic £100m by default, or a higher figure recorded
-    at import time for a real squad whose current value exceeds it.
+    """The team-selection page's account-level row: a single row (``id`` is always 1 — this is a
+    single-user local tool) holding whatever doesn't vary week to week. ``budget_ceiling`` is the
+    personal budget ceiling checked on every add/remove/optimize call, computed live at import time
+    from the imported squad's current player prices plus the entry's bank, floored at the classic
+    £100m. ``season_transfers_made`` is FPL's own ``last_deadline_total_transfers`` for the
+    imported entry -- how many transfers that real manager has made this season, refreshed on every
+    import.
+
+    ``squad_json``/``starting_xi_json``/``bench_order_json``/``captain_id``/``vice_captain_id``
+    are legacy, from before per-gameweek squads (:class:`SavedSquadGameweek`) existed. They are no
+    longer written, and are read only as the one-time seed a season with no
+    ``SavedSquadGameweek`` rows yet forks its decision gameweek from.
     """
 
     __tablename__ = "saved_squads"
@@ -151,9 +158,54 @@ class SavedSquad(Base):
     vice_captain_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mini_league_ids: Mapped[str] = mapped_column(String, default="")
     budget_ceiling: Mapped[int] = mapped_column(Integer, nullable=False)
+    season_transfers_made: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class SavedSquadGameweek(Base):
+    """One horizon gameweek's own squad snapshot (the week-on-week simulator) -- squad membership,
+    starting XI/bench order, and captain/vice, forked from whichever earlier gameweek it was first
+    edited under. Account-level fields that don't vary week to week (``budget_ceiling``,
+    ``mini_league_ids``) stay on :class:`SavedSquad` rather than being duplicated here.
+
+    A gameweek with no row here yet is not "empty" -- callers resolve it by walking backward to
+    the nearest earlier gameweek that has one (see ``api.state.get_squad_state``), falling back to
+    :class:`SavedSquad`'s legacy squad columns for a season that predates this table.
+    """
+
+    __tablename__ = "saved_squad_gameweeks"
+    __table_args__ = (UniqueConstraint("season", "gameweek", name="uq_saved_squad_gw"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    season: Mapped[str] = mapped_column(String, nullable=False)
+    gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
+    squad_json: Mapped[str] = mapped_column(String, nullable=False)
+    starting_xi_json: Mapped[str] = mapped_column(String, nullable=False)
+    bench_order_json: Mapped[str] = mapped_column(String, nullable=False)
+    captain_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    vice_captain_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+def ensure_saved_squads_schema(engine: Engine) -> None:
+    """``Base.metadata.create_all`` only creates tables that don't exist yet -- it never alters an
+    existing table's columns, so a ``saved_squads`` table created before ``season_transfers_made``
+    existed needs an explicit ``ALTER TABLE`` here, guarded by a column-existence check so it's a
+    cheap no-op on every later call. There's no formal migration framework in this repo (a local,
+    single-user SQLite file), so this is the lightweight equivalent for the one column that has
+    needed it so far."""
+    with engine.connect() as connection:
+        columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(saved_squads)")}
+        if columns and "season_transfers_made" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE saved_squads ADD COLUMN season_transfers_made "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.commit()
 
 
 def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
@@ -164,4 +216,5 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> Engine:
     """Create the schema if it doesn't exist yet. Safe to call every process start."""
     engine = get_engine(db_path)
     Base.metadata.create_all(engine)
+    ensure_saved_squads_schema(engine)
     return engine
