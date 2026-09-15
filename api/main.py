@@ -26,6 +26,11 @@ from api.mini_league_panel import (
 )
 from api.panel import build_panel_rows, build_team_fixture_map
 from api.player_stats_panel import PlayerAvailability, build_player_stats_rows
+from api.roundup_panel import (
+    RoundupPanel,
+    get_cached_roundup_panel,
+    resolve_latest_complete_gameweek,
+)
 from api.squad_state import SquadState
 from api.state import (
     AppState,
@@ -46,6 +51,7 @@ from engine.data.fpl_client import FPLClient, FPLClientError
 from engine.data.league_state_builder import DEFAULT_RIVAL_LIMIT
 from engine.data.team_state_builder import build_my_team_state
 from engine.rates import RateRatio
+from engine.scoring import ELEMENT_TYPE_TO_POSITION
 from features.differentials import (
     DEFAULT_WINDOW_GAMEWEEKS,
     GLOBAL_LENS,
@@ -611,6 +617,173 @@ def get_mini_league(
         app_state, team_state, snapshot, settings.fpl_team_id, chip=chip
     )
     return _mini_league_panel_out(panel)
+
+
+def _roundup_panel_out(
+    panel: RoundupPanel,
+    players: dict[int, schemas.RoundupPlayerRefOut],
+    teams: dict[int, schemas.RoundupTeamRefOut],
+) -> schemas.RoundupOut:
+    return schemas.RoundupOut(
+        league_id=panel.league_id,
+        league_name=panel.league_name,
+        gameweek=panel.gameweek,
+        standings_by_gameweek={
+            gameweek: list(entry_ids) for gameweek, entry_ids in panel.standings_by_gameweek.items()
+        },
+        top_managers=[
+            schemas.ManagerGameweekRowOut(
+                entry_id=row.entry_id,
+                manager_name=row.manager_name,
+                team_name=row.team_name,
+                gameweek_points=row.gameweek_points,
+            )
+            for row in panel.top_managers
+        ],
+        bottom_managers=[
+            schemas.ManagerGameweekRowOut(
+                entry_id=row.entry_id,
+                manager_name=row.manager_name,
+                team_name=row.team_name,
+                gameweek_points=row.gameweek_points,
+            )
+            for row in panel.bottom_managers
+        ],
+        top_player=(
+            None
+            if panel.top_player is None
+            else schemas.PlayerRoundupRowOut(
+                player_id=panel.top_player.player_id,
+                live_points=panel.top_player.live_points,
+                owner_entry_ids=list(panel.top_player.owner_entry_ids),
+                starter_entry_ids=list(panel.top_player.starter_entry_ids),
+                captain_entry_ids=list(panel.top_player.captain_entry_ids),
+            )
+        ),
+        captain_returns=[
+            schemas.CaptainReturnOut(
+                entry_id=row.entry_id,
+                manager_name=row.manager_name,
+                captain_player_id=row.captain_player_id,
+                multiplier=row.multiplier,
+                points=row.points,
+            )
+            for row in panel.captain_returns
+        ],
+        bench_regret=[
+            schemas.BenchRegretRowOut(
+                entry_id=row.entry_id,
+                manager_name=row.manager_name,
+                points_left_on_bench=row.points_left_on_bench,
+                contributing_player_ids=list(row.contributing_player_ids),
+            )
+            for row in panel.bench_regret
+        ],
+        movers=[
+            schemas.MoverOut(
+                entry_id=row.entry_id,
+                manager_name=row.manager_name,
+                rank_before=row.rank_before,
+                rank_after=row.rank_after,
+                delta=row.delta,
+            )
+            for row in panel.movers
+        ],
+        template_xi=list(panel.template_xi),
+        template_overlap=[
+            schemas.TemplateOverlapRowOut(
+                entry_id=row.entry_id,
+                manager_name=row.manager_name,
+                overlap_count=row.overlap_count,
+                template_size=row.template_size,
+            )
+            for row in panel.template_overlap
+        ],
+        differential_hauls=[
+            schemas.DifferentialHaulRowOut(
+                entry_id=row.entry_id,
+                manager_name=row.manager_name,
+                differential_player_ids=list(row.differential_player_ids),
+                total_points=row.total_points,
+            )
+            for row in panel.differential_hauls
+        ],
+        chips=[
+            schemas.ChipSummaryOut(
+                entry_id=row.entry_id,
+                manager_name=row.manager_name,
+                chip_name=row.chip_name,
+                resulting_rank=row.resulting_rank,
+                points_effect=row.points_effect,
+            )
+            for row in panel.chips
+        ],
+        players=players,
+        teams=teams,
+    )
+
+
+@app.get("/roundup/{league_id}", response_model=schemas.RoundupOut)
+def get_roundup(
+    league_id: int, gameweek: int | None = None, refresh: bool = False
+) -> schemas.RoundupOut:
+    """The Roundup page's one bulk round trip (ROUNDUP_PLAN): a shareable recap of one completed
+    gameweek for a mini-league, entirely from live FPL data. Unlike ``/mini-league/{league_id}``,
+    this needs no saved ``fpl_team_id`` and no squad at all -- every manager is treated equally
+    (no self-highlight), so there is no "me" to exclude anywhere in this response. It also has no
+    dependency on the projections cache: player/team names come from a live ``bootstrap-static``
+    fetch made for this request, not ``app_state``.
+
+    ``gameweek`` defaults to the highest ``data_checked`` gameweek (the most recently finished
+    one). The assembled panel is cached indefinitely per ``(league_id, gameweek)`` since a
+    ``data_checked`` gameweek's recap cannot change; ``refresh`` bypasses that cache for the rare
+    case FPL retroactively corrects a result.
+    """
+    with FPLClient() as client:
+        try:
+            bootstrap = client.get_bootstrap_static()
+            resolved_gameweek = (
+                gameweek
+                if gameweek is not None
+                else resolve_latest_complete_gameweek(bootstrap["events"])
+            )
+            live = client.get_event_live(resolved_gameweek)
+        except FPLClientError as exc:
+            raise ValueError(f"could not fetch live FPL data: {exc}") from exc
+
+        live_points = {
+            element["id"]: element["stats"]["total_points"] for element in live["elements"]
+        }
+        position_by_player = {
+            element["id"]: ELEMENT_TYPE_TO_POSITION[element["element_type"]]
+            for element in bootstrap["elements"]
+        }
+        players = {
+            element["id"]: schemas.RoundupPlayerRefOut(
+                web_name=element["web_name"],
+                team_id=element["team"],
+                position=ELEMENT_TYPE_TO_POSITION[element["element_type"]],
+            )
+            for element in bootstrap["elements"]
+        }
+        teams = {
+            team["id"]: schemas.RoundupTeamRefOut(name=team["name"], short_name=team["short_name"])
+            for team in bootstrap["teams"]
+        }
+
+        try:
+            panel = get_cached_roundup_panel(
+                client,
+                league_id,
+                resolved_gameweek,
+                live_points,
+                position_by_player,
+                refresh=refresh,
+            )
+        except FPLClientError as exc:
+            raise ValueError(f"could not fetch mini-league {league_id}: {exc}") from exc
+
+    return _roundup_panel_out(panel, players, teams)
 
 
 @app.post("/squad/captain", response_model=schemas.SquadOut)
