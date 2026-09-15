@@ -180,6 +180,10 @@ def _fpl_picks_payload() -> dict:
 
 
 def _fpl_elements_payload(now_cost: int = 45) -> list[dict]:
+    # A real bootstrap-static pull covers every live player, not just the 15 being imported --
+    # 9001/9002/9003 (the fixture's own transfer-target players, never part of the imported squad)
+    # are included the same way, so a test can tell an app-wide price refresh apart from one that
+    # only touched the imported squad's own 15 players.
     return [
         {
             "id": pid,
@@ -187,6 +191,9 @@ def _fpl_elements_payload(now_cost: int = 45) -> list[dict]:
             "element_type": _ELEMENT_TYPE_BY_POSITION[_position_for(pid)],
         }
         for pid in ALL_IDS
+    ] + [
+        {"id": extra_id, "now_cost": now_cost, "element_type": _ELEMENT_TYPE_BY_POSITION[position]}
+        for extra_id, position in ((9001, FWD), (9002, MID), (9003, DEF))
     ]
 
 
@@ -374,7 +381,13 @@ class TestImportSquad:
     def _stub_client(
         self, monkeypatch, *, entry=None, error=None, now_cost=45, picks_gameweeks_seen=None
     ):
-        entry = entry if entry is not None else {"current_event": 1}
+        entry = {
+            "current_event": 1,
+            "last_deadline_value": 1000,
+            "last_deadline_bank": 0,
+            "last_deadline_total_transfers": 0,
+            **(entry or {}),
+        }
         picks = _fpl_picks_payload()
         elements = _fpl_elements_payload(now_cost)
 
@@ -422,18 +435,51 @@ class TestImportSquad:
         body = response.json()
         assert all(p["price"] == 45 for p in body["squad"])
 
+    def test_refreshes_prices_app_wide_not_just_the_imported_squad(self, client, monkeypatch):
+        # The fixture's 9001/9002/9003 start at price 40 and are never part of the imported squad
+        # (see _fixture_app_state) -- if only the squad's own 15 players got refreshed, these
+        # would still read 40 afterwards.
+        assert client.get("/players/9001").json()["price"] == 40
+        self._stub_client(monkeypatch, now_cost=77)
+
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200, response.json()
+
+        assert client.get("/players/9001").json()["price"] == 77
+
     def test_squad_over_100m_via_price_rises_sets_a_higher_budget_ceiling(
         self, client, monkeypatch
     ):
         # Real squads legitimately drift above £100m of nominal spend as prices rise -- import
-        # must not reject that, and the personal ceiling should reflect this squad's real value.
-        self._stub_client(monkeypatch, now_cost=100)
+        # must not reject that, and the personal ceiling should reflect this squad's live current
+        # prices (15 * now_cost) plus the entry's bank, not FPL's own last-deadline-frozen figure.
+        self._stub_client(monkeypatch, now_cost=80, entry={"last_deadline_bank": 20})
         response = client.post("/squad/import", json={"team_id": 123456})
         assert response.status_code == 200, response.json()
-        assert response.json()["budget_ceiling"] == 1500
+        assert response.json()["budget_ceiling"] == 15 * 80 + 20
+
+    def test_budget_ceiling_moves_with_todays_prices_not_a_stale_last_deadline_snapshot(
+        self, client, monkeypatch
+    ):
+        # A price rise since the last deadline (last_deadline_value stuck at the pre-rise figure)
+        # must still be reflected today -- this is the actual bug report: re-importing should pull
+        # live prices into the squad value, not whatever FPL last snapshotted at the deadline.
+        self._stub_client(
+            monkeypatch, now_cost=70, entry={"last_deadline_value": 1040, "last_deadline_bank": 5}
+        )
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200, response.json()
+        # 15 * 70 + 5 = 1055, higher than the stale last_deadline_value of 1040.
+        assert response.json()["budget_ceiling"] == 1055
+
+    def test_pulls_live_season_transfers_made_from_the_entry(self, client, monkeypatch):
+        self._stub_client(monkeypatch, entry={"last_deadline_total_transfers": 7})
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200, response.json()
+        assert response.json()["season_transfers_made"] == 7
 
     def test_squad_under_100m_keeps_the_classic_ceiling(self, client, monkeypatch):
-        self._stub_client(monkeypatch, now_cost=45)
+        self._stub_client(monkeypatch, now_cost=40, entry={"last_deadline_bank": 10})
         response = client.post("/squad/import", json={"team_id": 123456})
         assert response.json()["budget_ceiling"] == 1000
 
@@ -652,6 +698,189 @@ class TestPersistenceAcrossRestart:
         assert body["is_complete"] is False
         assert len(body["squad"]) == 1
         assert body["squad"][0]["player_id"] == GK1
+
+
+class TestSavedSquadsSchemaMigration:
+    """A ``saved_squads`` table created before ``season_transfers_made`` existed (any real
+    pre-existing local db) has no such column -- ``engine.data.storage.ensure_saved_squads_schema``
+    must add it on demand rather than the app crashing on the first query that touches it."""
+
+    def test_missing_column_is_added_without_losing_the_existing_row(self, tmp_path):
+        from sqlalchemy.orm import Session
+
+        from engine.data.storage import get_engine
+
+        db_path = str(tmp_path / "legacy.sqlite")
+        engine = get_engine(db_path)
+        with engine.connect() as connection:
+            # The exact pre-migration shape: every column SavedSquad had before this one.
+            connection.exec_driver_sql("""
+                CREATE TABLE saved_squads (
+                    id INTEGER PRIMARY KEY,
+                    season VARCHAR NOT NULL,
+                    squad_json VARCHAR NOT NULL,
+                    starting_xi_json VARCHAR NOT NULL,
+                    bench_order_json VARCHAR NOT NULL,
+                    captain_id INTEGER,
+                    vice_captain_id INTEGER,
+                    mini_league_ids VARCHAR,
+                    budget_ceiling INTEGER NOT NULL,
+                    updated_at DATETIME
+                )
+                """)
+            connection.exec_driver_sql(
+                "INSERT INTO saved_squads (id, season, squad_json, starting_xi_json, "
+                "bench_order_json, captain_id, vice_captain_id, mini_league_ids, budget_ceiling) "
+                "VALUES (1, '2026-27', '[]', '[]', '[]', NULL, NULL, '', 1000)"
+            )
+            connection.commit()
+
+        state_module.reset_state(db_path=db_path)
+        state_module.set_app_state(_fixture_app_state())
+        from api.main import app
+
+        with TestClient(app) as test_client:
+            body = test_client.get("/squad").json()
+        state_module.reset_state()
+
+        assert body["season_transfers_made"] == 0
+        assert body["budget_ceiling"] == 1000
+
+        # The migration itself didn't touch the pre-existing row's own data.
+        from sqlalchemy import select
+
+        from engine.data.storage import SavedSquad
+
+        session = Session(get_engine(db_path))
+        row = session.execute(select(SavedSquad).where(SavedSquad.id == 1)).scalar_one()
+        assert row.season == "2026-27"
+        assert row.season_transfers_made == 0
+
+
+class TestPerGameweekSquadPlans:
+    """The week-on-week simulator: each horizon gameweek gets its own squad snapshot, forked
+    (lazily, on first edit) from whichever earlier gameweek it was live-following."""
+
+    def _swap(self, client, gameweek: int, out_id: int, in_id: int) -> dict:
+        response = client.post(
+            f"/squad/transfers/apply?gameweek={gameweek}",
+            json={"out_player_ids": [out_id], "in_player_ids": [in_id]},
+        )
+        assert response.status_code == 200, response.json()
+        return response.json()
+
+    def test_unedited_later_gameweeks_live_follow_the_decision_gameweek(self, client):
+        _build_full_squad(client)
+        gw1_ids = {p["player_id"] for p in client.get("/squad").json()["squad"]}
+
+        for gameweek in (2, 3):
+            body = client.get(f"/squad?gameweek={gameweek}").json()
+            assert {p["player_id"] for p in body["squad"]} == gw1_ids
+            assert body["transfers_made"] == 0
+
+    def test_editing_gw2_leaves_gw1_untouched_and_carries_into_unedited_gw3(self, client):
+        _build_full_squad(client)
+        out_id, in_id = FWD_IDS[0], 9001
+        self._swap(client, gameweek=2, out_id=out_id, in_id=in_id)
+
+        gw1 = client.get("/squad?gameweek=1").json()
+        gw1_ids = {p["player_id"] for p in gw1["squad"]}
+        assert out_id in gw1_ids and in_id not in gw1_ids
+        assert gw1["transfers_made"] == 0
+
+        gw2 = client.get("/squad?gameweek=2").json()
+        gw2_ids = {p["player_id"] for p in gw2["squad"]}
+        assert in_id in gw2_ids and out_id not in gw2_ids
+        assert gw2["transfers_made"] == 1
+
+        # GW3 has never been edited -- it live-follows GW2, so it already shows the swap, with
+        # zero transfers of its own.
+        gw3 = client.get("/squad?gameweek=3").json()
+        assert {p["player_id"] for p in gw3["squad"]} == gw2_ids
+        assert gw3["transfers_made"] == 0
+
+    def test_editing_gw3_after_gw2_stacks_only_its_own_transfer_count(self, client):
+        _build_full_squad(client)
+        self._swap(client, gameweek=2, out_id=FWD_IDS[0], in_id=9001)
+        self._swap(client, gameweek=3, out_id=MID_IDS[0], in_id=9002)
+
+        gw2_ids = {p["player_id"] for p in client.get("/squad?gameweek=2").json()["squad"]}
+        gw3 = client.get("/squad?gameweek=3").json()
+        gw3_ids = {p["player_id"] for p in gw3["squad"]}
+
+        assert 9001 in gw3_ids and 9002 in gw3_ids  # both the inherited and its own swap
+        assert gw3_ids - gw2_ids == {9002}
+        # Only this gameweek's own swap counts, not the one it inherited from GW2.
+        assert gw3["transfers_made"] == 1
+
+        # GW1 is still exactly the original squad.
+        gw1_ids = {p["player_id"] for p in client.get("/squad?gameweek=1").json()["squad"]}
+        assert 9001 not in gw1_ids and 9002 not in gw1_ids
+
+    def test_clear_squad_wipes_later_gameweeks_which_resume_live_following(self, client):
+        _build_full_squad(client)
+        self._swap(client, gameweek=2, out_id=FWD_IDS[0], in_id=9001)
+
+        response = client.delete("/squad/players")
+        assert response.status_code == 200, response.json()
+        assert response.json()["gameweek"] == 1
+        assert response.json()["squad"] == []
+
+        for gameweek in (2, 3):
+            body = client.get(f"/squad?gameweek={gameweek}").json()
+            assert body["squad"] == []
+            assert body["transfers_made"] == 0
+
+    def test_import_squad_wipes_later_gameweeks(self, client, monkeypatch):
+        _build_full_squad(client)
+        self._swap(client, gameweek=2, out_id=FWD_IDS[0], in_id=9001)
+
+        TestImportSquad()._stub_client(monkeypatch)
+        response = client.post("/squad/import", json={"team_id": 123456})
+        assert response.status_code == 200, response.json()
+
+        gw2 = client.get("/squad?gameweek=2").json()
+        gw1_ids = {p["player_id"] for p in client.get("/squad?gameweek=1").json()["squad"]}
+        assert {p["player_id"] for p in gw2["squad"]} == gw1_ids
+        assert gw2["transfers_made"] == 0
+
+    def test_legacy_pre_migration_squad_seeds_the_decision_gameweek(self, client):
+        """A season saved before per-gameweek squads existed has only the legacy ``saved_squads``
+        row -- it should resolve as every horizon gameweek's squad until one is actually edited."""
+        from sqlalchemy.orm import Session
+
+        from api.persistence import save_squad_state
+        from engine.data.storage import Base, get_engine
+        from features.squad_rules import build_team_state
+
+        squad = tuple(
+            SquadPlayer(player_id=pid, position=_position_for(pid), price=40) for pid in ALL_IDS
+        )
+        team_state = build_team_state(
+            squad=squad,
+            starting_xi=(GK1, *DEF_IDS[:4], *MID_IDS[:4], *FWD_IDS[:2]),
+            bench_order=(DEF_IDS[4], MID_IDS[4], FWD_IDS[2], GK2),
+            captain_id=MID_IDS[0],
+            vice_captain_id=MID_IDS[1],
+            team_id_by_player={pid: 100 + (i // 3) for i, pid in enumerate(ALL_IDS)},
+        )
+        legacy_state = SquadState(
+            squad=team_state.squad,
+            starting_xi=team_state.starting_xi,
+            bench_order=team_state.bench_order,
+            captain_id=team_state.captain_id,
+            vice_captain_id=team_state.vice_captain_id,
+        )
+        engine = get_engine(state_module._db_path)
+        Base.metadata.create_all(engine)
+        session = Session(engine)
+        save_squad_state(session, "2026-27", legacy_state)
+
+        legacy_ids = {p.player_id for p in team_state.squad}
+        for gameweek in (1, 2, 3):
+            body = client.get(f"/squad?gameweek={gameweek}").json()
+            assert {p["player_id"] for p in body["squad"]} == legacy_ids
+            assert body["transfers_made"] == 0
 
 
 class TestMiniLeagueSettings:
