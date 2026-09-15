@@ -591,21 +591,108 @@ class TestComputePosture:
         assert posture.p_finish_ahead == pytest.approx(1.0)
 
 
+def _ownership(player_id: int, starter_count: int, eo_multiplier: float = 1.0) -> PlayerOwnership:
+    return PlayerOwnership(
+        player_id=player_id,
+        raw_ownership_percent=0.0,
+        owner_count=0,
+        eo_multiplier=eo_multiplier,
+        eo_percent=eo_multiplier * 100.0,
+        captain_share_percent=0.0,
+        owner_names=(),
+        starter_count=starter_count,
+    )
+
+
 class TestLeagueTemplateXi:
-    def test_returns_the_n_highest_eo_players(self):
-        snapshot = _snapshot(
-            [
-                _rival(1, {10: 2, 20: 1, 30: 0}),
-                _rival(2, {10: 1, 20: 1, 30: 1}),
-            ]
+    def test_template_xi_is_always_a_legal_formation(self):
+        """Regression: the old implementation sorted every league-owned player by eo_multiplier
+        and took the top 11 with no position constraint at all, so a pool with more high-eo
+        outfielders than goalkeepers could (and did) return zero goalkeepers. 13 outfielders here
+        all outrank both goalkeepers, so today's code returns 11 outfielders and no GK."""
+        gk_ids = (1, 2)
+        def_ids = (11, 12, 13, 14, 15)
+        mid_ids = (21, 22, 23, 24, 25)
+        fwd_ids = (31, 32, 33)
+        position_by_player = (
+            {pid: GK for pid in gk_ids}
+            | {pid: DEF for pid in def_ids}
+            | {pid: MID for pid in mid_ids}
+            | {pid: FWD for pid in fwd_ids}
         )
-        ownership = compute_league_ownership(snapshot)
-        assert league_template_xi(ownership, n=2) == (10, 20)
+        ownership = {
+            **{pid: _ownership(pid, starter_count=1) for pid in gk_ids},
+            **{
+                pid: _ownership(pid, starter_count=10)
+                for pid in def_ids + mid_ids + fwd_ids
+            },
+        }
+
+        template = league_template_xi(ownership, position_by_player)
+
+        template_positions = [position_by_player[pid] for pid in template]
+        assert template_positions.count(GK) == 1
+        assert 3 <= template_positions.count(DEF) <= 5
+        assert 2 <= template_positions.count(MID) <= 5
+        assert 1 <= template_positions.count(FWD) <= 3
+        assert len(template) == 11
+
+    def test_maximises_starter_count_within_a_legal_formation(self):
+        # MID pool pinned to exactly 2 candidates: of VALID_FORMATIONS' 8 legal splits, only
+        # (5, 2, 3) has a 2-strong midfield, so this pool size alone forces that one formation --
+        # removing any ambiguity about which split "wins" so the DEF selection below is a clean
+        # top-5-of-7-by-starter_count check, not a formation-choice guess.
+        gk_ids = (1, 2)
+        def_ids = (11, 12, 13, 14, 15, 16, 17)
+        mid_ids = (21, 22)
+        fwd_ids = (31, 32, 33)
+        position_by_player = (
+            {pid: GK for pid in gk_ids}
+            | {pid: DEF for pid in def_ids}
+            | {pid: MID for pid in mid_ids}
+            | {pid: FWD for pid in fwd_ids}
+        )
+        ownership = {
+            1: _ownership(1, starter_count=10),
+            2: _ownership(2, starter_count=1),
+            **{pid: _ownership(pid, starter_count=10 - i) for i, pid in enumerate(def_ids)},
+            **{pid: _ownership(pid, starter_count=1) for pid in mid_ids},
+            **{pid: _ownership(pid, starter_count=1) for pid in fwd_ids},
+        }
+
+        template = league_template_xi(ownership, position_by_player)
+
+        assert 1 in template
+        assert 2 not in template
+        # Top 5 of 7 by descending starter_count: 11-15 score 10..6, 16-17 score 5..4, excluded.
+        assert set(template) & set(def_ids) == {11, 12, 13, 14, 15}
+        assert set(template) & set(mid_ids) == {21, 22}
+        assert set(template) & set(fwd_ids) == {31, 32, 33}
+        assert len(template) == 11
 
     def test_ties_are_broken_by_player_id_for_determinism(self):
-        snapshot = _snapshot([_rival(1, {20: 1, 10: 1})])
-        ownership = compute_league_ownership(snapshot)
-        assert league_template_xi(ownership, n=1) == (10,)
+        gk_ids = (1, 2)
+        def_ids = (11, 12, 13, 14, 15, 16)
+        mid_ids = (21, 22)
+        fwd_ids = (31, 32, 33)
+        position_by_player = (
+            {pid: GK for pid in gk_ids}
+            | {pid: DEF for pid in def_ids}
+            | {pid: MID for pid in mid_ids}
+            | {pid: FWD for pid in fwd_ids}
+        )
+        # Every player ties on starter_count -- the (5, 2, 3) formation (forced by the 2-strong
+        # MID pool, see the test above) must then pick the same, lowest-id DEF/GK every time
+        # rather than depend on dict iteration order.
+        ownership = {pid: _ownership(pid, starter_count=1) for pid in position_by_player}
+
+        template = league_template_xi(ownership, position_by_player)
+
+        assert 1 in template
+        assert 2 not in template
+        assert set(template) & set(def_ids) == {11, 12, 13, 14, 15}
+        assert set(template) & set(mid_ids) == {21, 22}
+        assert set(template) & set(fwd_ids) == {31, 32, 33}
 
 
 class TestComputeCoverage:
