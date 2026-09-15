@@ -196,6 +196,15 @@ class TestGetRoundup:
         assert body["players"][str(GK_IDS[0])]["web_name"] == f"Player{GK_IDS[0]}"
         assert body["teams"]["100"]["name"] == "Test Town"
 
+    def test_template_starter_counts_cover_every_template_xi_player(self, client, monkeypatch):
+        """Both stub entries start the identical squad, so every template_xi player was started
+        by both of them -- template_starter_counts must say exactly 2 for each."""
+        monkeypatch.setattr(api_main, "FPLClient", lambda: _StubFPLClient())
+        body = client.get("/roundup/999").json()
+        expected_keys = {str(pid) for pid in body["template_xi"]}
+        assert set(body["template_starter_counts"].keys()) == expected_keys
+        assert all(count == 2 for count in body["template_starter_counts"].values())
+
     def test_top_player_and_captain_returns_are_populated(self, client, monkeypatch):
         monkeypatch.setattr(api_main, "FPLClient", lambda: _StubFPLClient())
         body = client.get("/roundup/999").json()

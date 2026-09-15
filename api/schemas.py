@@ -545,6 +545,7 @@ class RoundupOut(BaseModel):
     bench_regret: list[BenchRegretRowOut]
     movers: list[MoverOut]
     template_xi: list[int]
+    template_starter_counts: dict[int, int]
     template_overlap: list[TemplateOverlapRowOut]
     differential_hauls: list[DifferentialHaulRowOut]
     chips: list[ChipSummaryOut]

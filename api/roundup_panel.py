@@ -86,6 +86,11 @@ class RoundupPanel:
     bench_regret: tuple[BenchRegretRow, ...]
     movers: tuple[Mover, ...]
     template_xi: tuple[int, ...]
+    # How many entries started each template_xi player (pick position 1-11) -- the ownership
+    # rate the Template Team pitch shows per player, out of len(snapshot.entries). Read straight
+    # off the same `ownership` mapping league_template_xi was built from, so it's exactly the
+    # number that maximand optimised.
+    template_starter_counts: dict[int, int]
     template_overlap: tuple[TemplateOverlapRow, ...]
     differential_hauls: tuple[DifferentialHaulRow, ...]
     chips: tuple[ChipSummary, ...]
@@ -122,6 +127,11 @@ def build_roundup_panel(
         bench_regret=bench_regret(entries, live_points),
         movers=biggest_movers(entries, standings, gameweek),
         template_xi=template_xi,
+        template_starter_counts={
+            player_id: ownership[player_id].starter_count
+            for player_id in template_xi
+            if player_id in ownership
+        },
         template_overlap=template_overlap(entries, template_xi),
         differential_hauls=biggest_differential_haul(entries, live_points),
         chips=chips_played(entries, live_points, standings, gameweek),

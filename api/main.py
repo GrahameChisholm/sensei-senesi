@@ -690,6 +690,7 @@ def _roundup_panel_out(
             for row in panel.movers
         ],
         template_xi=list(panel.template_xi),
+        template_starter_counts=dict(panel.template_starter_counts),
         template_overlap=[
             schemas.TemplateOverlapRowOut(
                 entry_id=row.entry_id,
