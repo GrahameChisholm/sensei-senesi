@@ -463,6 +463,104 @@ class MiniLeaguePanelOut(BaseModel):
     rivals: list[MiniLeagueRivalOut]
 
 
+# --- Roundup (ROUNDUP_PLAN) -----------------------------------------------------------------------
+
+
+class ManagerGameweekRowOut(BaseModel):
+    entry_id: int
+    manager_name: str
+    team_name: str
+    gameweek_points: int
+
+
+class PlayerRoundupRowOut(BaseModel):
+    player_id: int
+    live_points: int
+    owner_entry_ids: list[int]
+    starter_entry_ids: list[int]
+    captain_entry_ids: list[int]
+
+
+class CaptainReturnOut(BaseModel):
+    entry_id: int
+    manager_name: str
+    captain_player_id: int | None
+    multiplier: int
+    points: int
+
+
+class BenchRegretRowOut(BaseModel):
+    entry_id: int
+    manager_name: str
+    points_left_on_bench: int
+    contributing_player_ids: list[int]
+
+
+class MoverOut(BaseModel):
+    entry_id: int
+    manager_name: str
+    rank_before: int
+    rank_after: int
+    delta: int
+
+
+class TemplateOverlapRowOut(BaseModel):
+    entry_id: int
+    manager_name: str
+    overlap_count: int
+    template_size: int
+
+
+class DifferentialHaulRowOut(BaseModel):
+    entry_id: int
+    manager_name: str
+    differential_player_ids: list[int]
+    total_points: int
+
+
+class ChipSummaryOut(BaseModel):
+    entry_id: int
+    manager_name: str
+    chip_name: str
+    resulting_rank: int | None
+    points_effect: int | None
+
+
+class RoundupPlayerRefOut(BaseModel):
+    """Name/team/position for one player, sourced from a live bootstrap-static fetch made for
+    this response -- deliberately not the ``/players`` panel endpoint, which reads the
+    projections cache, since the Roundup page has no dependency on that cache at all."""
+
+    web_name: str
+    team_id: int
+    position: str
+
+
+class RoundupTeamRefOut(BaseModel):
+    name: str
+    short_name: str
+
+
+class RoundupOut(BaseModel):
+    league_id: int
+    league_name: str
+    gameweek: int
+    standings_by_gameweek: dict[int, list[int]]
+    top_managers: list[ManagerGameweekRowOut]
+    bottom_managers: list[ManagerGameweekRowOut]
+    top_player: PlayerRoundupRowOut | None
+    captain_returns: list[CaptainReturnOut]
+    bench_regret: list[BenchRegretRowOut]
+    movers: list[MoverOut]
+    template_xi: list[int]
+    template_starter_counts: dict[int, int]
+    template_overlap: list[TemplateOverlapRowOut]
+    differential_hauls: list[DifferentialHaulRowOut]
+    chips: list[ChipSummaryOut]
+    players: dict[int, RoundupPlayerRefOut]
+    teams: dict[int, RoundupTeamRefOut]
+
+
 # --- Transfer banner (TRANSFER_BANNER) -----------------------------------------------------------
 
 

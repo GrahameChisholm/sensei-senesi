@@ -211,9 +211,15 @@ class _StubFPLClient:
         return {"id": entry_id, "current_event": 1}
 
     def get_entry_picks(self, entry_id, gameweek):
-        picks = [{"element": pid, "multiplier": 1} for pid in ALL_IDS[:12]]
+        picks = [
+            {"element": pid, "position": i + 1, "multiplier": 1}
+            for i, pid in enumerate(ALL_IDS[:12])
+        ]
         if self._owns_upgrades:
-            picks += [{"element": pid, "multiplier": 1} for pid in UPGRADE_IDS]
+            picks += [
+                {"element": pid, "position": len(picks) + i + 1, "multiplier": 1}
+                for i, pid in enumerate(UPGRADE_IDS)
+            ]
         return {"picks": picks}
 
     def get_entry_history(self, entry_id):

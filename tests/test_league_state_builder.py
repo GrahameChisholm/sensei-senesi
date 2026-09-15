@@ -292,6 +292,84 @@ def test_picks_gameweek_probe_raises_only_once_every_entry_has_failed():
         build_league_snapshot(_client(handler), league_id=999)
 
 
+def test_pick_positions_are_carried_through_alongside_multipliers():
+    results = [_entry_result(1, rank=1)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/leagues-classic/999/standings/":
+            return httpx.Response(200, json=_standings_page(results))
+        if path == "/api/entry/1/":
+            return httpx.Response(200, json={"id": 1, "current_event": 7})
+        if path.endswith("/picks/"):
+            return httpx.Response(200, json=_picks_payload([(10, 2), (11, 1), (12, 0)]))
+        if path.endswith("/history/"):
+            return httpx.Response(200, json={"current": [], "past": [], "chips": []})
+        raise AssertionError(f"unexpected path {path}")
+
+    snapshot = build_league_snapshot(_client(handler), league_id=999)
+
+    entry = snapshot.entries[0]
+    assert entry.pick_positions == {10: 1, 11: 2, 12: 3}
+
+
+def test_history_rows_are_carried_through_from_current():
+    results = [_entry_result(1, rank=1)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/leagues-classic/999/standings/":
+            return httpx.Response(200, json=_standings_page(results))
+        if path == "/api/entry/1/":
+            return httpx.Response(200, json={"id": 1, "current_event": 7})
+        if path.endswith("/picks/"):
+            return httpx.Response(200, json=_picks_payload([(10, 1)]))
+        if path.endswith("/history/"):
+            return httpx.Response(
+                200,
+                json={
+                    "current": [
+                        {"event": 1, "points": 60, "total_points": 60},
+                        {"event": 2, "points": 50, "total_points": 110},
+                    ],
+                    "past": [],
+                    "chips": [],
+                },
+            )
+        raise AssertionError(f"unexpected path {path}")
+
+    snapshot = build_league_snapshot(_client(handler), league_id=999)
+
+    entry = snapshot.entries[0]
+    assert entry.history[0].event == 1
+    assert entry.history[0].points == 60
+    assert entry.history[0].total_points == 60
+    assert entry.history[1].total_points == 110
+
+
+def test_explicit_gameweek_skips_the_probe_and_is_used_as_picks_gameweek():
+    """ROUNDUP_PLAN: a caller building a recap of a known, already-finished gameweek should not
+    pay for (or depend on) the current_event probe at all."""
+    results = [_entry_result(1, rank=1)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/leagues-classic/999/standings/":
+            return httpx.Response(200, json=_standings_page(results))
+        if path == "/api/entry/1/":
+            raise AssertionError("get_entry probe should not be called when gameweek is given")
+        if path == "/api/entry/1/event/3/picks/":
+            return httpx.Response(200, json=_picks_payload([(10, 1)]))
+        if path.endswith("/history/"):
+            return httpx.Response(200, json={"current": [], "past": [], "chips": []})
+        raise AssertionError(f"unexpected path {path}")
+
+    snapshot = build_league_snapshot(_client(handler), league_id=999, gameweek=3)
+
+    assert snapshot.picks_gameweek == 3
+    assert {entry.entry_id for entry in snapshot.entries} == {1}
+
+
 def test_an_entry_whose_picks_cannot_be_fetched_is_dropped_not_fatal():
     """The same 'one inaccessible manager' failure, discovered later: this entry's ``current_event``
     probe would have worked, but its picks/history calls 404 anyway -- it should simply be absent

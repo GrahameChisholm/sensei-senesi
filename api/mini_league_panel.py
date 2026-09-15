@@ -49,7 +49,6 @@ from features.team_state import MyTeamState
 
 __all__ = [
     "DEFAULT_SEASON_LENGTH_GAMEWEEKS",
-    "DEFAULT_TEMPLATE_XI_SIZE",
     "CACHE_TTL_SECONDS",
     "RivalRow",
     "MiniLeaguePanel",
@@ -62,8 +61,6 @@ __all__ = [
 # features.mini_league.compute_posture; mirrors web/src/pages/FixturesPage.tsx's own
 # MAX_GAMEWEEK constant, the closest existing precedent for hardcoding this number.
 DEFAULT_SEASON_LENGTH_GAMEWEEKS = 38
-
-DEFAULT_TEMPLATE_XI_SIZE = 11
 
 CACHE_TTL_SECONDS = 600.0
 
@@ -150,7 +147,7 @@ def build_mini_league_panel(
     )
     captain_options = tuple(rank_captain_options(team_state.starting_xi, ownership, projections))
     coverage = compute_coverage(team_state, ownership, chip=chip)
-    template_xi = league_template_xi(ownership, n=DEFAULT_TEMPLATE_XI_SIZE)
+    template_xi = league_template_xi(ownership, app_state.position_by_player)
     n_rivals = sum(1 for entry in snapshot.entries if entry.entry_id != my_entry_id)
     insights = summarise_week(exposures, captain_options, team_state.captain_id, n_rivals)
 

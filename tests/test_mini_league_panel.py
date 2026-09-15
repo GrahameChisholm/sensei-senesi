@@ -248,8 +248,17 @@ class TestBuildMiniLeaguePanel:
         state = _team_state()
         benched_id = DEF_IDS[4]  # on the bench in _team_state()
         exclusive_starter_id = MID_IDS[0]  # started by you, owned by nobody else
+        # league_template_xi (ROUNDUP_PLAN) now requires a legal formation, so the ownership pool
+        # needs enough depth at every position too -- unrelated to what this test actually checks
+        # (insights), but required for build_mini_league_panel to assemble at all.
+        full_pool_picks = {pid: 1 for pid in [GK1, *DEF_IDS, *MID_IDS, *FWD_IDS]}
+        full_pool_picks[benched_id] = 2
         snapshot = _snapshot(
-            [_rival(MY_ENTRY_ID, {}), _rival(1, {benched_id: 2}), _rival(2, {benched_id: 2})]
+            [
+                _rival(MY_ENTRY_ID, {}),
+                _rival(1, dict(full_pool_picks)),
+                _rival(2, dict(full_pool_picks)),
+            ]
         )
         panel = build_mini_league_panel(_app_state(), state, snapshot, MY_ENTRY_ID)
         assert any(i.kind == "drag" and i.player_id == benched_id for i in panel.insights)

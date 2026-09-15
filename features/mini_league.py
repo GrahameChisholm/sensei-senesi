@@ -43,6 +43,8 @@ from dataclasses import dataclass, replace
 
 from engine.data.league_state_builder import LeagueEntry, LeagueSnapshot
 from engine.projections import PlayerGameweekProjection
+from engine.scoring import DEF, FWD, GK, MID
+from features.formation import VALID_FORMATIONS
 from features.squad_points import CHIP_BENCH_BOOST, CHIP_TRIPLE_CAPTAIN, CHIPS
 from features.team_state import MyTeamState
 
@@ -143,6 +145,11 @@ class PlayerOwnership:
     eo_percent: float
     captain_share_percent: float
     owner_names: tuple[str, ...]
+    # How many rivals started this player (FPL pick position 1-11), ignoring bench/multiplier
+    # entirely -- the maximand for :func:`league_template_xi` (ROUNDUP_PLAN), kept as its own
+    # count rather than derived from eo_multiplier so a Bench Boost gameweek (which sets every
+    # bench multiplier to 1) can't distort which XI "the league" actually chose to field.
+    starter_count: int = 0
 
 
 _ZERO_OWNERSHIP_TEMPLATE = PlayerOwnership(
@@ -153,6 +160,7 @@ _ZERO_OWNERSHIP_TEMPLATE = PlayerOwnership(
     eo_percent=0.0,
     captain_share_percent=0.0,
     owner_names=(),
+    starter_count=0,
 )
 
 
@@ -190,6 +198,7 @@ def compute_league_ownership(
         owners = [rival for rival in rivals if player_id in rival.picks]
         eo_multiplier = sum(rival.picks.get(player_id, 0) for rival in rivals) / n_rivals
         captains = sum(1 for rival in owners if rival.picks[player_id] >= 2)
+        starter_count = sum(1 for rival in owners if rival.pick_positions.get(player_id, 12) <= 11)
         ownership[player_id] = PlayerOwnership(
             player_id=player_id,
             raw_ownership_percent=100.0 * len(owners) / n_rivals,
@@ -198,6 +207,7 @@ def compute_league_ownership(
             eo_percent=eo_multiplier * 100.0,
             captain_share_percent=100.0 * captains / n_rivals,
             owner_names=tuple(rival.manager_name for rival in owners),
+            starter_count=starter_count,
         )
     return ownership
 
@@ -491,16 +501,58 @@ def compute_posture(
 
 
 def league_template_xi(
-    ownership_by_player: Mapping[int, PlayerOwnership], n: int = 11
+    ownership_by_player: Mapping[int, PlayerOwnership],
+    position_by_player: Mapping[int, str],
 ) -> tuple[int, ...]:
-    """The ``n`` highest-``eo_multiplier`` players in the league (M13) -- ties broken by
-    ``player_id`` for a deterministic result, since an arbitrary dict-iteration-order tiebreak
-    would make this flicker between otherwise-identical calls."""
-    ranked = sorted(
-        ownership_by_player.values(),
-        key=lambda ownership: (-ownership.eo_multiplier, ownership.player_id),
-    )
-    return tuple(ownership.player_id for ownership in ranked[:n])
+    """The single legal-formation starting XI that maximises total ``starter_count`` (M13,
+    ROUNDUP_PLAN) -- "the team the league is actually fielding," not just its 11 most-owned
+    players regardless of position. Mirrors :func:`features.formation.select_starting_xi`'s own
+    per-position-sort-then-try-every-split approach exactly, scored by ``starter_count`` instead
+    of expected points, and reuses :data:`~features.formation.VALID_FORMATIONS` rather than
+    reimplementing the split search. Ties within a position are broken by ``player_id`` for a
+    deterministic result, since an arbitrary dict-iteration-order tiebreak would make this flicker
+    between otherwise-identical calls.
+
+    Returns an empty tuple when there is no ownership at all (a league of one, or before the
+    first deadline) -- there is no team to build. Raises ``ValueError`` if the owned player pool
+    has no goalkeeper, or no :data:`~features.formation.VALID_FORMATIONS` split fits its position
+    counts, matching ``select_starting_xi``'s own convention for the same, in practice
+    unreachable, situation (every real ``LeagueEntry`` contributes a full legal 15-man squad, so
+    the pool always has ample depth at every position).
+    """
+    if not ownership_by_player:
+        return ()
+
+    by_position: dict[str, list[PlayerOwnership]] = {GK: [], DEF: [], MID: [], FWD: []}
+    for ownership in ownership_by_player.values():
+        position = position_by_player.get(ownership.player_id)
+        if position in by_position:
+            by_position[position].append(ownership)
+    for candidates in by_position.values():
+        candidates.sort(key=lambda ownership: (-ownership.starter_count, ownership.player_id))
+
+    if not by_position[GK]:
+        raise ValueError("no goalkeeper among the league-owned players")
+
+    best_score = -1
+    best_combo: tuple[int, ...] | None = None
+    for d, m, f in VALID_FORMATIONS:
+        if len(by_position[DEF]) < d or len(by_position[MID]) < m or len(by_position[FWD]) < f:
+            continue
+        starters = (
+            [by_position[GK][0]]
+            + by_position[DEF][:d]
+            + by_position[MID][:m]
+            + by_position[FWD][:f]
+        )
+        score = sum(ownership.starter_count for ownership in starters)
+        if score > best_score:
+            best_score = score
+            best_combo = tuple(ownership.player_id for ownership in starters)
+
+    if best_combo is None:
+        raise ValueError("no valid formation fits the league-owned player pool's position counts")
+    return best_combo
 
 
 def compute_coverage(
