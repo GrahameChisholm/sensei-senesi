@@ -6,10 +6,12 @@ mutation delegates to ``features.squad_rules``/``features.squad_draft``; a
 
 from __future__ import annotations
 
+import base64
 import os
 from collections.abc import Mapping
 from dataclasses import replace
 
+import httpx
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -668,6 +670,22 @@ def get_mini_league(
     return _mini_league_panel_out(panel)
 
 
+PLAYER_PHOTO_URL = "https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
+
+
+def _fetch_player_photo_data_uri(code: int) -> str | None:
+    """Fetches one player's photo from FPL's media CDN and inlines it as a base64 data URI (see
+    ``RoundupPlayerRefOut.photo_data_uri`` for why a data URI rather than a direct link). Best
+    effort: any failure just means no photo on the poster, never a broken roundup response.
+    """
+    try:
+        response = httpx.get(PLAYER_PHOTO_URL.format(code=code), timeout=5.0)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    return f"data:image/png;base64,{base64.b64encode(response.content).decode('ascii')}"
+
+
 def _roundup_panel_out(
     panel: RoundupPanel,
     players: dict[int, schemas.RoundupPlayerRefOut],
@@ -832,6 +850,20 @@ def get_roundup(
             )
         except FPLClientError as exc:
             raise ValueError(f"could not fetch mini-league {league_id}: {exc}") from exc
+
+        if panel.top_player is not None and panel.top_player.player_id in players:
+            code = next(
+                (
+                    element["code"]
+                    for element in bootstrap["elements"]
+                    if element["id"] == panel.top_player.player_id
+                ),
+                None,
+            )
+            if code is not None:
+                photo_data_uri = _fetch_player_photo_data_uri(code)
+                if photo_data_uri is not None:
+                    players[panel.top_player.player_id].photo_data_uri = photo_data_uri
 
     return _roundup_panel_out(panel, players, teams)
 

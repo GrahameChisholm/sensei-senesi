@@ -484,6 +484,7 @@ export interface RoundupPlayerRefOut {
   web_name: string;
   team_id: number;
   position: string;
+  photo_data_uri: string | null;
 }
 
 export interface RoundupTeamRefOut {

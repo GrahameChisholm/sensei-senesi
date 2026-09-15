@@ -529,11 +529,19 @@ class ChipSummaryOut(BaseModel):
 class RoundupPlayerRefOut(BaseModel):
     """Name/team/position for one player, sourced from a live bootstrap-static fetch made for
     this response -- deliberately not the ``/players`` panel endpoint, which reads the
-    projections cache, since the Roundup page has no dependency on that cache at all."""
+    projections cache, since the Roundup page has no dependency on that cache at all.
+
+    ``photo_data_uri`` is only ever populated for the gameweek's top scorer (see ``get_roundup``)
+    -- fetching and inlining a photo for every player in the pool would be wasteful when the
+    poster only ever displays one. It is a data URI, not a link to FPL's own photo CDN, because
+    that CDN serves no CORS headers: the poster is a self-contained SVG rasterised to a PNG
+    client-side (see RoundupPoster.tsx), and a cross-origin image reference would silently taint
+    that export."""
 
     web_name: str
     team_id: int
     position: str
+    photo_data_uri: str | None = None
 
 
 class RoundupTeamRefOut(BaseModel):
