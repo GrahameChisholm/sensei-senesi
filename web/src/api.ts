@@ -495,6 +495,9 @@ export interface RoundupOut {
   bench_regret: BenchRegretRowOut[];
   movers: MoverOut[];
   template_xi: number[];
+  /** How many entries started each template_xi player (pick position 1-11), out of the league's
+   * total entry count -- the ownership rate shown per player on the Template Team pitch. */
+  template_starter_counts: Record<number, number>;
   template_overlap: TemplateOverlapRowOut[];
   differential_hauls: DifferentialHaulRowOut[];
   chips: ChipSummaryOut[];
