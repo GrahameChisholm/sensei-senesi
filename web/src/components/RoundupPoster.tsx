@@ -29,8 +29,13 @@ const MARGIN = 48;
 const CONTENT_WIDTH = POSTER_WIDTH - MARGIN * 2;
 const COLUMN_GAP = 24;
 const COLUMN_WIDTH = (CONTENT_WIDTH - COLUMN_GAP) / 2;
-const CARD_HEIGHT = 300;
 const TOP_BOTTOM_CARD_HEIGHT = 170;
+// Rows 2 and 4 each pair a single-stat card (Highest Scoring Player, Points Left on the Bench)
+// with a two-sub-block card (Captaincy, Rank Movement) -- the two-sub-block layout is always the
+// taller of the two (second sub-block starts at local y=130ish, its own content runs to about
+// y=160), so this is that height plus bottom breathing room, and both cards in the row share it
+// rather than the single-stat card carrying a lot of dead space underneath.
+const TWO_STAT_CARD_HEIGHT = 185;
 const CARD_GAP_Y = 24;
 const CHART_ROW_HEIGHT = 40;
 const CHART_TOP_PAD = 24;
@@ -198,11 +203,22 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
 
   const row1Y = HEADER_HEIGHT + chartHeight + CARD_GAP_Y;
   const row2Y = row1Y + TOP_BOTTOM_CARD_HEIGHT + CARD_GAP_Y;
-  const row3Y = row2Y + CARD_HEIGHT + CARD_GAP_Y;
+  const row3Y = row2Y + TWO_STAT_CARD_HEIGHT + CARD_GAP_Y;
   const row4Y = row3Y + ROW3_HEIGHT + CARD_GAP_Y;
-  const chipsY = row4Y + CARD_HEIGHT + CARD_GAP_Y;
-  const chipsHeight = 68 + Math.max(data.chips.length - 1, 0) * 36;
-  const posterHeight = (data.chips.length > 0 ? chipsY + chipsHeight : row4Y + CARD_HEIGHT) + MARGIN;
+  const chipsY = row4Y + TWO_STAT_CARD_HEIGHT + CARD_GAP_Y;
+  // First row sits at local y=52; each badge is 24 tall; CHIPS_BOTTOM_PADDING below the last
+  // badge's bottom edge is the card's own close, matching every other card's bottom margin.
+  const CHIPS_FIRST_ROW_Y = 52;
+  const CHIPS_ROW_HEIGHT = 36;
+  const CHIPS_BADGE_HEIGHT = 24;
+  const CHIPS_BOTTOM_PADDING = 20;
+  const chipsHeight =
+    CHIPS_FIRST_ROW_Y +
+    Math.max(data.chips.length - 1, 0) * CHIPS_ROW_HEIGHT +
+    CHIPS_BADGE_HEIGHT +
+    CHIPS_BOTTOM_PADDING;
+  const posterHeight =
+    (data.chips.length > 0 ? chipsY + chipsHeight : row4Y + TWO_STAT_CARD_HEIGHT) + MARGIN;
 
   return (
     <svg
@@ -370,7 +386,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN}
         y={row2Y}
         width={COLUMN_WIDTH}
-        height={CARD_HEIGHT}
+        height={TWO_STAT_CARD_HEIGHT}
         label="Highest Scoring Player"
       >
         {data.top_player && (
@@ -398,7 +414,13 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
           </g>
         )}
       </Card>
-      <Card x={MARGIN + COLUMN_WIDTH + COLUMN_GAP} y={row2Y} width={COLUMN_WIDTH} height={CARD_HEIGHT} label="Captaincy">
+      <Card
+        x={MARGIN + COLUMN_WIDTH + COLUMN_GAP}
+        y={row2Y}
+        width={COLUMN_WIDTH}
+        height={TWO_STAT_CARD_HEIGHT}
+        label="Captaincy"
+      >
         {bestCaptain && (
           <g transform="translate(20, 60)">
             <text fontSize={11} fontWeight={700} letterSpacing={0.5} fill={TEXT_MUTED}>
@@ -434,7 +456,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
           const pitchY = 48;
           const pitchWidth = PITCH_CARD_WIDTH - 40;
           const pitchHeight = ROW3_HEIGHT - 68;
-          const rowOrder: ("FWD" | "MID" | "DEF" | "GK")[] = ["FWD", "MID", "DEF", "GK"];
+          const rowOrder: ("GK" | "DEF" | "MID" | "FWD")[] = ["GK", "DEF", "MID", "FWD"];
           const rowHeight = pitchHeight / rowOrder.length;
           const tokenWidth = 88;
           const tokenHeight = 42;
@@ -593,7 +615,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN}
         y={row4Y}
         width={COLUMN_WIDTH}
-        height={CARD_HEIGHT}
+        height={TWO_STAT_CARD_HEIGHT}
         label="Points Left on the Bench"
       >
         {worstBenchRegret && (
@@ -619,7 +641,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN + COLUMN_WIDTH + COLUMN_GAP}
         y={row4Y}
         width={COLUMN_WIDTH}
-        height={CARD_HEIGHT}
+        height={TWO_STAT_CARD_HEIGHT}
         label="Rank Movement"
       >
         {biggestClimb && (
