@@ -622,10 +622,7 @@ class TestLeagueTemplateXi:
         )
         ownership = {
             **{pid: _ownership(pid, starter_count=1) for pid in gk_ids},
-            **{
-                pid: _ownership(pid, starter_count=10)
-                for pid in def_ids + mid_ids + fwd_ids
-            },
+            **{pid: _ownership(pid, starter_count=10) for pid in def_ids + mid_ids + fwd_ids},
         }
 
         template = league_template_xi(ownership, position_by_player)
