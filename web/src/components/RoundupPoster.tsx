@@ -88,6 +88,28 @@ function truncate(text: string, maxChars: number): string {
   return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
 }
 
+/** Breaks `text` onto lines of at most `maxCharsPerLine`, only ever at a space -- never mid-word
+ * -- so real content (a manager's name, a player list) is never cut off with an ellipsis. Used
+ * wherever the card's own height is computed from the result, so wrapping onto an extra line
+ * grows the card rather than clipping the content. */
+function wrapText(text: string, maxCharsPerLine: number): string[] {
+  if (!text) return [];
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length > maxCharsPerLine && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
 /** One end of the captaincy card: the extreme (highest or lowest) points return, and every row
  * tied on that exact value. A tie of one just names that manager; a tie of several is reported
  * as a headcount, naming the shared player only when every tied manager actually captained the
@@ -201,10 +223,45 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
     }
   }
 
+  // Captaincy: a tied-manager label ("Captained by 8 managers · Haaland") can run past a single
+  // line's width, and it names an actual player -- truncating it with an ellipsis was cutting
+  // off exactly the information the card exists to show. Wrapped instead, and the card (and its
+  // row) grows to fit however many lines that takes, rather than clipping.
+  const CAPTAIN_LABEL_CHARS_PER_LINE = 30;
+  const CAPTAIN_LABEL_LINE_HEIGHT = 22;
+  const CAPTAIN_BLOCK_TOP = 60;
+  const CAPTAIN_BLOCK_GAP = 44;
+  const CAPTAIN_BOTTOM_PADDING = 24;
+  const bestCaptainLines = bestCaptain ? wrapText(bestCaptain.label, CAPTAIN_LABEL_CHARS_PER_LINE) : [];
+  const worstCaptainLines = worstCaptain
+    ? wrapText(worstCaptain.label, CAPTAIN_LABEL_CHARS_PER_LINE)
+    : [];
+  const captainBlockHeight = (lines: string[]) =>
+    26 + Math.max(lines.length - 1, 0) * CAPTAIN_LABEL_LINE_HEIGHT;
+  const worstCaptainBlockY =
+    CAPTAIN_BLOCK_TOP + captainBlockHeight(bestCaptainLines) + CAPTAIN_BLOCK_GAP;
+  const captaincyCardHeight =
+    worstCaptainBlockY + captainBlockHeight(worstCaptainLines) + CAPTAIN_BOTTOM_PADDING;
+
+  // Most Unique: list every true differential, not just as many as fit on one line -- the same
+  // "don't cut off real information" fix, wrapped onto as many lines as the actual list needs.
+  const DIFFERENTIAL_LIST_CHARS_PER_LINE = 46;
+  const DIFFERENTIAL_LIST_LINE_HEIGHT = 17;
+  const differentialNames = biggestHaul
+    ? biggestHaul.differential_player_ids.map((id) => data.players[id]?.web_name ?? "").join(" · ")
+    : "";
+  const differentialLines = wrapText(differentialNames, DIFFERENTIAL_LIST_CHARS_PER_LINE);
+  const differentialListY = 50;
+  const differentialCountY =
+    differentialListY + differentialLines.length * DIFFERENTIAL_LIST_LINE_HEIGHT + 5;
+  const templateUniqueCardHeight = biggestHaul ? 160 + differentialCountY + 24 : ROW3_HEIGHT;
+
   const row1Y = HEADER_HEIGHT + chartHeight + CARD_GAP_Y;
+  const row2Height = Math.max(TWO_STAT_CARD_HEIGHT, captaincyCardHeight);
+  const row3Height = Math.max(ROW3_HEIGHT, templateUniqueCardHeight);
   const row2Y = row1Y + TOP_BOTTOM_CARD_HEIGHT + CARD_GAP_Y;
-  const row3Y = row2Y + TWO_STAT_CARD_HEIGHT + CARD_GAP_Y;
-  const row4Y = row3Y + ROW3_HEIGHT + CARD_GAP_Y;
+  const row3Y = row2Y + row2Height + CARD_GAP_Y;
+  const row4Y = row3Y + row3Height + CARD_GAP_Y;
   const chipsY = row4Y + TWO_STAT_CARD_HEIGHT + CARD_GAP_Y;
   // First row sits at local y=52; each badge is 24 tall; CHIPS_BOTTOM_PADDING below the last
   // badge's bottom edge is the card's own close, matching every other card's bottom margin.
@@ -386,7 +443,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN}
         y={row2Y}
         width={COLUMN_WIDTH}
-        height={TWO_STAT_CARD_HEIGHT}
+        height={row2Height}
         label="Highest Scoring Player"
       >
         {data.top_player && (
@@ -418,30 +475,46 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN + COLUMN_WIDTH + COLUMN_GAP}
         y={row2Y}
         width={COLUMN_WIDTH}
-        height={TWO_STAT_CARD_HEIGHT}
+        height={row2Height}
         label="Captaincy"
       >
         {bestCaptain && (
-          <g transform="translate(20, 60)">
+          <g transform={`translate(20, ${CAPTAIN_BLOCK_TOP})`}>
             <text fontSize={11} fontWeight={700} letterSpacing={0.5} fill={TEXT_MUTED}>
               BEST CALL
             </text>
-            <text y={26} fontSize={17} fontWeight={700} fill={TEXT}>
-              {truncate(bestCaptain.label, 34)}
-            </text>
+            {bestCaptainLines.map((line, i) => (
+              <text
+                key={i}
+                y={26 + i * CAPTAIN_LABEL_LINE_HEIGHT}
+                fontSize={17}
+                fontWeight={700}
+                fill={TEXT}
+              >
+                {line}
+              </text>
+            ))}
             <text x={COLUMN_WIDTH - 60} y={26} fontSize={20} fontWeight={700} fill={HIGH_TEXT}>
               {bestCaptain.points}
             </text>
           </g>
         )}
         {worstCaptain && (
-          <g transform="translate(20, 130)">
+          <g transform={`translate(20, ${worstCaptainBlockY})`}>
             <text fontSize={11} fontWeight={700} letterSpacing={0.5} fill={TEXT_MUTED}>
               WORST CALL
             </text>
-            <text y={26} fontSize={17} fontWeight={700} fill={TEXT}>
-              {truncate(worstCaptain.label, 34)}
-            </text>
+            {worstCaptainLines.map((line, i) => (
+              <text
+                key={i}
+                y={26 + i * CAPTAIN_LABEL_LINE_HEIGHT}
+                fontSize={17}
+                fontWeight={700}
+                fill={TEXT}
+              >
+                {line}
+              </text>
+            ))}
             <text x={COLUMN_WIDTH - 60} y={26} fontSize={20} fontWeight={700} fill={DANGER}>
               {worstCaptain.points}
             </text>
@@ -450,7 +523,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
       </Card>
 
       {/* Template Team (pitch) / Most Template + Most Unique */}
-      <Card x={MARGIN} y={row3Y} width={PITCH_CARD_WIDTH} height={ROW3_HEIGHT} label="Template Team">
+      <Card x={MARGIN} y={row3Y} width={PITCH_CARD_WIDTH} height={row3Height} label="Template Team">
         {(() => {
           const pitchX = 20;
           const pitchY = 48;
@@ -521,7 +594,6 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
                   <g key={position}>
                     {ids.map((playerId, i) => {
                       const starterCount = data.template_starter_counts[playerId] ?? 0;
-                      const pct = nEntries > 0 ? Math.round((starterCount / nEntries) * 100) : 0;
                       return (
                         <g
                           key={playerId}
@@ -552,7 +624,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
                             fill={TEXT_MUTED}
                             textAnchor="middle"
                           >
-                            {`${pct}% owned`}
+                            {`${starterCount}/${nEntries} owned`}
                           </text>
                         </g>
                       );
@@ -568,7 +640,7 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
         x={MARGIN + PITCH_CARD_WIDTH + COLUMN_GAP}
         y={row3Y}
         width={TEMPLATE_UNIQUE_CARD_WIDTH}
-        height={ROW3_HEIGHT}
+        height={row3Height}
         label="Template & Unique"
       >
         {mostTemplate && (
@@ -595,15 +667,17 @@ export const RoundupPoster = forwardRef<SVGSVGElement, RoundupPosterProps>(({ da
             <text x={TEMPLATE_UNIQUE_CARD_WIDTH - 60} y={26} fontSize={18} fontWeight={700} fill={HIGH_TEXT}>
               {biggestHaul.total_points}
             </text>
-            <text y={50} fontSize={13} fill={TEXT_MUTED}>
-              {truncate(
-                biggestHaul.differential_player_ids
-                  .map((id) => data.players[id]?.web_name ?? "")
-                  .join(" · "),
-                34,
-              )}
-            </text>
-            <text y={72} fontSize={12} fontWeight={600} fill={TEXT_MUTED}>
+            {differentialLines.map((line, i) => (
+              <text
+                key={i}
+                y={differentialListY + i * DIFFERENTIAL_LIST_LINE_HEIGHT}
+                fontSize={13}
+                fill={TEXT_MUTED}
+              >
+                {line}
+              </text>
+            ))}
+            <text y={differentialCountY} fontSize={12} fontWeight={600} fill={TEXT_MUTED}>
               {`${biggestHaul.differential_player_ids.length} player${biggestHaul.differential_player_ids.length === 1 ? "" : "s"} nobody else owned.`}
             </text>
           </g>
