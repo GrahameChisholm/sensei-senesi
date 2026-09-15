@@ -37,13 +37,14 @@ downstream.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from engine.data.fpl_client import FPLClient, FPLClientError
 
 __all__ = [
     "DEFAULT_RIVAL_LIMIT",
     "ChipUsage",
+    "GameweekHistoryRow",
     "LeagueEntry",
     "LeagueSnapshot",
     "build_league_snapshot",
@@ -65,6 +66,19 @@ class ChipUsage:
 
 
 @dataclass(frozen=True)
+class GameweekHistoryRow:
+    """One row of an entry's season history -- straight from ``get_entry_history``'s ``current``
+    list, which :func:`_build_entry` already fetches for :attr:`LeagueEntry.chips` and previously
+    discarded the rest of. ``total_points`` is cumulative through ``event``, which is what lets a
+    caller (ROUNDUP_PLAN) reconstruct this league's rank as of any past gameweek without a
+    dedicated "league rank per gameweek" endpoint, which FPL does not have."""
+
+    event: int
+    points: int
+    total_points: int
+
+
+@dataclass(frozen=True)
 class LeagueEntry:
     """One manager's row in the league, as of :class:`LeagueSnapshot`'s ``picks_gameweek``.
 
@@ -72,6 +86,13 @@ class LeagueEntry:
     ``picks_gameweek`` (0 for a benched player with no Bench Boost active, 1 started, 2 captain, 3
     triple captain) -- see the module docstring's M3 note for why this is read as-is rather than
     reconstructed.
+
+    ``pick_positions`` maps the same 15 player_ids to FPL's own pick ``position`` (1-11 is the
+    starting XI in formation-slot order, 12-15 the bench -- not a real football position). Kept
+    separate from ``picks``' multiplier because they answer different questions: a manager's
+    *chosen* XI (``pick_positions <= 11``) is stable across a Bench Boost gameweek, while
+    ``multiplier`` reflects what actually counted once chips and automatic substitutions are
+    applied.
     """
 
     entry_id: int
@@ -82,6 +103,11 @@ class LeagueEntry:
     gameweek_points: int
     picks: dict[int, int]
     chips: tuple[ChipUsage, ...]
+    # Additive fields (ROUNDUP_PLAN): defaulted so every existing hand-built LeagueEntry fixture
+    # in tests/test_mini_league.py, tests/test_mini_league_panel.py, and
+    # tests/test_transfer_planner.py keeps constructing without change.
+    pick_positions: dict[int, int] = field(default_factory=dict)
+    history: tuple[GameweekHistoryRow, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -160,9 +186,16 @@ def _build_entry(client: FPLClient, result: dict, picks_gameweek: int) -> League
     except FPLClientError:
         return None
     picks = {pick["element"]: pick["multiplier"] for pick in picks_payload["picks"]}
+    pick_positions = {pick["element"]: pick["position"] for pick in picks_payload["picks"]}
 
     chips = tuple(
         ChipUsage(name=chip["name"], gameweek=chip["event"]) for chip in history.get("chips", [])
+    )
+    history_rows = tuple(
+        GameweekHistoryRow(
+            event=row["event"], points=row["points"], total_points=row["total_points"]
+        )
+        for row in history.get("current", [])
     )
 
     return LeagueEntry(
@@ -173,12 +206,17 @@ def _build_entry(client: FPLClient, result: dict, picks_gameweek: int) -> League
         total_points=result["total"],
         gameweek_points=result.get("event_total", 0),
         picks=picks,
+        pick_positions=pick_positions,
         chips=chips,
+        history=history_rows,
     )
 
 
 def build_league_snapshot(
-    client: FPLClient, league_id: int, limit: int = DEFAULT_RIVAL_LIMIT
+    client: FPLClient,
+    league_id: int,
+    limit: int = DEFAULT_RIVAL_LIMIT,
+    gameweek: int | None = None,
 ) -> LeagueSnapshot:
     """Fetch and assemble one classic mini-league's full snapshot: standings (paginated up to
     ``limit``), each entry's picks at the resolved ``picks_gameweek`` (M1), and each entry's chip
@@ -188,6 +226,12 @@ def build_league_snapshot(
     :func:`~engine.data.team_state_builder.build_my_team_state`'s own "engine-layer errors stay
     engine-layer" convention; the caller (``api/``) is responsible for turning that into
     caller-facing 400.
+
+    ``gameweek``, when given, is used directly as ``picks_gameweek`` instead of being resolved
+    from a probe entry's ``current_event`` (ROUNDUP_PLAN) -- a caller building a recap of a
+    specific already-finished gameweek knows exactly which one it wants, and skipping the probe
+    also saves one request. ``None`` (the default) preserves this function's original "current
+    picks" behaviour exactly.
 
     A single *entry* within an otherwise-valid league being unreachable (a deleted, banned, or
     otherwise inaccessible manager account -- an observed real-world FPL 404, not a hypothetical)
@@ -207,7 +251,11 @@ def build_league_snapshot(
             rival_limit_truncated=truncated,
         )
 
-    picks_gameweek = _resolve_picks_gameweek(client, [result["entry"] for result in results])
+    picks_gameweek = (
+        gameweek
+        if gameweek is not None
+        else _resolve_picks_gameweek(client, [result["entry"] for result in results])
+    )
     entries = tuple(
         entry
         for entry in (_build_entry(client, result, picks_gameweek) for result in results)

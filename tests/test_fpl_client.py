@@ -183,6 +183,17 @@ def test_get_league_standings_with_explicit_page():
     client.get_league_standings(999, page=2)
 
 
+def test_get_event_live_hits_correct_path():
+    live = {"elements": [{"id": 1, "stats": {"total_points": 12, "bonus": 3}}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/event/3/live/"
+        return httpx.Response(200, json=live)
+
+    client = _client(handler)
+    assert client.get_event_live(3) == live
+
+
 def test_bootstrap_to_dataframes_shapes():
     tables = bootstrap_to_dataframes(BOOTSTRAP)
     assert set(tables) == {"elements", "teams", "element_types", "events"}

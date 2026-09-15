@@ -126,6 +126,14 @@ class FPLClient:
         other endpoint on this client, not a batch-fetch convenience."""
         return self._get(f"/leagues-classic/{league_id}/standings/?page_standings={page}")
 
+    def get_event_live(self, gameweek: int) -> dict[str, Any]:
+        """Every player's actual live stats for one gameweek in a single request: ``elements``,
+        each carrying ``id`` and ``stats`` (``total_points``, ``bonus``, ``bps``, ``minutes``,
+        ``in_dreamteam``, and the same defensive/attacking counters ``bootstrap-static`` exposes).
+        This is FPL's own ground truth for "what actually happened," used by the Roundup page
+        rather than the projections cache, so a recap is correct the moment a gameweek finishes."""
+        return self._get(f"/event/{gameweek}/live/")
+
 
 def _drop_nested_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Drop any column holding raw dicts/lists (e.g. events' ``overrides``/``chip_plays``,
